@@ -10,8 +10,10 @@
 - 全量：功能不砍、不分期、内容不截断（qmreader 里改写 14000 字、伴读 8000 字这类上限一律去掉）。
 - 不做：多用户账号、自托管、社区、公开沉淀、网页剪藏、HN 组合流、时间打散、同类源连续限制。
 - 快捷键：`A` 问 AI；`[` / `]` 上一个 / 下一个订阅；`J` / `K` 下一篇 / 上一篇；`I` 沉浸阅读；`Esc` 退出。
-- 模型接入：只接本地 magpie 网关（`http://127.0.0.1:3425`），供应商 `opencode-go`，模型固定 `deepseek-v4.1-flash`；不做多供应商和 OAuth。
-- 自动改写：默认开启。
+- 模型接入：只接本地 magpie 网关（默认 `http://127.0.0.1:3425/v1`），供应商 `opencode-go`；网关地址、API key、模型都可在设置面板里改，模型通过「获取模型列表」下拉选择；不做多供应商和 OAuth。
+- 自动改写：默认开启，但只对最近 7 天、正文 2000 字以上的文章生效，中英文都改写。
+- 标题中文化：自动，只对非中文文章。
+- 正文翻译：按需，切到「翻译」页签且没有缓存时才生成。
 - 改写不叫「乔木改写」，就叫「改写」；提示词里的人设名字一并去掉。
 - 所有内部标识去掉 `qiaomu` 前缀，提示词版本号改成中性命名。
 - 作者自建源要加：X News、乔木博客；源名保留原样。
@@ -24,50 +26,50 @@
 
 | # | 功能 | 要点 | qmreader 参考 | 状态 |
 |---|---|---|---|---|
-| A1 | 标题中文化 | 自动补译，批量送，后台跑，入库即排队 | `lib/deepseek.js:1539-1546`、`lib/title-jobs.js` | [ ] |
-| A2 | 正文全文翻译 | 默认一次翻完；超模型输出上限才分块；缺块失败、断点续传 | `lib/deepseek.js:1683-1690`、`lib/translation-progress.cjs` | [ ] |
-| A3 | 译文展示 | 对照 / 纯中文两种视图 | `public/app.js:6850-6857` | [ ] |
-| A4 | 改写 · 普通文章 | 49 行提示词 | `lib/deepseek.js:382-430` | [ ] |
-| A5 | 改写 · 论文 | 28 行提示词 | `lib/deepseek.js:443-470` | [ ] |
-| A6 | 改写 · Product Hunt | 官网优先，禁止编造 | `lib/deepseek.js:472-481` | [ ] |
-| A7 | 改写质量校验 | 中文长度、段落数、拒答检测 | `lib/deepseek.js:870-895` | [ ] |
-| A8 | AI 伴读对话 | 全文上下文 + 全部历史 | `lib/deepseek.js:1961-1965` | [ ] |
-| A9 | 12 条阅读任务提示词 | 六组各两条，见附录 | `public/app.js:103-146` | [ ] |
-| A10 | 自定义提示词 | 本地保存，最多 24 条 | `public/app.js:5768-5779` | [ ] |
-| A11 | 引用上下文 | 划线、点评、选中文本带进问题 | `public/app.js:6058-6094` | [ ] |
-| A12 | 模型接入 | 本地 magpie 单端点，固定模型 `deepseek-v4.1-flash`；不做多供应商和 OAuth | `public/app.js:1639-1798` | [ ] |
-| A13 | AI 结果缓存 | 内容哈希失效判断 | `lib/store.js:66-96` | [ ] |
+| A1 | 标题中文化 | 自动补译，批量送，后台跑，入库即排队 | `lib/deepseek.js:1539-1546`、`lib/title-jobs.js` | [x] |
+| A2 | 正文全文翻译 | 默认一次翻完；超模型输出上限才分块；缺块失败、断点续传 | `lib/deepseek.js:1683-1690`、`lib/translation-progress.cjs` | [x] |
+| A3 | 译文展示 | 对照 / 纯中文两种视图 | `public/app.js:6850-6857` | [x] |
+| A4 | 改写 · 普通文章 | 49 行提示词 | `lib/deepseek.js:382-430` | [x] |
+| A5 | 改写 · 论文 | 28 行提示词 | `lib/deepseek.js:443-470` | [x] |
+| A6 | 改写 · Product Hunt | 官网优先，禁止编造 | `lib/deepseek.js:472-481` | [x] |
+| A7 | 改写质量校验 | 中文长度、段落数、拒答检测 | `lib/deepseek.js:870-895` | [x] |
+| A8 | AI 伴读对话 | 全文上下文 + 全部历史 | `lib/deepseek.js:1961-1965` | [x] |
+| A9 | 12 条阅读任务提示词 | 六组各两条，见附录 | `public/app.js:103-146` | [x] |
+| A10 | 自定义提示词 | 本地保存，最多 24 条 | `public/app.js:5768-5779` | [x] |
+| A11 | 引用上下文 | 划线、点评、选中文本带进问题 | `public/app.js:6058-6094` | [x] |
+| A12 | 模型接入 | 本地 magpie 单端点，网关地址 / API key / 模型均可配置；不做多供应商和 OAuth | `public/app.js:1639-1798` | [x] |
+| A13 | AI 结果缓存 | 内容哈希失效判断 | `lib/store.js:66-96` | [x] |
 
 ### B. 内容源（7 项）
 
 | # | 功能 | 要点 | qmreader 参考 | 状态 |
 |---|---|---|---|---|
-| B1 | RSSHub 多实例 | 一个源多个候选地址，失败轮换 | `lib/fetcher.js:386-396` | [ ] |
-| B2 | Product Hunt 官网正文 | 抓产品官网，HTML → Jina → DuckDuckGo 三套兜底 | `lib/fetcher.js:2237-2325` | [ ] |
-| B3 | Hugging Face 论文卡片 | arXiv 链接、作者、摘要结构化 | `lib/fetcher.js:678-697` | [ ] |
-| B4 | 微信公众号目录 | 内置目录订阅 + 图片防盗链代理 | `lib/wechat-catalog.js`、`lib/wechat-images.js` | [ ] |
-| B5 | YouTube 内嵌播放 | 正文里出现 YouTube 链接就内嵌播放，不依赖特定源 | `public/app.js:9624-9646` | [ ] |
-| B6 | X News 源 | `xnews.qiaomu.ai/feed.xml`，源名保留原样 | `lib/sources.js:74-75` | [ ] |
-| B7 | 乔木博客源 | `blog.qiaomu.ai/feed.xml`，源名保留「乔木博客」 | `lib/sources.js:76-77` | [ ] |
+| B1 | RSSHub 多实例 | 一个源多个候选地址，失败轮换 | `lib/fetcher.js:386-396` | [x] |
+| B2 | Product Hunt 官网正文 | 抓产品官网，HTML → Jina → DuckDuckGo 三套兜底 | `lib/fetcher.js:2237-2325` | [x] |
+| B3 | Hugging Face 论文卡片 | arXiv 链接、作者、摘要结构化 | `lib/fetcher.js:678-697` | [x] |
+| B4 | 微信公众号目录 | 内置目录订阅 + 图片防盗链代理 | `lib/wechat-catalog.js`、`lib/wechat-images.js` | [x] |
+| B5 | YouTube 内嵌播放 | 正文里出现 YouTube 链接就内嵌播放，不依赖特定源 | `public/app.js:9624-9646` | [x] |
+| B6 | X News 源 | `xnews.qiaomu.ai/feed.xml`，源名保留原样 | `lib/sources.js:74-75` | [x] |
+| B7 | 乔木博客源 | `blog.qiaomu.ai/feed.xml`，源名保留「乔木博客」 | `lib/sources.js:76-77` | [x] |
 
 ### C. 界面与任务（6 项）
 
 | # | 功能 | 要点 | qmreader 参考 | 状态 |
 |---|---|---|---|---|
-| C1 | 四栏布局 | 侧栏 / 列表 / 阅读区 / AI 栏 | `Mac/MainWindow/MainWindowController.swift:1235,1254,1268,1345` | [ ] |
-| C2 | 原文 / 中文页签 | 阅读区顶部切换 | `public/index.html:328-331` | [ ] |
-| C3 | 翻译视图切换 | 对照 / 纯中文 | `public/app.js:6814-6819` | [ ] |
-| C4 | AI 改写队列 | 持久化、租约、重试 | `lib/store.js:433-461` | [ ] |
-| C5 | 模型失败重试 | 失败重试与退避；单模型下不做多模型路由 | `lib/ai-router.js` | [ ] |
-| C6 | 微信图片代理缓存 | 图片本地缓存 | `lib/wechat-images.js` | [ ] |
+| C1 | 四栏布局 | 侧栏 / 列表 / 阅读区 / AI 栏 | `Mac/MainWindow/MainWindowController.swift:1235,1254,1268,1345` | [x] |
+| C2 | 原文 / 中文页签 | 阅读区顶部切换 | `public/index.html:328-331` | [x] |
+| C3 | 翻译视图切换 | 对照 / 纯中文 | `public/app.js:6814-6819` | [x] |
+| C4 | AI 改写队列 | 持久化、租约、重试 | `lib/store.js:433-461` | [x] |
+| C5 | 模型失败重试 | 失败重试与退避；单模型下不做多模型路由 | `lib/ai-router.js` | [x] |
+| C6 | 微信图片代理缓存 | 图片本地缓存 | `lib/wechat-images.js` | [x] |
 
 ### D. 快捷键与阅读模式（3 项）
 
 | # | 功能 | 要点 | 现状 | 状态 |
 |---|---|---|---|---|
-| D1 | 沉浸阅读模式 | 隐藏侧栏和列表，正文全宽；Esc 退出 | NNW 没有 | [ ] |
-| D2 | J / K 上下篇 | 加进 `Shared/Resources/GlobalKeyboardShortcuts.plist` | NNW 没有 | [ ] |
-| D3 | 快捷键帮助页 | NNW 已有静态页 `Mac/Resources/KeyboardShortcuts/KeyboardShortcuts.html`，补上新键位 | 已有，需补内容 | [ ] |
+| D1 | 沉浸阅读模式 | 隐藏侧栏和列表，正文全宽；Esc 退出 | NNW 没有 | [x] |
+| D2 | J / K 上下篇 | 加进 `Shared/Resources/GlobalKeyboardShortcuts.plist` | NNW 没有 | [x] |
+| D3 | 快捷键帮助页 | NNW 已有静态页 `Mac/Resources/KeyboardShortcuts/KeyboardShortcuts.html`，补上新键位 | 已有，需补内容 | [x] |
 
 ## 不做
 
