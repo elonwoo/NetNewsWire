@@ -72,8 +72,8 @@ final class AIPreferencesViewController: NSViewController {
 
 		let grid = NSGridView(views: [
 			[makeRowLabel("网关地址"), baseURLField],
-			[makeRowLabel("模型"), modelRow],
-			[makeRowLabel("API key"), keyRow]
+			[makeRowLabel("API key"), keyRow],
+			[makeRowLabel("模型"), modelRow]
 		])
 		grid.rowSpacing = 8
 		grid.columnSpacing = 12
