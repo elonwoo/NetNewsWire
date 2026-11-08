@@ -384,11 +384,15 @@ private extension DetailWebViewController {
 			rendering = ArticleRenderer.articleHTML(article: article, extractedArticle: extractedArticle, theme: theme, routesThumbnailImages: routesThumbnailImages)
 		}
 
+		// Rewrite the article body only, right before it reaches the web view:
+		// WeChat images go through the app’s scheme handler and YouTube links
+		// become privacy-preserving embeds.
+		let body = YouTubeEmbedRewriter.rewriteHTML(WeChatImageRouter.rewriteHTML(rendering.html))
 		let substitutions = [
 			"title": rendering.title,
 			"baseURL": rendering.baseURL,
 			"style": rendering.style,
-			"body": rendering.html
+			"body": body
 		]
 
 		var html = try! MacroProcessor.renderedText(withTemplate: ArticleRenderer.page.html, substitutions: substitutions)

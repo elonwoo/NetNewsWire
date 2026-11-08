@@ -193,9 +193,11 @@ let appName = "NetNewsWire"
 			// Import default feeds.
 			DefaultFeedsImporter.importDefaultFeeds(account: localAccount)
 		}
+		BuiltInSourcesInstaller.installIfNeeded(account: localAccount)
 
 		updateColumnLayoutMenuItem()
 		updateStatusBarMenuItems()
+		installWeChatCatalogMenuItem()
 
 		if mainWindowController == nil {
 			let mainWindowController = createAndShowMainWindow()
@@ -240,6 +242,8 @@ let appName = "NetNewsWire"
 		ArticleThemesManager.shared.start()
 		NetworkMonitor.shared.start()
 		MemoryPressureMonitor.shared.start()
+		AIJobExecutor.shared.start()
+		Self.logger.info("AI job executor started")
 
 #if !SKIP_APP_GROUP_ACCESS
 		ExtensionContainersFile.shared.start()
@@ -474,6 +478,10 @@ let appName = "NetNewsWire"
 			return AccountManager.shared.activeAccounts.contains(where: { !$0.behaviors.contains(where: { $0 == .disallowOPMLImports }) })
 		}
 
+		if item.action == #selector(importWeChatCatalog(_:)) {
+			return !WeChatCatalogImporter.shared.isImporting
+		}
+
 		if item.action == #selector(addAppNews(_:)) {
 			return !isDisplayingSheet && !AccountManager.shared.anyAccountHasNetNewsWireNewsSubscription() && !AccountManager.shared.activeAccounts.isEmpty
 		}
@@ -667,6 +675,10 @@ let appName = "NetNewsWire"
 
 		importOPMLController = ImportOPMLWindowController()
 		importOPMLController?.runSheetOnWindow(windowController.window!)
+	}
+
+	@IBAction func importWeChatCatalog(_ sender: Any?) {
+		WeChatCatalogImporter.shared.startImport()
 	}
 
 	@IBAction func importNNW3FromFile(_ sender: Any?) {
@@ -883,6 +895,28 @@ extension AppDelegate {
 
 	@MainActor func updateColumnLayoutMenuItem() {
 		useColumnLayoutMenuItem?.state = AppDefaults.useColumnLayout ? .on : .off
+	}
+
+	/// Adds the WeChat catalog command to the File menu without editing the nib.
+	@MainActor private func installWeChatCatalogMenuItem() {
+		let action = #selector(importWeChatCatalog(_:))
+		guard let fileMenu = NSApp.mainMenu?.items
+			.compactMap(\.submenu)
+			.first(where: { menu in
+				menu.items.contains { $0.action == #selector(showAddFeedWindow(_:)) }
+			}),
+			!fileMenu.items.contains(where: { $0.action == action }) else {
+			return
+		}
+
+		let item = NSMenuItem(title: "导入微信公众号目录", action: action, keyEquivalent: "")
+		item.target = self
+
+		if let importIndex = fileMenu.items.firstIndex(where: { $0.action == #selector(importOPMLFromFile(_:)) }) {
+			fileMenu.insertItem(item, at: importIndex + 1)
+		} else {
+			fileMenu.addItem(item)
+		}
 	}
 
 	@MainActor func updateStatusBarMenuItems() {
