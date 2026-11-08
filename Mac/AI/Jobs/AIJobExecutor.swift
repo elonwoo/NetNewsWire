@@ -241,14 +241,14 @@ private extension AIJobExecutor {
 		}
 
 		guard isConfigured() else {
-			let message = "未配置模型 API key"
+			let message = AILocalization.string("Model API key is not configured")
 			try? await store.failJob(id: job.id, error: message, retryAt: nil)
 			postFailure(articleID: job.articleID, error: message)
 			return
 		}
 
 		guard let article = await resolver.article(for: job.articleID) else {
-			let message = "找不到文章"
+			let message = AILocalization.string("Article not found")
 			try? await store.failJob(id: job.id, error: message, retryAt: nil)
 			postFailure(articleID: job.articleID, error: message)
 			return

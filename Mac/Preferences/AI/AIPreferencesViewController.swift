@@ -14,7 +14,7 @@ final class AIPreferencesViewController: NSViewController {
 
 	private let baseURLField = NSTextField()
 	private let modelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-	private let fetchModelsButton = NSButton(title: "获取模型列表", target: nil, action: nil)
+	private let fetchModelsButton = NSButton(title: AILocalization.string("Fetch Models"), target: nil, action: nil)
 	private let apiKeyField = NSSecureTextField()
 	private let statusLabel = NSTextField(labelWithString: "")
 	private let messageLabel = NSTextField(wrappingLabelWithString: "")
@@ -32,10 +32,10 @@ final class AIPreferencesViewController: NSViewController {
 		let rootView = NSView(frame: NSRect(x: 0, y: 0, width: Self.preferredWidth, height: Self.preferredHeight))
 		view = rootView
 
-		let title = NSTextField(labelWithString: "AI 网关")
+		let title = NSTextField(labelWithString: AILocalization.string("AI Gateway"))
 		title.font = .systemFont(ofSize: 15, weight: .semibold)
 
-		let intro = NSTextField(wrappingLabelWithString: "译文、改写和对话都通过本地网关发送。填好网关地址和 API key 后，点「获取模型列表」选择模型。")
+		let intro = NSTextField(wrappingLabelWithString: AILocalization.string("Translation, rewriting, and chat all go through the local gateway. Enter the gateway address and API key, then choose a model with Fetch Models."))
 		intro.font = .systemFont(ofSize: 12)
 		intro.textColor = .secondaryLabelColor
 
@@ -56,7 +56,7 @@ final class AIPreferencesViewController: NSViewController {
 		modelRow.alignment = .centerY
 		modelRow.spacing = 8
 
-		apiKeyField.placeholderString = "网关 API key"
+		apiKeyField.placeholderString = AILocalization.string("Gateway API Key")
 		apiKeyField.font = .systemFont(ofSize: 13)
 		apiKeyField.setContentHuggingPriority(.defaultLow, for: .horizontal)
 		apiKeyField.widthAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true
@@ -71,9 +71,9 @@ final class AIPreferencesViewController: NSViewController {
 		keyRow.spacing = 10
 
 		let grid = NSGridView(views: [
-			[makeRowLabel("网关地址"), baseURLField],
+			[makeRowLabel(AILocalization.string("Gateway Address")), baseURLField],
 			[makeRowLabel("API key"), keyRow],
-			[makeRowLabel("模型"), modelRow]
+			[makeRowLabel(AILocalization.string("Model")), modelRow]
 		])
 		grid.rowSpacing = 8
 		grid.columnSpacing = 12
@@ -83,11 +83,11 @@ final class AIPreferencesViewController: NSViewController {
 		let separator = NSBox()
 		separator.boxType = .separator
 
-		let saveButton = NSButton(title: "保存", target: self, action: #selector(saveAPIKey))
+		let saveButton = NSButton(title: AILocalization.string("Save"), target: self, action: #selector(saveAPIKey))
 		saveButton.bezelStyle = .rounded
 		saveButton.keyEquivalent = "\r"
 
-		let clearButton = NSButton(title: "清除", target: self, action: #selector(clearAPIKey))
+		let clearButton = NSButton(title: AILocalization.string("Clear"), target: self, action: #selector(clearAPIKey))
 		clearButton.bezelStyle = .rounded
 
 		let buttonRow = NSStackView(views: [saveButton, clearButton])
@@ -148,13 +148,13 @@ private extension AIPreferencesViewController {
 
 	@objc func saveAPIKey() {
 		guard let baseURL = enteredBaseURL() else {
-			showMessage("网关地址无效，需要以 http:// 或 https:// 开头。", isError: true)
+			showMessage(AILocalization.string("The gateway address is invalid. It must start with http:// or https://."), isError: true)
 			return
 		}
 
 		let model = modelPopup.titleOfSelectedItem?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 		guard !model.isEmpty else {
-			showMessage("请先获取并选择模型。", isError: true)
+			showMessage(AILocalization.string("Fetch and select a model first."), isError: true)
 			return
 		}
 
@@ -166,7 +166,7 @@ private extension AIPreferencesViewController {
 			messageLabel.stringValue = ""
 			updateStatus()
 		} catch {
-			showMessage("保存失败：\(error.localizedDescription)", isError: true)
+			showMessage(AILocalization.format("Save failed: %@", error.localizedDescription), isError: true)
 		}
 	}
 
@@ -177,19 +177,19 @@ private extension AIPreferencesViewController {
 			messageLabel.stringValue = ""
 			updateStatus()
 		} catch {
-			showMessage("清除失败：\(error.localizedDescription)", isError: true)
+			showMessage(AILocalization.format("Clear failed: %@", error.localizedDescription), isError: true)
 		}
 	}
 
 	@objc func fetchModels() {
 		guard let baseURL = enteredBaseURL() else {
-			showMessage("网关地址无效，需要以 http:// 或 https:// 开头。", isError: true)
+			showMessage(AILocalization.string("The gateway address is invalid. It must start with http:// or https://."), isError: true)
 			return
 		}
 
 		let apiKey = apiKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
 		fetchModelsButton.isEnabled = false
-		showMessage("正在获取模型列表…", isError: false)
+		showMessage(AILocalization.string("Fetching models…"), isError: false)
 
 		Task { @MainActor in
 			defer {
@@ -198,13 +198,13 @@ private extension AIPreferencesViewController {
 			do {
 				let models = try await AIEnvironment.shared.fetchModelList(baseURL: baseURL, apiKey: apiKey.isEmpty ? nil : apiKey)
 				guard !models.isEmpty else {
-					self.showMessage("网关没有返回任何模型。", isError: true)
+					self.showMessage(AILocalization.string("The gateway returned no models."), isError: true)
 					return
 				}
 				self.populateModels(models, selecting: self.modelPopup.titleOfSelectedItem)
-				self.showMessage("已获取 \(models.count) 个模型。", isError: false)
+				self.showMessage(AILocalization.format("Fetched %lld models.", models.count), isError: false)
 			} catch {
-				self.showMessage("获取失败：\(error.localizedDescription)", isError: true)
+				self.showMessage(AILocalization.format("Fetch failed: %@", error.localizedDescription), isError: true)
 			}
 		}
 	}
@@ -257,15 +257,15 @@ private extension AIPreferencesViewController {
 
 	func updateStatus() {
 		if AIEnvironment.shared.hasAPIKey {
-			statusLabel.stringValue = "已配置"
+			statusLabel.stringValue = AILocalization.string("Configured")
 			statusLabel.textColor = .systemGreen
 			// The stored key never goes back into the field, so the placeholder
 			// carries the masked hint instead. Typing replaces it on save.
-			apiKeyField.placeholderString = "••••••••••••（已保存）"
+			apiKeyField.placeholderString = AILocalization.string("•••••••••••• (Saved)")
 		} else {
-			statusLabel.stringValue = "未配置"
+			statusLabel.stringValue = AILocalization.string("Not Configured")
 			statusLabel.textColor = .secondaryLabelColor
-			apiKeyField.placeholderString = "网关 API key"
+			apiKeyField.placeholderString = AILocalization.string("Gateway API Key")
 		}
 	}
 

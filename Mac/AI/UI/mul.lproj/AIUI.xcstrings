@@ -1,0 +1,1338 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "AI Chat" : {
+      "comment" : "AI chat pane header",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI 对话"
+          }
+        }
+      }
+    },
+    "AI Chat Panel" : {
+      "comment" : "AI chat pane menu and toolbar",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI 对话栏"
+          }
+        }
+      }
+    },
+    "Hide AI Chat Panel" : {
+      "comment" : "AI chat pane context menu",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "隐藏 AI 对话栏"
+          }
+        }
+      }
+    },
+    "Show AI Chat Panel" : {
+      "comment" : "AI chat pane context menu",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示 AI 对话栏"
+          }
+        }
+      }
+    },
+    "No Article Selected" : {
+      "comment" : "AI chat article subtitle",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未选择文章"
+          }
+        }
+      }
+    },
+    "Quote Selected Text" : {
+      "comment" : "AI chat quote button",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "引用选中文本"
+          }
+        }
+      }
+    },
+    "Send" : {
+      "comment" : "AI chat send button",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发送"
+          }
+        }
+      }
+    },
+    "Failed to load conversation: %@" : {
+      "comment" : "AI chat error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读取对话失败：%@"
+          }
+        }
+      }
+    },
+    "Select an article first." : {
+      "comment" : "AI chat error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请先选择一篇文章。"
+          }
+        }
+      }
+    },
+    "Failed to send: %@" : {
+      "comment" : "AI chat error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "发送失败：%@"
+          }
+        }
+      }
+    },
+    "Choose a reading task below, or type a question to start." : {
+      "comment" : "AI chat empty hint",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择下方的阅读任务，或输入问题开始对话。"
+          }
+        }
+      }
+    },
+    "Thinking…" : {
+      "comment" : "AI chat status",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在思考…"
+          }
+        }
+      }
+    },
+    "Selected text is not available right now." : {
+      "comment" : "AI chat error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前无法读取选中文本。"
+          }
+        }
+      }
+    },
+    "No text is selected in the reading area." : {
+      "comment" : "AI chat error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "阅读区没有选中文本。"
+          }
+        }
+      }
+    },
+    "New Custom Prompt" : {
+      "comment" : "AI custom prompt alert title",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新增自定义提示词"
+          }
+        }
+      }
+    },
+    "Saved prompts appear in the Custom group, up to %lld." : {
+      "comment" : "AI custom prompt alert message",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保存后出现在「自定义」分组，最多 %lld 条。"
+          }
+        }
+      }
+    },
+    "Enter a prompt" : {
+      "comment" : "AI custom prompt field placeholder",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "输入提示词"
+          }
+        }
+      }
+    },
+    "Save" : {
+      "comment" : "Save button",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保存"
+          }
+        }
+      }
+    },
+    "Cancel" : {
+      "comment" : "Cancel button",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "取消"
+          }
+        }
+      }
+    },
+    "You have reached the custom prompt limit (%lld)." : {
+      "comment" : "AI custom prompt limit error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自定义提示词已达上限（%lld 条）。"
+          }
+        }
+      }
+    },
+    "The prompt is empty or already exists." : {
+      "comment" : "AI custom prompt error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "提示词为空或已存在。"
+          }
+        }
+      }
+    },
+    "Custom" : {
+      "comment" : "AI task group header",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "自定义"
+          }
+        }
+      }
+    },
+    "No custom prompts yet." : {
+      "comment" : "AI task empty state",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还没有自定义提示词。"
+          }
+        }
+      }
+    },
+    "Delete This Prompt" : {
+      "comment" : "AI custom prompt context menu",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "删除此提示词"
+          }
+        }
+      }
+    },
+    "Add Custom Prompt" : {
+      "comment" : "AI custom prompt add button tooltip",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "新增自定义提示词"
+          }
+        }
+      }
+    },
+    "Understanding" : {
+      "comment" : "AI reading task group",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "理解"
+          }
+        }
+      }
+    },
+    "Verification" : {
+      "comment" : "AI reading task group",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "核查"
+          }
+        }
+      }
+    },
+    "Counterargument" : {
+      "comment" : "AI reading task group",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "反驳"
+          }
+        }
+      }
+    },
+    "Action" : {
+      "comment" : "AI reading task group",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "行动"
+          }
+        }
+      }
+    },
+    "Writing" : {
+      "comment" : "AI reading task group",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "写作"
+          }
+        }
+      }
+    },
+    "Further Reading" : {
+      "comment" : "AI reading task group",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "延伸"
+          }
+        }
+      }
+    },
+    "Summarize Key Points" : {
+      "comment" : "AI reading task label",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "总结要点"
+          }
+        }
+      }
+    },
+    "Break Down the Argument" : {
+      "comment" : "AI reading task label",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "结构拆解"
+          }
+        }
+      }
+    },
+    "Fact Checklist" : {
+      "comment" : "AI reading task label",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "事实清单"
+          }
+        }
+      }
+    },
+    "Points to Verify" : {
+      "comment" : "AI reading task label",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "待验证点"
+          }
+        }
+      }
+    },
+    "Opposing View" : {
+      "comment" : "AI reading task label",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "反方观点"
+          }
+        }
+      }
+    },
+    "Test the Premises" : {
+      "comment" : "AI reading task label",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "前提测试"
+          }
+        }
+      }
+    },
+    "Action Suggestions" : {
+      "comment" : "AI reading task label",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "行动建议"
+          }
+        }
+      }
+    },
+    "Product Opportunities" : {
+      "comment" : "AI reading task label",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "产品机会"
+          }
+        }
+      }
+    },
+    "Share Copy" : {
+      "comment" : "AI reading task label",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "分享文案"
+          }
+        }
+      }
+    },
+    "Content Angles" : {
+      "comment" : "AI reading task label",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选题角度"
+          }
+        }
+      }
+    },
+    "Further Reading Suggestions" : {
+      "comment" : "AI reading task label",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "延伸阅读"
+          }
+        }
+      }
+    },
+    "Related Concepts" : {
+      "comment" : "AI reading task label",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关联概念"
+          }
+        }
+      }
+    },
+    "Side by Side" : {
+      "comment" : "Translation view mode",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "对照"
+          }
+        }
+      }
+    },
+    "Chinese Only" : {
+      "comment" : "Translation view mode",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "纯中文"
+          }
+        }
+      }
+    },
+    "No Chinese translation yet" : {
+      "comment" : "Translation empty state",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "还没有中文译文"
+          }
+        }
+      }
+    },
+    "Loading translation" : {
+      "comment" : "Translation loading state",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在读取译文"
+          }
+        }
+      }
+    },
+    "Failed to load translation: %@" : {
+      "comment" : "Translation error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读取译文失败：%@"
+          }
+        }
+      }
+    },
+    "Translate" : {
+      "comment" : "Translate button",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "翻译"
+          }
+        }
+      }
+    },
+    "Retry" : {
+      "comment" : "Retry button",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重试"
+          }
+        }
+      }
+    },
+    "Select an article to see its Chinese translation" : {
+      "comment" : "Translation empty state",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择一篇文章后可查看中文译文"
+          }
+        }
+      }
+    },
+    "Translation submitted. It will refresh when ready." : {
+      "comment" : "Translation submitted state",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "翻译任务已提交，完成后会自动刷新"
+          }
+        }
+      }
+    },
+    "Failed to submit translation: %@" : {
+      "comment" : "Translation error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "提交翻译任务失败：%@"
+          }
+        }
+      }
+    },
+    "The translation is empty." : {
+      "comment" : "Translation empty HTML body",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正文译文为空。"
+          }
+        }
+      }
+    },
+    "Paper Analysis" : {
+      "comment" : "Rewrite tab title for papers",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "论文解读"
+          }
+        }
+      }
+    },
+    "Chinese Rewrite" : {
+      "comment" : "Rewrite tab title",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "中文改写"
+          }
+        }
+      }
+    },
+    "Loading rewrite" : {
+      "comment" : "Rewrite loading state",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在读取改写"
+          }
+        }
+      }
+    },
+    "Failed to load rewrite: %@" : {
+      "comment" : "Rewrite error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "读取改写失败：%@"
+          }
+        }
+      }
+    },
+    "Rewrite" : {
+      "comment" : "Rewrite button",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "重写"
+          }
+        }
+      }
+    },
+    "Generate" : {
+      "comment" : "Generate button",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "生成"
+          }
+        }
+      }
+    },
+    "Select an article to see its Chinese rewrite" : {
+      "comment" : "Rewrite empty state",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "选择一篇文章后可查看中文改写"
+          }
+        }
+      }
+    },
+    "This paper has no AI analysis yet." : {
+      "comment" : "Rewrite empty state for papers",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这篇论文还没有 AI 解读。"
+          }
+        }
+      }
+    },
+    "This article has no Chinese rewrite yet." : {
+      "comment" : "Rewrite empty state",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这篇文章还没有中文改写。"
+          }
+        }
+      }
+    },
+    "Generate Analysis" : {
+      "comment" : "Generate analysis button",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "生成解读"
+          }
+        }
+      }
+    },
+    "Analysis submitted. It will refresh when ready." : {
+      "comment" : "Analysis submitted state",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "解读任务已提交，完成后会自动刷新"
+          }
+        }
+      }
+    },
+    "Rewrite submitted. It will refresh when ready." : {
+      "comment" : "Rewrite submitted state",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "改写任务已提交，完成后会自动刷新"
+          }
+        }
+      }
+    },
+    "Update" : {
+      "comment" : "Update rewrite button",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "更新"
+          }
+        }
+      }
+    },
+    "Failed to submit rewrite: %@" : {
+      "comment" : "Rewrite error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "提交改写任务失败：%@"
+          }
+        }
+      }
+    },
+    "The rewrite timed out. Try again later." : {
+      "comment" : "Rewrite timeout error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "改写任务超时，请稍后重试。"
+          }
+        }
+      }
+    },
+    "Task failed: %@" : {
+      "comment" : "Job failure error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "任务失败：%@"
+          }
+        }
+      }
+    },
+    "Unknown Error" : {
+      "comment" : "Unknown error fallback",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未知错误"
+          }
+        }
+      }
+    },
+    "Original" : {
+      "comment" : "Detail pane tab",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "原文"
+          }
+        }
+      }
+    },
+    "Chinese Translation" : {
+      "comment" : "Detail pane tab",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "中文翻译"
+          }
+        }
+      }
+    },
+    "The rewrite is empty." : {
+      "comment" : "Rewrite empty HTML body",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "改写内容为空。"
+          }
+        }
+      }
+    },
+    "Fetch Models" : {
+      "comment" : "AI preferences button",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "获取模型列表"
+          }
+        }
+      }
+    },
+    "AI Gateway" : {
+      "comment" : "AI preferences title",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "AI 网关"
+          }
+        }
+      }
+    },
+    "Translation, rewriting, and chat all go through the local gateway. Enter the gateway address and API key, then choose a model with Fetch Models." : {
+      "comment" : "AI preferences introduction",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "译文、改写和对话都通过本地网关发送。填好网关地址和 API key 后，点「获取模型列表」选择模型。"
+          }
+        }
+      }
+    },
+    "Gateway API Key" : {
+      "comment" : "AI preferences placeholder",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "网关 API key"
+          }
+        }
+      }
+    },
+    "Gateway Address" : {
+      "comment" : "AI preferences row label",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "网关地址"
+          }
+        }
+      }
+    },
+    "Model" : {
+      "comment" : "AI preferences row label",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型"
+          }
+        }
+      }
+    },
+    "Clear" : {
+      "comment" : "Clear button",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清除"
+          }
+        }
+      }
+    },
+    "The gateway address is invalid. It must start with http:// or https://." : {
+      "comment" : "AI preferences error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "网关地址无效，需要以 http:// 或 https:// 开头。"
+          }
+        }
+      }
+    },
+    "Fetch and select a model first." : {
+      "comment" : "AI preferences error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "请先获取并选择模型。"
+          }
+        }
+      }
+    },
+    "Save failed: %@" : {
+      "comment" : "AI preferences error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "保存失败：%@"
+          }
+        }
+      }
+    },
+    "Clear failed: %@" : {
+      "comment" : "AI preferences error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清除失败：%@"
+          }
+        }
+      }
+    },
+    "Fetching models…" : {
+      "comment" : "AI preferences status",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在获取模型列表…"
+          }
+        }
+      }
+    },
+    "The gateway returned no models." : {
+      "comment" : "AI preferences error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "网关没有返回任何模型。"
+          }
+        }
+      }
+    },
+    "Fetched %lld models." : {
+      "comment" : "AI preferences status",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已获取 %lld 个模型。"
+          }
+        }
+      }
+    },
+    "Fetch failed: %@" : {
+      "comment" : "AI preferences error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "获取失败：%@"
+          }
+        }
+      }
+    },
+    "Configured" : {
+      "comment" : "API key status",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已配置"
+          }
+        }
+      }
+    },
+    "•••••••••••• (Saved)" : {
+      "comment" : "API key placeholder when saved",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "••••••••••••（已保存）"
+          }
+        }
+      }
+    },
+    "Not Configured" : {
+      "comment" : "API key status",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未配置"
+          }
+        }
+      }
+    },
+    "Article content is empty" : {
+      "comment" : "AI job error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "文章内容为空"
+          }
+        }
+      }
+    },
+    "Invalid model response format: %@" : {
+      "comment" : "AI job error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型返回格式无效：%@"
+          }
+        }
+      }
+    },
+    "Translation is missing blocks: %@" : {
+      "comment" : "AI job error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "译文缺少块：%@"
+          }
+        }
+      }
+    },
+    "Rewrite quality check failed: %@" : {
+      "comment" : "AI job error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "改写质量校验失败：%@"
+          }
+        }
+      }
+    },
+    "Invalid model response" : {
+      "comment" : "AI job error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型响应无效"
+          }
+        }
+      }
+    },
+    "Model request failed (HTTP %lld)" : {
+      "comment" : "AI job error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型请求失败（HTTP %lld）"
+          }
+        }
+      }
+    },
+    "Model response is missing content" : {
+      "comment" : "AI job error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型响应缺少内容"
+          }
+        }
+      }
+    },
+    "Model returned empty content" : {
+      "comment" : "AI job error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型返回空内容"
+          }
+        }
+      }
+    },
+    "Model output was truncated" : {
+      "comment" : "AI job error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型输出被截断"
+          }
+        }
+      }
+    },
+    "Import WeChat Official Accounts" : {
+      "comment" : "File menu command",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "导入微信公众号目录"
+          }
+        }
+      }
+    },
+    "Product Hunt" : {
+      "comment" : "Built-in source display name",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Product Hunt"
+          }
+        }
+      }
+    },
+    "Hugging Face Daily Papers" : {
+      "comment" : "Built-in source display name",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hugging Face 每日论文"
+          }
+        }
+      }
+    },
+    "WeChat Official Accounts" : {
+      "comment" : "Built-in source display name",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "微信公众号目录"
+          }
+        }
+      }
+    },
+    "Model API key is not configured" : {
+      "comment" : "AI job error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "未配置模型 API key"
+          }
+        }
+      }
+    },
+    "Article not found" : {
+      "comment" : "AI job error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "找不到文章"
+          }
+        }
+      }
+    },
+    "The model refused to answer" : {
+      "comment" : "Rewrite quality error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "模型返回了拒答"
+          }
+        }
+      }
+    },
+    "Chinese body is too short (%lld/%lld)" : {
+      "comment" : "Rewrite quality error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "中文正文过短（%lld/%lld）"
+          }
+        }
+      }
+    },
+    "Not enough body paragraphs (%lld/%lld)" : {
+      "comment" : "Rewrite quality error",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正文段落不足（%lld/%lld）"
+          }
+        }
+      }
+    },
+    "WeChat" : {
+      "comment" : "WeChat catalog import folder",
+      "extractionState" : "manual",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "微信公众号"
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.2"
+}

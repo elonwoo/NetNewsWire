@@ -24,7 +24,7 @@ final class AIRewriteViewController: NSViewController {
 
 	/// The tab label changes for paper articles.
 	var tabTitle: String {
-		isPaper ? "论文解读" : "中文改写"
+		isPaper ? AILocalization.string("Paper Analysis") : AILocalization.string("Chinese Rewrite")
 	}
 
 	private enum ContentState {
@@ -44,7 +44,7 @@ final class AIRewriteViewController: NSViewController {
 	private let generateButton = NSButton()
 	private let loadingView = NSStackView()
 	private let loadingIndicator = NSProgressIndicator()
-	private let loadingLabel = NSTextField(labelWithString: "正在读取改写")
+	private let loadingLabel = NSTextField(labelWithString: AILocalization.string("Loading rewrite"))
 	private let errorView = NSStackView()
 	private let errorLabel = NSTextField(wrappingLabelWithString: "")
 	private let retryButton = NSButton()
@@ -144,7 +144,7 @@ final class AIRewriteViewController: NSViewController {
 				guard self.loadToken == token else {
 					return
 				}
-				self.state = .error("读取改写失败：\(error.localizedDescription)")
+				self.state = .error(AILocalization.format("Failed to load rewrite: %@", error.localizedDescription))
 				self.updateContent()
 			}
 		}
@@ -160,7 +160,7 @@ private extension AIRewriteViewController {
 		headerBar.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
 
 		actionButton.translatesAutoresizingMaskIntoConstraints = false
-		actionButton.title = "重写"
+		actionButton.title = AILocalization.string("Rewrite")
 		actionButton.bezelStyle = .rounded
 		actionButton.controlSize = .small
 		actionButton.target = self
@@ -186,7 +186,7 @@ private extension AIRewriteViewController {
 		emptyLabel.textColor = .secondaryLabelColor
 		emptyLabel.alignment = .center
 
-		generateButton.title = "生成"
+		generateButton.title = AILocalization.string("Generate")
 		generateButton.bezelStyle = .rounded
 		generateButton.target = self
 		generateButton.action = #selector(generateButtonClicked)
@@ -211,7 +211,7 @@ private extension AIRewriteViewController {
 		errorLabel.textColor = .systemRed
 		errorLabel.alignment = .center
 		errorLabel.maximumNumberOfLines = 4
-		retryButton.title = "重试"
+		retryButton.title = AILocalization.string("Retry")
 		retryButton.bezelStyle = .rounded
 		retryButton.target = self
 		retryButton.action = #selector(retryButtonClicked)
@@ -257,26 +257,30 @@ private extension AIRewriteViewController {
 
 		switch state {
 		case .noArticle:
-			emptyLabel.stringValue = "选择一篇文章后可查看中文改写"
+			emptyLabel.stringValue = AILocalization.string("Select an article to see its Chinese rewrite")
 			generateButton.isHidden = true
 			emptyView.isHidden = false
 		case .reading:
-			loadingLabel.stringValue = "正在读取改写"
+			loadingLabel.stringValue = AILocalization.string("Loading rewrite")
 			loadingIndicator.startAnimation(nil)
 			loadingView.isHidden = false
 		case .empty:
-			emptyLabel.stringValue = isPaper ? "这篇论文还没有 AI 解读。" : "这篇文章还没有中文改写。"
-			generateButton.title = isPaper ? "生成解读" : "生成"
+			emptyLabel.stringValue = isPaper
+				? AILocalization.string("This paper has no AI analysis yet.")
+				: AILocalization.string("This article has no Chinese rewrite yet.")
+			generateButton.title = isPaper ? AILocalization.string("Generate Analysis") : AILocalization.string("Generate")
 			generateButton.isHidden = false
 			emptyView.isHidden = false
 		case .generating:
-			loadingLabel.stringValue = isPaper ? "解读任务已提交，完成后会自动刷新" : "改写任务已提交，完成后会自动刷新"
+			loadingLabel.stringValue = isPaper
+				? AILocalization.string("Analysis submitted. It will refresh when ready.")
+				: AILocalization.string("Rewrite submitted. It will refresh when ready.")
 			loadingIndicator.startAnimation(nil)
 			loadingView.isHidden = false
 		case .rewrite(let rewrite):
 			headerBar.isHidden = false
 			webView.isHidden = false
-			actionButton.title = isStale(rewrite) ? "更新" : "重写"
+			actionButton.title = isStale(rewrite) ? AILocalization.string("Update") : AILocalization.string("Rewrite")
 			render(rewrite)
 		case .error(let message):
 			errorLabel.stringValue = message
@@ -332,7 +336,7 @@ private extension AIRewriteViewController {
 				try await AIEnvironment.shared.queue.enqueue(job)
 				self.startPolling(for: articleID)
 			} catch {
-				self.state = .error("提交改写任务失败：\(error.localizedDescription)")
+				self.state = .error(AILocalization.format("Failed to submit rewrite: %@", error.localizedDescription))
 				self.updateContent()
 			}
 		}
@@ -367,7 +371,7 @@ private extension AIRewriteViewController {
 			guard !Task.isCancelled, let self, self.article?.articleID == articleID, case .generating = self.state else {
 				return
 			}
-			self.state = .error("改写任务超时，请稍后重试。")
+			self.state = .error(AILocalization.string("The rewrite timed out. Try again later."))
 			self.updateContent()
 		}
 	}
@@ -397,7 +401,7 @@ private extension AIRewriteViewController {
 				return
 			}
 			self.pollTask?.cancel()
-			self.state = .error("任务失败：\(message ?? "未知错误")")
+			self.state = .error(AILocalization.format("Task failed: %@", message ?? AILocalization.string("Unknown Error")))
 			self.updateContent()
 		}
 	}

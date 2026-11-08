@@ -20,6 +20,30 @@ final class AITaskListView: NSView {
 	private var taskPrompts: [String] = []
 	private var customPrompts: [String] = []
 
+	/// Maps the Chinese group and label names defined in `AIPrompts.readingTasks`
+	/// to their English string-table keys. The prompts themselves stay unchanged
+	/// because they are sent to the model.
+	private static let taskDisplayKeys: [String: String] = [
+		"理解": "Understanding",
+		"核查": "Verification",
+		"反驳": "Counterargument",
+		"行动": "Action",
+		"写作": "Writing",
+		"延伸": "Further Reading",
+		"总结要点": "Summarize Key Points",
+		"结构拆解": "Break Down the Argument",
+		"事实清单": "Fact Checklist",
+		"待验证点": "Points to Verify",
+		"反方观点": "Opposing View",
+		"前提测试": "Test the Premises",
+		"行动建议": "Action Suggestions",
+		"产品机会": "Product Opportunities",
+		"分享文案": "Share Copy",
+		"选题角度": "Content Angles",
+		"延伸阅读": "Further Reading Suggestions",
+		"关联概念": "Related Concepts"
+	]
+
 	override init(frame frameRect: NSRect) {
 		super.init(frame: frameRect)
 		setup()
@@ -93,13 +117,13 @@ private extension AITaskListView {
 		}
 
 		for group in groupOrder {
-			addFullWidth(makeGroupHeader(group, showsAddButton: false))
+			addFullWidth(makeGroupHeader(displayName(for: group), showsAddButton: false))
 			let row = NSStackView()
 			row.orientation = .horizontal
 			row.alignment = .centerY
 			row.spacing = 6
 			for task in groupedTasks[group] ?? [] {
-				let button = makeButton(title: task.label, action: #selector(taskButtonClicked(_:)), tag: taskPrompts.count)
+				let button = makeButton(title: displayName(for: task.label), action: #selector(taskButtonClicked(_:)), tag: taskPrompts.count)
 				taskPrompts.append(task.prompt)
 				row.addArrangedSubview(button)
 			}
@@ -107,9 +131,9 @@ private extension AITaskListView {
 			addFullWidth(row)
 		}
 
-		addFullWidth(makeGroupHeader("自定义", showsAddButton: true))
+		addFullWidth(makeGroupHeader(AILocalization.string("Custom"), showsAddButton: true))
 		if customPrompts.isEmpty {
-			let label = NSTextField(wrappingLabelWithString: "还没有自定义提示词。")
+			let label = NSTextField(wrappingLabelWithString: AILocalization.string("No custom prompts yet."))
 			label.font = .systemFont(ofSize: 11)
 			label.textColor = .tertiaryLabelColor
 			addFullWidth(label)
@@ -119,7 +143,7 @@ private extension AITaskListView {
 				button.alignment = .left
 
 				let menu = NSMenu()
-				let deleteItem = NSMenuItem(title: "删除此提示词", action: #selector(deleteCustomPromptMenuItem(_:)), keyEquivalent: "")
+				let deleteItem = NSMenuItem(title: AILocalization.string("Delete This Prompt"), action: #selector(deleteCustomPromptMenuItem(_:)), keyEquivalent: "")
 				deleteItem.target = self
 				deleteItem.tag = index
 				menu.addItem(deleteItem)
@@ -130,6 +154,13 @@ private extension AITaskListView {
 		}
 
 		stack.layoutSubtreeIfNeeded()
+	}
+
+	func displayName(for name: String) -> String {
+		guard let key = Self.taskDisplayKeys[name] else {
+			return name
+		}
+		return AILocalization.string(key)
 	}
 
 	func addFullWidth(_ view: NSView) {
@@ -150,7 +181,7 @@ private extension AITaskListView {
 		addButton.bezelStyle = .inline
 		addButton.isBordered = false
 		addButton.font = .systemFont(ofSize: 13, weight: .semibold)
-		addButton.toolTip = "新增自定义提示词"
+		addButton.toolTip = AILocalization.string("Add Custom Prompt")
 
 		let row = NSStackView(views: [label, NSView(), addButton])
 		row.orientation = .horizontal
