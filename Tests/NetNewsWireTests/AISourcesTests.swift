@@ -324,8 +324,8 @@ final class AISourcesTests: XCTestCase {
 		XCTAssertTrue(names.contains("X News"))
 		XCTAssertTrue(names.contains("乔木博客"))
 		XCTAssertTrue(names.contains("Product Hunt"))
-		XCTAssertTrue(names.contains("Hugging Face 每日论文"))
-		XCTAssertTrue(names.contains("微信公众号目录"))
+		XCTAssertTrue(names.contains(AILocalization.string("Hugging Face Daily Papers")))
+		XCTAssertTrue(names.contains(AILocalization.string("WeChat Official Accounts")))
 
 		let xNews = try XCTUnwrap(SourceCatalog.source(id: "x-news"))
 		guard case .directFeed(let xNewsURL) = xNews.endpoint else {

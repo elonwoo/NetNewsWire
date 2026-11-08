@@ -19,15 +19,15 @@ final class AIChatViewController: NSViewController {
 			guard article?.articleID != oldValue?.articleID else {
 				return
 			}
-			articleTitleLabel.stringValue = article?.title ?? "未选择文章"
+			articleTitleLabel.stringValue = article?.title ?? AILocalization.string("No Article Selected")
 			resetConversation()
 			loadMessages()
 			updateInputState()
 		}
 	}
 
-	private let headerTitleLabel = NSTextField(labelWithString: "AI 对话")
-	private let articleTitleLabel = NSTextField(labelWithString: "未选择文章")
+	private let headerTitleLabel = NSTextField(labelWithString: AILocalization.string("AI Chat"))
+	private let articleTitleLabel = NSTextField(labelWithString: AILocalization.string("No Article Selected"))
 	private let quoteButton = NSButton()
 	private let messagesScrollView = NSScrollView()
 	private let messagesDocumentView = AIFlippedView()
@@ -98,11 +98,11 @@ private extension AIChatViewController {
 		titleStack.alignment = .leading
 		titleStack.spacing = 2
 
-		quoteButton.image = NSImage(systemSymbolName: "text.quote", accessibilityDescription: "引用选中文本")
+		quoteButton.image = NSImage(systemSymbolName: "text.quote", accessibilityDescription: AILocalization.string("Quote Selected Text"))
 		quoteButton.bezelStyle = .texturedRounded
 		quoteButton.isBordered = false
 		quoteButton.imagePosition = .imageOnly
-		quoteButton.toolTip = "引用选中文本"
+		quoteButton.toolTip = AILocalization.string("Quote Selected Text")
 		quoteButton.target = self
 		quoteButton.action = #selector(quoteSelection)
 
@@ -191,7 +191,7 @@ private extension AIChatViewController {
 		inputScrollView.documentView = inputTextView
 		inputScrollView.heightAnchor.constraint(equalToConstant: 62).isActive = true
 
-		sendButton.title = "发送"
+		sendButton.title = AILocalization.string("Send")
 		sendButton.bezelStyle = .rounded
 		sendButton.target = self
 		sendButton.action = #selector(sendFromInput)
@@ -251,7 +251,7 @@ private extension AIChatViewController {
 				guard self.loadToken == token else {
 					return
 				}
-				self.showError("读取对话失败：\(error.localizedDescription)")
+				self.showError(AILocalization.format("Failed to load conversation: %@", error.localizedDescription))
 			}
 		}
 	}
@@ -261,7 +261,7 @@ private extension AIChatViewController {
 			return
 		}
 		guard let article else {
-			showError("请先选择一篇文章。")
+			showError(AILocalization.string("Select an article first."))
 			return
 		}
 
@@ -304,7 +304,7 @@ private extension AIChatViewController {
 				}
 				self.isSending = false
 				self.updateSendingState()
-				self.showError("发送失败：\(error.localizedDescription)")
+				self.showError(AILocalization.format("Failed to send: %@", error.localizedDescription))
 			}
 		}
 	}
@@ -321,7 +321,7 @@ private extension AIChatViewController {
 			guard article?.articleID == articleID else {
 				return
 			}
-			showError("读取对话失败：\(error.localizedDescription)")
+			showError(AILocalization.format("Failed to load conversation: %@", error.localizedDescription))
 		}
 	}
 
@@ -332,7 +332,7 @@ private extension AIChatViewController {
 		}
 
 		if storedMessages.isEmpty, pendingUserMessage == nil {
-			let hint = NSTextField(wrappingLabelWithString: "选择下方的阅读任务，或输入问题开始对话。")
+			let hint = NSTextField(wrappingLabelWithString: AILocalization.string("Choose a reading task below, or type a question to start."))
 			hint.font = .systemFont(ofSize: 12)
 			hint.textColor = .secondaryLabelColor
 			hint.alignment = .center
@@ -368,7 +368,7 @@ private extension AIChatViewController {
 
 	func updateSendingState() {
 		sendButton.isEnabled = !isSending && article != nil
-		statusLabel.stringValue = isSending ? "正在思考…" : ""
+		statusLabel.stringValue = isSending ? AILocalization.string("Thinking…") : ""
 		statusLabel.isHidden = !isSending
 	}
 
@@ -395,7 +395,7 @@ private extension AIChatViewController {
 
 	@objc func quoteSelection() {
 		guard let selectedTextProvider else {
-			showError("当前无法读取选中文本。")
+			showError(AILocalization.string("Selected text is not available right now."))
 			return
 		}
 		selectedTextProvider { [weak self] text in
@@ -404,7 +404,7 @@ private extension AIChatViewController {
 					return
 				}
 				guard let text, !text.isEmpty else {
-					self.showError("阅读区没有选中文本。")
+					self.showError(AILocalization.string("No text is selected in the reading area."))
 					return
 				}
 				self.insertQuote(text)
@@ -427,13 +427,13 @@ private extension AIChatViewController {
 
 	func promptForCustomPrompt() {
 		let alert = NSAlert()
-		alert.messageText = "新增自定义提示词"
-		alert.informativeText = "保存后出现在「自定义」分组，最多 \(AICustomPromptStore.maximumCount) 条。"
+		alert.messageText = AILocalization.string("New Custom Prompt")
+		alert.informativeText = AILocalization.format("Saved prompts appear in the Custom group, up to %lld.", AICustomPromptStore.maximumCount)
 		let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
-		field.placeholderString = "输入提示词"
+		field.placeholderString = AILocalization.string("Enter a prompt")
 		alert.accessoryView = field
-		alert.addButton(withTitle: "保存")
-		alert.addButton(withTitle: "取消")
+		alert.addButton(withTitle: AILocalization.string("Save"))
+		alert.addButton(withTitle: AILocalization.string("Cancel"))
 
 		guard alert.runModal() == .alertFirstButtonReturn else {
 			return
@@ -444,8 +444,8 @@ private extension AIChatViewController {
 	func addCustomPrompt(_ text: String) {
 		guard customPromptStore.add(text) else {
 			let message = customPromptStore.prompts.count >= AICustomPromptStore.maximumCount
-				? "自定义提示词已达上限（\(AICustomPromptStore.maximumCount) 条）。"
-				: "提示词为空或已存在。"
+				? AILocalization.format("You have reached the custom prompt limit (%lld).", AICustomPromptStore.maximumCount)
+				: AILocalization.string("The prompt is empty or already exists.")
 			showError(message)
 			return
 		}
