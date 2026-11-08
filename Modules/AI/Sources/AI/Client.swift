@@ -88,6 +88,27 @@ public final class OpenAIChatClient: AIClient, Sendable {
 		return content
 	}
 
+	/// Fetches the model IDs the gateway exposes at `GET {baseURL}/models`.
+	public func availableModels() async throws -> [String] {
+		var request = URLRequest(url: config.baseURL.appendingPathComponent("models"))
+		request.httpMethod = "GET"
+		if let apiKey = config.apiKey, !apiKey.isEmpty {
+			request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+		}
+
+		let (data, response) = try await session.data(for: request)
+		guard let httpResponse = response as? HTTPURLResponse else {
+			throw AIClientError.invalidResponse
+		}
+		guard (200..<300).contains(httpResponse.statusCode) else {
+			throw AIClientError.httpStatus(httpResponse.statusCode)
+		}
+		guard let decoded = try? JSONDecoder().decode(ModelListResponse.self, from: data) else {
+			throw AIClientError.invalidResponse
+		}
+		return decoded.data.map(\.id).filter { !$0.isEmpty }
+	}
+
 	private func makeRequest(messages: [AIMessage], temperature: Double?, maxTokens: Int?) throws -> URLRequest {
 		let url = config.baseURL.appendingPathComponent("chat/completions")
 		var request = URLRequest(url: url)
@@ -134,6 +155,15 @@ private struct ChatCompletionRequest: Encodable {
 		case temperature
 		case maxTokens = "max_tokens"
 	}
+}
+
+private struct ModelListResponse: Decodable {
+
+	struct Model: Decodable {
+		let id: String
+	}
+
+	let data: [Model]
 }
 
 private struct ChatCompletionResponse: Decodable {

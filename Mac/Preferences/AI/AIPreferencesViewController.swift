@@ -10,10 +10,11 @@ import AppKit
 final class AIPreferencesViewController: NSViewController {
 
 	private static let preferredWidth: CGFloat = 512
-	private static let preferredHeight: CGFloat = 300
+	private static let preferredHeight: CGFloat = 320
 
 	private let baseURLField = NSTextField()
-	private let modelField = NSTextField()
+	private let modelPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+	private let fetchModelsButton = NSButton(title: "获取模型列表", target: nil, action: nil)
 	private let apiKeyField = NSSecureTextField()
 	private let statusLabel = NSTextField(labelWithString: "")
 	private let messageLabel = NSTextField(wrappingLabelWithString: "")
@@ -34,17 +35,28 @@ final class AIPreferencesViewController: NSViewController {
 		let title = NSTextField(labelWithString: "AI 网关")
 		title.font = .systemFont(ofSize: 15, weight: .semibold)
 
-		let intro = NSTextField(wrappingLabelWithString: "译文、改写和对话都通过本地网关发送。填写网关 API key 后即可使用。")
+		let intro = NSTextField(wrappingLabelWithString: "译文、改写和对话都通过本地网关发送。填好网关地址和 API key 后，点「获取模型列表」选择模型。")
 		intro.font = .systemFont(ofSize: 12)
 		intro.textColor = .secondaryLabelColor
 
 		configureEditable(baseURLField, placeholder: "http://127.0.0.1:3425/v1")
-		configureEditable(modelField, placeholder: "deepseek-v4.1-flash")
+
+		modelPopup.font = .systemFont(ofSize: 13)
+		modelPopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true
+
+		fetchModelsButton.target = self
+		fetchModelsButton.action = #selector(fetchModels)
+		fetchModelsButton.bezelStyle = .rounded
+
+		let modelRow = NSStackView(views: [modelPopup, fetchModelsButton])
+		modelRow.orientation = .horizontal
+		modelRow.alignment = .centerY
+		modelRow.spacing = 8
 
 		apiKeyField.placeholderString = "网关 API key"
 		apiKeyField.font = .systemFont(ofSize: 13)
 		apiKeyField.setContentHuggingPriority(.defaultLow, for: .horizontal)
-		apiKeyField.widthAnchor.constraint(greaterThanOrEqualToConstant: 280).isActive = true
+		apiKeyField.widthAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true
 
 		statusLabel.font = .systemFont(ofSize: 12)
 		statusLabel.setContentHuggingPriority(.required, for: .horizontal)
@@ -57,7 +69,7 @@ final class AIPreferencesViewController: NSViewController {
 
 		let grid = NSGridView(views: [
 			[makeRowLabel("网关地址"), baseURLField],
-			[makeRowLabel("模型"), modelField],
+			[makeRowLabel("模型"), modelRow],
 			[makeRowLabel("API key"), keyRow]
 		])
 		grid.rowSpacing = 8
@@ -79,27 +91,38 @@ final class AIPreferencesViewController: NSViewController {
 		buttonRow.orientation = .horizontal
 		buttonRow.alignment = .centerY
 		buttonRow.spacing = 8
+		buttonRow.translatesAutoresizingMaskIntoConstraints = false
 
 		messageLabel.font = .systemFont(ofSize: 12)
 		messageLabel.textColor = .secondaryLabelColor
 		messageLabel.maximumNumberOfLines = 2
 
-		let stack = NSStackView(views: [title, intro, separator, grid, buttonRow, messageLabel])
+		let stack = NSStackView(views: [title, intro, separator, grid])
 		stack.orientation = .vertical
 		stack.alignment = .leading
 		stack.spacing = 10
 		stack.translatesAutoresizingMaskIntoConstraints = false
+
+		messageLabel.translatesAutoresizingMaskIntoConstraints = false
 		rootView.addSubview(stack)
+		rootView.addSubview(messageLabel)
+		rootView.addSubview(buttonRow)
 
 		NSLayoutConstraint.activate([
 			stack.topAnchor.constraint(equalTo: rootView.topAnchor, constant: 20),
 			stack.leadingAnchor.constraint(equalTo: rootView.leadingAnchor, constant: 20),
 			stack.trailingAnchor.constraint(equalTo: rootView.trailingAnchor, constant: -20),
-			stack.bottomAnchor.constraint(lessThanOrEqualTo: rootView.bottomAnchor, constant: -20),
 			intro.widthAnchor.constraint(equalTo: stack.widthAnchor),
 			separator.widthAnchor.constraint(equalTo: stack.widthAnchor),
 			grid.widthAnchor.constraint(equalTo: stack.widthAnchor),
-			messageLabel.widthAnchor.constraint(equalTo: stack.widthAnchor)
+
+			messageLabel.topAnchor.constraint(equalTo: stack.bottomAnchor, constant: 12),
+			messageLabel.leadingAnchor.constraint(equalTo: rootView.leadingAnchor, constant: 20),
+			messageLabel.trailingAnchor.constraint(equalTo: rootView.trailingAnchor, constant: -20),
+
+			buttonRow.centerXAnchor.constraint(equalTo: rootView.centerXAnchor),
+			buttonRow.topAnchor.constraint(greaterThanOrEqualTo: messageLabel.bottomAnchor, constant: 12),
+			buttonRow.bottomAnchor.constraint(equalTo: rootView.bottomAnchor, constant: -20)
 		])
 
 		updateStatus()
@@ -107,8 +130,9 @@ final class AIPreferencesViewController: NSViewController {
 
 	override func viewWillAppear() {
 		super.viewWillAppear()
-		baseURLField.stringValue = AIEnvironment.shared.config.baseURL.absoluteString
-		modelField.stringValue = AIEnvironment.shared.config.model
+		let config = AIEnvironment.shared.config
+		baseURLField.stringValue = config.baseURL.absoluteString
+		populateModels([config.model], selecting: config.model)
 		apiKeyField.stringValue = ""
 		messageLabel.stringValue = ""
 		updateStatus()
@@ -120,18 +144,14 @@ final class AIPreferencesViewController: NSViewController {
 private extension AIPreferencesViewController {
 
 	@objc func saveAPIKey() {
-		let baseURLString = baseURLField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-		guard let baseURL = URL(string: baseURLString),
-			  let scheme = baseURL.scheme?.lowercased(),
-			  scheme == "http" || scheme == "https",
-			  baseURL.host?.isEmpty == false else {
+		guard let baseURL = enteredBaseURL() else {
 			showMessage("网关地址无效，需要以 http:// 或 https:// 开头。", isError: true)
 			return
 		}
 
-		let model = modelField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+		let model = modelPopup.titleOfSelectedItem?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 		guard !model.isEmpty else {
-			showMessage("请填写模型名。", isError: true)
+			showMessage("请先获取并选择模型。", isError: true)
 			return
 		}
 
@@ -157,11 +177,63 @@ private extension AIPreferencesViewController {
 			showMessage("清除失败：\(error.localizedDescription)", isError: true)
 		}
 	}
+
+	@objc func fetchModels() {
+		guard let baseURL = enteredBaseURL() else {
+			showMessage("网关地址无效，需要以 http:// 或 https:// 开头。", isError: true)
+			return
+		}
+
+		let apiKey = apiKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+		fetchModelsButton.isEnabled = false
+		showMessage("正在获取模型列表…", isError: false)
+
+		Task { @MainActor in
+			defer {
+				self.fetchModelsButton.isEnabled = true
+			}
+			do {
+				let models = try await AIEnvironment.shared.fetchModelList(baseURL: baseURL, apiKey: apiKey.isEmpty ? nil : apiKey)
+				guard !models.isEmpty else {
+					self.showMessage("网关没有返回任何模型。", isError: true)
+					return
+				}
+				self.populateModels(models, selecting: self.modelPopup.titleOfSelectedItem)
+				self.showMessage("已获取 \(models.count) 个模型。", isError: false)
+			} catch {
+				self.showMessage("获取失败：\(error.localizedDescription)", isError: true)
+			}
+		}
+	}
 }
 
 // MARK: - Helpers
 
 private extension AIPreferencesViewController {
+
+	func enteredBaseURL() -> URL? {
+		let string = baseURLField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+		guard let url = URL(string: string),
+			  let scheme = url.scheme?.lowercased(),
+			  scheme == "http" || scheme == "https",
+			  url.host?.isEmpty == false else {
+			return nil
+		}
+		return url
+	}
+
+	func populateModels(_ models: [String], selecting current: String?) {
+		let previous = current ?? AIEnvironment.shared.config.model
+		var titles = models
+		if !previous.isEmpty && !titles.contains(previous) {
+			titles.insert(previous, at: 0)
+		}
+		modelPopup.removeAllItems()
+		modelPopup.addItems(withTitles: titles)
+		if !previous.isEmpty {
+			modelPopup.selectItem(withTitle: previous)
+		}
+	}
 
 	func makeRowLabel(_ text: String) -> NSTextField {
 		let label = NSTextField(labelWithString: text)

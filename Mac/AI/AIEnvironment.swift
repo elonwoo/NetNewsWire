@@ -59,6 +59,13 @@ final class AIEnvironment {
 		apply(AIConfig(baseURL: baseURL, model: model, apiKey: apiKey ?? config.apiKey))
 	}
 
+	/// Fetches the model IDs the given gateway exposes, without changing the
+	/// active configuration. Used by the settings pane before saving.
+	func fetchModelList(baseURL: URL, apiKey: String?) async throws -> [String] {
+		let client = OpenAIChatClient(config: AIConfig(baseURL: baseURL, model: config.model, apiKey: apiKey ?? config.apiKey))
+		return try await client.availableModels().sorted()
+	}
+
 	private func apply(_ config: AIConfig) {
 		self.config = config
 		self.engine = AIEngine(store: store, client: OpenAIChatClient(config: config), config: config)
