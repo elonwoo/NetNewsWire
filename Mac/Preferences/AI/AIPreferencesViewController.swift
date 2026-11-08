@@ -42,11 +42,14 @@ final class AIPreferencesViewController: NSViewController {
 		configureEditable(baseURLField, placeholder: "http://127.0.0.1:3425/v1")
 
 		modelPopup.font = .systemFont(ofSize: 13)
-		modelPopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true
+		modelPopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
+		modelPopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 160).isActive = true
 
 		fetchModelsButton.target = self
 		fetchModelsButton.action = #selector(fetchModels)
 		fetchModelsButton.bezelStyle = .rounded
+		fetchModelsButton.setContentHuggingPriority(.required, for: .horizontal)
+		fetchModelsButton.setContentCompressionResistancePriority(.required, for: .horizontal)
 
 		let modelRow = NSStackView(views: [modelPopup, fetchModelsButton])
 		modelRow.orientation = .horizontal
