@@ -140,7 +140,7 @@ private extension AIPreferencesViewController {
 		do {
 			try AIEnvironment.shared.updateGateway(baseURL: baseURL, model: model, apiKey: apiKey.isEmpty ? nil : apiKey)
 			apiKeyField.stringValue = ""
-			showMessage(apiKey.isEmpty ? "已保存。API key 未改动。" : "已保存。", isError: false)
+			messageLabel.stringValue = ""
 			updateStatus()
 		} catch {
 			showMessage("保存失败：\(error.localizedDescription)", isError: true)
@@ -151,7 +151,7 @@ private extension AIPreferencesViewController {
 		do {
 			try AIEnvironment.shared.updateAPIKey("")
 			apiKeyField.stringValue = ""
-			showMessage("已清除。", isError: false)
+			messageLabel.stringValue = ""
 			updateStatus()
 		} catch {
 			showMessage("清除失败：\(error.localizedDescription)", isError: true)
@@ -184,9 +184,13 @@ private extension AIPreferencesViewController {
 		if AIEnvironment.shared.hasAPIKey {
 			statusLabel.stringValue = "已配置"
 			statusLabel.textColor = .systemGreen
+			// The stored key never goes back into the field, so the placeholder
+			// carries the masked hint instead. Typing replaces it on save.
+			apiKeyField.placeholderString = "••••••••••••（已保存）"
 		} else {
 			statusLabel.stringValue = "未配置"
 			statusLabel.textColor = .secondaryLabelColor
+			apiKeyField.placeholderString = "网关 API key"
 		}
 	}
 
