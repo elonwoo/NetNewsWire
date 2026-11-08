@@ -92,3 +92,6 @@ fastlane/test_output
 
 .claude/
 
+
+# Parallel AI worktrees
+.worktrees/

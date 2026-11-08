@@ -21,6 +21,8 @@
 		5132775F2590FC640064F1E7 /* Articles in Embed Frameworks */ = {isa = PBXBuildFile; productRef = 5132775D2590FC640064F1E7 /* Articles */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		513277612590FC640064F1E7 /* ArticlesDatabase in Frameworks */ = {isa = PBXBuildFile; productRef = 513277602590FC640064F1E7 /* ArticlesDatabase */; };
 		513277622590FC640064F1E7 /* ArticlesDatabase in Embed Frameworks */ = {isa = PBXBuildFile; productRef = 513277602590FC640064F1E7 /* ArticlesDatabase */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
+		A1000000000000000000A002 /* AI in Frameworks */ = {isa = PBXBuildFile; productRef = A1000000000000000000A001 /* AI */; };
+		A1000000000000000000A003 /* AI in Embed Frameworks */ = {isa = PBXBuildFile; productRef = A1000000000000000000A001 /* AI */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		513277642590FC640064F1E7 /* SyncDatabase in Frameworks */ = {isa = PBXBuildFile; productRef = 513277632590FC640064F1E7 /* SyncDatabase */; };
 		513277652590FC640064F1E7 /* SyncDatabase in Embed Frameworks */ = {isa = PBXBuildFile; productRef = 513277632590FC640064F1E7 /* SyncDatabase */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		513277662590FC780064F1E7 /* Secrets in Embed Frameworks */ = {isa = PBXBuildFile; productRef = 51C4CFF524D37DD500AF9874 /* Secrets */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
@@ -260,6 +262,7 @@
 				513277662590FC780064F1E7 /* Secrets in Embed Frameworks */,
 				513277652590FC640064F1E7 /* SyncDatabase in Embed Frameworks */,
 				513277622590FC640064F1E7 /* ArticlesDatabase in Embed Frameworks */,
+				A1000000000000000000A003 /* AI in Embed Frameworks */,
 				BE939B018E9B4B13850AA286 /* ErrorLog in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
@@ -537,6 +540,7 @@
 				84EE43482DB8A441009D3A8D /* RSDatabase in Frameworks */,
 				84EE3F122DB8A088009D3A8D /* RSTree in Frameworks */,
 				513277612590FC640064F1E7 /* ArticlesDatabase in Frameworks */,
+				A1000000000000000000A002 /* AI in Frameworks */,
 				51C4CFF624D37DD500AF9874 /* Secrets in Frameworks */,
 				179C39EA26F76B0500D4E741 /* Zip in Frameworks */,
 				514C16CE24D2E63F009A3AFA /* Account in Frameworks */,
@@ -813,6 +817,7 @@
 				519CA8E425841DB700EB079A /* CrashReporter */,
 				5132775D2590FC640064F1E7 /* Articles */,
 				513277602590FC640064F1E7 /* ArticlesDatabase */,
+				A1000000000000000000A001 /* AI */,
 				513277632590FC640064F1E7 /* SyncDatabase */,
 				179C39E926F76B0500D4E741 /* Zip */,
 				843E2F162CF2B8A700ED170F /* RSWeb */,
@@ -1521,6 +1526,10 @@
 		513277602590FC640064F1E7 /* ArticlesDatabase */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = ArticlesDatabase;
+		};
+		A1000000000000000000A001 /* AI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = AI;
 		};
 		513277632590FC640064F1E7 /* SyncDatabase */ = {
 			isa = XCSwiftPackageProductDependency;

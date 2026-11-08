@@ -107,6 +107,13 @@
         "identifier" : "ImagesTests",
         "name" : "ImagesTests"
       }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:Modules\/AI",
+        "identifier" : "AITests",
+        "name" : "AITests"
+      }
     }
   ],
   "version" : 1

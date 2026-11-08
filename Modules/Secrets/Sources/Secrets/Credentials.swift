@@ -61,6 +61,7 @@ public enum CredentialsType: String, CaseIterable, Sendable {
 	case oauthAccessToken = "oauthAccessToken"
 	case oauthAccessTokenSecret = "oauthAccessTokenSecret"
 	case oauthRefreshToken = "oauthRefreshToken"
+	case aiAPIKey = "aiAPIKey"
 }
 
 nonisolated public struct Credentials: Equatable, Sendable {
