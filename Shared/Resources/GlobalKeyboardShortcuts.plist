@@ -62,7 +62,9 @@
 		<key>title</key>
 		<string>Mark All as Read</string>
 		<key>key</key>
-		<string>k</string>
+		<string>K</string>
+		<key>shiftModifier</key>
+		<true/>
 		<key>action</key>
 		<string>markAllAsRead:</string>
 	</dict>
@@ -122,19 +124,51 @@
 	</dict>
 	<dict>
 		<key>title</key>
-		<string>Go to Previous Feed</string>
+		<string>Go to Previous Subscription</string>
 		<key>key</key>
-		<string>a</string>
+		<string>[</string>
 		<key>action</key>
 		<string>goToPreviousSubscription:</string>
 	</dict>
 	<dict>
 		<key>title</key>
-		<string>Go to Next Feed</string>
+		<string>Go to Next Subscription</string>
 		<key>key</key>
-		<string>z</string>
+		<string>]</string>
 		<key>action</key>
 		<string>goToNextSubscription:</string>
+	</dict>
+	<dict>
+		<key>title</key>
+		<string>Go to Next Article</string>
+		<key>key</key>
+		<string>j</string>
+		<key>action</key>
+		<string>selectNextArticle:</string>
+	</dict>
+	<dict>
+		<key>title</key>
+		<string>Go to Previous Article</string>
+		<key>key</key>
+		<string>k</string>
+		<key>action</key>
+		<string>selectPreviousArticle:</string>
+	</dict>
+	<dict>
+		<key>title</key>
+		<string>Ask AI</string>
+		<key>key</key>
+		<string>a</string>
+		<key>action</key>
+		<string>askAI:</string>
+	</dict>
+	<dict>
+		<key>title</key>
+		<string>Toggle Immersive Reading</string>
+		<key>key</key>
+		<string>i</string>
+		<key>action</key>
+		<string>toggleImmersiveReading:</string>
 	</dict>
 	<dict>
 		<key>key</key>
