@@ -53,6 +53,7 @@ final class AITranslationViewController: NSViewController {
 	private let webView: WKWebView
 
 	private var state: ContentState = .noArticle
+	private var isPaneVisible = false
 	private var loadToken = UUID()
 	private var currentTranslation: AI.Translation?
 	private var mode: ViewMode
@@ -106,6 +107,24 @@ final class AITranslationViewController: NSViewController {
 		view.window?.makeFirstResponder(webView)
 	}
 
+	/// Tracks whether the translation tab is the one on screen. The pane is
+	/// reloaded whenever the article changes, so the visibility has to survive
+	/// across reloads instead of being a one-shot callback.
+	func setPaneVisible(_ visible: Bool) {
+		isPaneVisible = visible
+		enqueueTranslationIfNeeded()
+	}
+
+	/// Queues a translation only when the pane is on screen, an article is
+	/// showing with no cached translation, and no job is in flight, so opening
+	/// the tab never repeats work.
+	func enqueueTranslationIfNeeded() {
+		guard isPaneVisible, case .empty = state else {
+			return
+		}
+		translateButtonClicked()
+	}
+
 	func reload() {
 		guard let articleID = article?.articleID else {
 			currentTranslation = nil
@@ -133,6 +152,7 @@ final class AITranslationViewController: NSViewController {
 					self.state = .empty
 				}
 				self.updateContent()
+				self.enqueueTranslationIfNeeded()
 			} catch {
 				guard self.loadToken == token else {
 					return

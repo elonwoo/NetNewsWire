@@ -3,6 +3,7 @@
 //  NetNewsWire
 //
 
+import AI
 import AppKit
 import Articles
 
@@ -24,6 +25,7 @@ final class AIDetailPaneViewController: NSViewController {
 			rewriteViewController.article = article
 			translationViewController.article = article
 			updateTabTitles()
+			updateDefaultTab()
 		}
 	}
 
@@ -32,8 +34,6 @@ final class AIDetailPaneViewController: NSViewController {
 		case rewrite = 1
 		case translation = 2
 	}
-
-	private static let tabDefaultsKey = "aiDetailTab"
 
 	private let tabBar = NSView()
 	private let tabControl: NSSegmentedControl
@@ -45,11 +45,7 @@ final class AIDetailPaneViewController: NSViewController {
 		self.rewriteViewController = rewriteViewController
 		self.translationViewController = translationViewController
 		self.tabControl = NSSegmentedControl(labels: ["原文", "中文改写", "中文翻译"], trackingMode: .selectOne, target: nil, action: nil)
-		if let stored = UserDefaults.standard.object(forKey: Self.tabDefaultsKey) as? Int, let tab = Tab(rawValue: stored) {
-			self.selectedTab = tab
-		} else {
-			self.selectedTab = .rewrite
-		}
+		self.selectedTab = .rewrite
 		super.init(nibName: nil, bundle: nil)
 	}
 
@@ -142,15 +138,24 @@ private extension AIDetailPaneViewController {
 		tabControl.setLabel(rewriteViewController.tabTitle, forSegment: Tab.rewrite.rawValue)
 	}
 
+	func updateDefaultTab() {
+		guard let article else {
+			return
+		}
+		selectedTab = AutoWorkPolicy.isChinese(AIArticle(article: article)) ? .original : .rewrite
+		tabControl.selectedSegment = selectedTab.rawValue
+		updateVisibleContent()
+	}
+
 	func updateVisibleContent() {
 		detailViewController.view.isHidden = selectedTab != .original
 		rewriteViewController.view.isHidden = selectedTab != .rewrite
 		translationViewController.view.isHidden = selectedTab != .translation
+		translationViewController.setPaneVisible(selectedTab == .translation)
 	}
 
 	@objc func tabChanged(_ sender: NSSegmentedControl) {
 		selectedTab = Tab(rawValue: sender.selectedSegment) ?? .rewrite
-		UserDefaults.standard.set(selectedTab.rawValue, forKey: Self.tabDefaultsKey)
 		updateVisibleContent()
 		if selectedTab == .rewrite {
 			rewriteViewController.refreshIfNeeded()
