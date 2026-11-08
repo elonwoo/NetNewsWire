@@ -99,6 +99,25 @@ import Testing
 		#expect(loaded.leaseUntil == createdAt.addingTimeInterval(AIQueuePolicy.leaseDuration))
 	}
 
+	@Test func activeJobArticleIDsReturnsOnlyUnfinishedJobsOfGivenKinds() async throws {
+		let date = Date(timeIntervalSince1970: 1_700_000_350)
+		try await store.enqueue(AIJob(id: "job-pending", articleID: "article-pending", kind: .rewrite, priority: 5, status: .pending, availableAt: date, createdAt: date))
+		try await store.enqueue(AIJob(id: "job-running", articleID: "article-running", kind: .rewrite, priority: 5, status: .running, availableAt: date, createdAt: date))
+		try await store.enqueue(AIJob(id: "job-retry", articleID: "article-retry", kind: .rewrite, priority: 5, status: .retry, availableAt: date, createdAt: date))
+		try await store.enqueue(AIJob(id: "job-completed", articleID: "article-completed", kind: .rewrite, priority: 5, status: .completed, availableAt: date, createdAt: date))
+		try await store.enqueue(AIJob(id: "job-failed", articleID: "article-failed", kind: .rewrite, priority: 5, status: .failed, availableAt: date, createdAt: date))
+		try await store.enqueue(AIJob(id: "job-title", articleID: "article-title", kind: .titleTranslation, priority: 5, status: .pending, availableAt: date, createdAt: date))
+
+		let rewriteIDs = try await store.activeJobArticleIDs(kinds: [.rewrite])
+		#expect(rewriteIDs == ["article-pending", "article-running", "article-retry"])
+
+		let bothIDs = try await store.activeJobArticleIDs(kinds: [.rewrite, .titleTranslation])
+		#expect(bothIDs == ["article-pending", "article-running", "article-retry", "article-title"])
+
+		let bodyIDs = try await store.activeJobArticleIDs(kinds: [.bodyTranslation])
+		#expect(bodyIDs.isEmpty)
+	}
+
 	@Test func savingTranslationReplacesExistingRow() async throws {
 		let createdAt = Date(timeIntervalSince1970: 1_700_000_400)
 		let first = Translation(articleID: "article-6", titleZh: "旧", blocks: [], model: "m", provider: "p", contentHash: "h1", createdAt: createdAt, updatedAt: createdAt)
@@ -153,6 +172,35 @@ import Testing
 		#expect(loaded.contentHash == "new-hash")
 		#expect(loaded.createdAt == createdAt)
 		#expect(loaded.updatedAt == updatedAt)
+	}
+
+	@Test func deleteAIArtifactsRemovesRowsForGivenArticlesOnly() async throws {
+		let date = Date(timeIntervalSince1970: 1_700_000_700)
+		try await store.saveTranslation(Translation(articleID: "removed", titleZh: "标题", blocks: [], model: "m", provider: "p", contentHash: "h", createdAt: date, updatedAt: date))
+		try await store.saveRewrite(Rewrite(articleID: "removed", title: "标题", bodyMarkdown: "正文", model: "m", contentHash: "h", createdAt: date, updatedAt: date))
+		try await store.saveTranslation(Translation(articleID: "kept", titleZh: "标题", blocks: [], model: "m", provider: "p", contentHash: "h", createdAt: date, updatedAt: date))
+		try await store.saveRewrite(Rewrite(articleID: "kept", title: "标题", bodyMarkdown: "正文", model: "m", contentHash: "h", createdAt: date, updatedAt: date))
+		try await store.enqueue(AIJob(id: "job-removed", articleID: "removed", kind: .rewrite, priority: 10, availableAt: date, createdAt: date))
+		try await store.enqueue(AIJob(id: "job-kept", articleID: "kept", kind: .rewrite, priority: 5, availableAt: date, createdAt: date))
+
+		try await store.deleteAIArtifacts(articleIDs: ["removed"])
+
+		#expect(try await store.translation(for: "removed") == nil)
+		#expect(try await store.rewrite(for: "removed") == nil)
+		#expect(try await store.translation(for: "kept") != nil)
+		#expect(try await store.rewrite(for: "kept") != nil)
+		let claimed = try #require(try await store.claimNextJob(now: date))
+		#expect(claimed.articleID == "kept")
+	}
+
+	@Test func failJobPermanentlyStopsRetries() async throws {
+		let date = Date(timeIntervalSince1970: 1_700_000_800)
+		try await store.enqueue(AIJob(id: "job-terminal", articleID: "article-9", kind: .bodyTranslation, priority: 100, availableAt: date, createdAt: date))
+		_ = try #require(try await store.claimNextJob(now: date))
+
+		try await store.failJobPermanently(id: "job-terminal", error: "找不到文章")
+
+		#expect(try await store.claimNextJob(now: date.addingTimeInterval(24 * 60 * 60)) == nil)
 	}
 }
 

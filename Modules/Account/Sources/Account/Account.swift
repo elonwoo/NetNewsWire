@@ -30,6 +30,9 @@ public extension Notification.Name {
 	static let AccountRefreshDidBegin = Notification.Name(rawValue: "AccountRefreshDidBegin")
 	static let AccountRefreshDidFinish = Notification.Name(rawValue: "AccountRefreshDidFinish")
 	static let AccountDidDownloadArticles = Notification.Name(rawValue: "AccountDidDownloadArticles")
+	/// Posted after a feed or folder is removed, with the article IDs that
+	/// belonged to it in `UserInfoKey.articleIDs`.
+	static let AccountDidRemoveFeeds = Notification.Name(rawValue: "AccountDidRemoveFeeds")
 	static let AccountStateDidChange = Notification.Name(rawValue: "AccountStateDidChange")
 	static let StatusesDidChange = Notification.Name(rawValue: "StatusesDidChange")
 	/// Posted when a delegate enqueues one or more status changes for upstream send.
@@ -99,7 +102,7 @@ public enum FetchType {
 		public static let updatedArticles = "updatedArticles" // AccountDidDownloadArticles
 		public static let statuses = "statuses" // StatusesDidChange
 		public static let articles = "articles" // StatusesDidChange
-		public static let articleIDs = "articleIDs" // StatusesDidChange
+		public static let articleIDs = "articleIDs" // StatusesDidChange, AccountDidRemoveFeeds
 		public static let statusKey = "statusKey" // StatusesDidChange
 		public static let statusFlag = "statusFlag" // StatusesDidChange
 		public static let feeds = "feeds" // AccountDidDownloadArticles, StatusesDidChange
@@ -728,7 +731,11 @@ public enum FetchType {
 	public func removeFeed(_ feed: Feed, from container: Container, completion: @escaping (Result<Void, Error>) -> Void) {
 		Task { @MainActor in
 			do {
+				// Collect the IDs before the deletion removes the articles.
+				let articles = await feed.fetchArticlesAsync()
+				let articleIDs = Set(articles.map(\.articleID))
 				try await delegate.removeFeed(feed: feed, container: container)
+				NotificationCenter.default.post(name: .AccountDidRemoveFeeds, object: self, userInfo: [UserInfoKey.articleIDs: articleIDs])
 				completion(.success(()))
 			} catch {
 				completion(.failure(error))
@@ -770,7 +777,14 @@ public enum FetchType {
 	public func removeFolder(_ folder: Folder, completion: @escaping (Result<Void, Error>) -> Void) {
 		Task { @MainActor in
 			do {
+				// Collect the IDs before the deletion removes the articles.
+				var articleIDs = Set<String>()
+				for feed in folder.flattenedFeeds() {
+					let articles = await feed.fetchArticlesAsync()
+					articleIDs.formUnion(articles.map(\.articleID))
+				}
 				try await delegate.removeFolder(with: folder)
+				NotificationCenter.default.post(name: .AccountDidRemoveFeeds, object: self, userInfo: [UserInfoKey.articleIDs: articleIDs])
 				completion(.success(()))
 			} catch {
 				completion(.failure(error))

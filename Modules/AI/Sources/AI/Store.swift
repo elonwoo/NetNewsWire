@@ -19,6 +19,10 @@ public protocol AIStore: Sendable {
 	func claimNextJob(now: Date) async throws -> AIJob?
 	func completeJob(id: String) async throws
 	func failJob(id: String, error: String, retryAt: Date?) async throws
+	func failJobPermanently(id: String, error: String) async throws
+	func deleteJobs(kinds: [AIJobKind], statuses: [AIJobStatus]) async throws
+	func activeJobArticleIDs(kinds: [AIJobKind]) async throws -> Set<String>
+	func deleteAIArtifacts(articleIDs: Set<String>) async throws
 }
 
 /// SQLite-backed store for translations, rewrites, chat messages and jobs.
@@ -278,6 +282,79 @@ public final class SQLiteAIStore: AIStore, Sendable {
 			}
 			guard database.executeUpdate(sql, withArgumentsIn: arguments) else {
 				throw AIStoreError.writeFailed(database.lastErrorMessage())
+			}
+		}
+	}
+
+	/// Marks a job failed without scheduling a retry. Used for terminal errors
+	/// such as a missing article or an unconfigured API key.
+	public func failJobPermanently(id: String, error: String) async throws {
+		try await write { database in
+			let sql = "update ai_jobs set status = 'failed', leaseUntil = null, lastError = ? where id = ?;"
+			guard database.executeUpdate(sql, withArgumentsIn: [error, id]) else {
+				throw AIStoreError.writeFailed(database.lastErrorMessage())
+			}
+		}
+	}
+
+	/// Deletes jobs matching both the given kinds and statuses. Used to clear
+	/// stale work that was queued before a policy change.
+	public func deleteJobs(kinds: [AIJobKind], statuses: [AIJobStatus]) async throws {
+		guard !kinds.isEmpty, !statuses.isEmpty else {
+			return
+		}
+		let kindPlaceholders = Array(repeating: "?", count: kinds.count).joined(separator: ", ")
+		let statusPlaceholders = Array(repeating: "?", count: statuses.count).joined(separator: ", ")
+		let sql = "delete from ai_jobs where kind in (\(kindPlaceholders)) and status in (\(statusPlaceholders));"
+		let kindValues = kinds.map(\.rawValue)
+		let statusValues = statuses.map(\.rawValue)
+		try await write { database in
+			let arguments: [Any] = kindValues + statusValues
+			guard database.executeUpdate(sql, withArgumentsIn: arguments) else {
+				throw AIStoreError.writeFailed(database.lastErrorMessage())
+			}
+		}
+	}
+
+	/// Returns the article IDs that still have unfinished jobs of the given
+	/// kinds, so callers can avoid queueing the same work twice.
+	public func activeJobArticleIDs(kinds: [AIJobKind]) async throws -> Set<String> {
+		guard !kinds.isEmpty else {
+			return []
+		}
+		let placeholders = Array(repeating: "?", count: kinds.count).joined(separator: ", ")
+		let sql = "select distinct articleID from ai_jobs where kind in (\(placeholders)) and status in ('pending', 'running', 'retry');"
+		let kindValues = kinds.map(\.rawValue)
+		return try await read { database in
+			guard let resultSet = database.executeQuery(sql, withArgumentsIn: kindValues) else {
+				return []
+			}
+			defer {
+				resultSet.close()
+			}
+			var articleIDs: Set<String> = []
+			while resultSet.next() {
+				if let articleID = resultSet.swiftString(forColumn: "articleID") {
+					articleIDs.insert(articleID)
+				}
+			}
+			return articleIDs
+		}
+	}
+
+	/// Deletes every AI artifact for the given articles in a single transaction.
+	public func deleteAIArtifacts(articleIDs: Set<String>) async throws {
+		guard !articleIDs.isEmpty else {
+			return
+		}
+		let ids = Array(articleIDs)
+		let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ", ")
+		try await writeInTransaction { database -> Void in
+			for table in ["ai_jobs", "translations", "rewrites"] {
+				let sql = "delete from \(table) where articleID in (\(placeholders));"
+				guard database.executeUpdate(sql, withArgumentsIn: ids) else {
+					throw AIStoreError.writeFailed(database.lastErrorMessage())
+				}
 			}
 		}
 	}

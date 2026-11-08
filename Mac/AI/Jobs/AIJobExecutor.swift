@@ -28,6 +28,9 @@ final class AIJobExecutor {
 	private static let titleBatchSize = 20
 	private static let idlePollInterval: Duration = .seconds(2)
 	private static let pausedPollInterval: Duration = .seconds(1)
+	private static let catchUpDelay: Duration = .seconds(5)
+	private static let catchUpLimit = 200
+	private static let didPruneRewriteBacklogKey = "AI.DidPruneRewriteBacklog"
 	private static let logger = Logger(subsystem: Logger.nnwSubsystem, category: "AIJobs")
 
 	private let store: AIStore
@@ -38,7 +41,9 @@ final class AIJobExecutor {
 	private let notificationCenter: NotificationCenter
 
 	private var loopTask: Task<Void, Never>?
+	private var catchUpTask: Task<Void, Never>?
 	private var observerToken: NSObjectProtocol?
+	private var feedRemovalObserverToken: NSObjectProtocol?
 	private var isPaused = false
 	private var pendingTitleArticles: [String: AIArticle] = [:]
 	private var enqueuedKeys: Set<String> = []
@@ -84,17 +89,32 @@ final class AIJobExecutor {
 		guard loopTask == nil else {
 			return
 		}
+		pruneRewriteBacklogIfNeeded()
 		loopTask = Task { @MainActor [weak self] in
 			await self?.runLoop()
+		}
+		catchUpTask = Task { @MainActor [weak self] in
+			do {
+				try await Task.sleep(for: Self.catchUpDelay)
+			} catch {
+				return
+			}
+			await self?.catchUpMissedWork()
 		}
 	}
 
 	func stop() {
 		loopTask?.cancel()
 		loopTask = nil
+		catchUpTask?.cancel()
+		catchUpTask = nil
 		if let observerToken {
 			notificationCenter.removeObserver(observerToken)
 			self.observerToken = nil
+		}
+		if let feedRemovalObserverToken {
+			notificationCenter.removeObserver(feedRemovalObserverToken)
+			self.feedRemovalObserverToken = nil
 		}
 	}
 
@@ -115,21 +135,115 @@ final class AIJobExecutor {
 
 	// MARK: - Enqueueing
 
-	/// Queues title translation for every new or updated article and, when the
-	/// default is on, a rewrite for articles with body content.
+	/// Queues title translation for new or updated foreign articles and, when
+	/// the default is on, a rewrite for eligible articles in any language. Body
+	/// translation is not queued here: it runs only when the reader opens the
+	/// translation tab. `AutoWorkPolicy` filters this automatic path only;
+	/// manual entry points are never filtered.
 	func enqueueForNewArticles(_ articles: [AIArticle]) async {
 		guard isConfigured() else {
 			return
 		}
+		let now = Date()
 		let usable = articles.filter { !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-		await enqueueTitleTranslations(for: usable)
+		let translatable = usable.filter { AutoWorkPolicy.shouldTranslate($0, now: now) }
+		await enqueueTitleTranslations(for: translatable)
 
 		guard AppDefaults.aiAutoRewriteEnabled else {
 			return
 		}
-		for article in usable where Self.hasBody(article) {
+		for article in usable where AutoWorkPolicy.shouldRewrite(article, now: now) {
 			await enqueueRewrite(for: article)
 		}
+	}
+
+	/// Queues work that the download notification path missed, for example
+	/// because no API key was configured when the articles arrived or a job
+	/// exhausted its retries. Only articles from the last seven days are
+	/// inspected. Repeated scans are harmless because cached work is skipped.
+	func catchUpMissedWork() async {
+		guard isConfigured() else {
+			return
+		}
+		let now = Date()
+		let cutoff = now.addingTimeInterval(-AutoWorkPolicy.recencyWindow)
+
+		var articlesByID: [String: AIArticle] = [:]
+		for account in AccountManager.shared.accounts {
+			for feed in account.flattenedFeeds() {
+				let fetched = await feed.fetchArticlesAsync()
+				for article in fetched {
+					let aiArticle = AIArticle(article: article)
+					guard !aiArticle.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+						continue
+					}
+					guard let publishedAt = aiArticle.publishedAt, publishedAt >= cutoff else {
+						continue
+					}
+					articlesByID[aiArticle.id] = aiArticle
+				}
+			}
+		}
+
+		// Dedupe per kind: a pending title translation must not stop the same
+		// article from getting its rewrite queued.
+		let activeRewriteIDs = (try? await store.activeJobArticleIDs(kinds: [.rewrite])) ?? []
+		let activeTitleIDs = (try? await store.activeJobArticleIDs(kinds: [.titleTranslation])) ?? []
+
+		let articles = articlesByID.values
+			.sorted {
+				($0.publishedAt ?? .distantPast) > ($1.publishedAt ?? .distantPast)
+			}
+
+		var cachedRewrites: [String: String] = [:]
+		var cachedTitleHashes: [String: String] = [:]
+		for article in articles {
+			if let cached = try? await store.rewrite(for: article.id), !cached.bodyMarkdown.isEmpty {
+				cachedRewrites[article.id] = cached.contentHash
+			}
+			if let cached = try? await store.translation(for: article.id),
+			   let titleZh = cached.titleZh,
+			   !titleZh.isEmpty {
+				cachedTitleHashes[article.id] = cached.contentHash
+			}
+		}
+
+		let plan = AICatchUpPlanner.plan(
+			articles: articles,
+			now: now,
+			cachedRewrites: cachedRewrites,
+			cachedTitleHashes: cachedTitleHashes,
+			limit: Self.catchUpLimit
+		)
+
+		var enqueuedCount = 0
+		var titleArticles: [AIArticle] = []
+		for articleID in plan.titleTranslationArticleIDs where !activeTitleIDs.contains(articleID) {
+			guard let article = articlesByID[articleID] else {
+				continue
+			}
+			guard !enqueuedKeys.contains(Self.key(kind: .titleTranslation, articleID: articleID)) else {
+				continue
+			}
+			titleArticles.append(article)
+		}
+		enqueuedCount += titleArticles.count
+		await enqueueTitleTranslations(for: titleArticles)
+
+		if AppDefaults.aiAutoRewriteEnabled {
+			for articleID in plan.rewriteArticleIDs where !activeRewriteIDs.contains(articleID) {
+				guard let article = articlesByID[articleID] else {
+					continue
+				}
+				guard !enqueuedKeys.contains(Self.key(kind: .rewrite, articleID: articleID)) else {
+					continue
+				}
+				enqueuedCount += 1
+				await enqueueRewrite(for: article)
+			}
+		}
+
+		Self.logger.info("AI catch-up scanned \(articles.count, privacy: .public) articles, queued \(enqueuedCount, privacy: .public) jobs")
 	}
 
 	func enqueueTitleTranslations(for articles: [AIArticle]) async {
@@ -215,6 +329,40 @@ final class AIJobExecutor {
 
 private extension AIJobExecutor {
 
+	/// Rewrites queued before `AutoWorkPolicy` existed were never filtered, so
+	/// the backlog is cleared once. Runs off the caller's stack.
+	func pruneRewriteBacklogIfNeeded() {
+		guard !UserDefaults.standard.bool(forKey: Self.didPruneRewriteBacklogKey) else {
+			return
+		}
+		Task { @MainActor [store] in
+			do {
+				try await store.deleteJobs(kinds: [.rewrite], statuses: [.pending, .retry, .running])
+				UserDefaults.standard.set(true, forKey: Self.didPruneRewriteBacklogKey)
+			} catch {
+				Self.logger.error("Failed to prune rewrite backlog: \(String(describing: error), privacy: .public)")
+			}
+		}
+	}
+
+	func handleRemovedFeeds(articleIDs: Set<String>) async {
+		do {
+			try await store.deleteAIArtifacts(articleIDs: articleIDs)
+		} catch {
+			Self.logger.error("Failed to delete AI artifacts for removed feeds: \(String(describing: error), privacy: .public)")
+		}
+		enqueuedKeys = Set(enqueuedKeys.filter { key in
+			let parts = key.split(separator: ":", maxSplits: 1)
+			guard parts.count == 2 else {
+				return true
+			}
+			return !articleIDs.contains(String(parts[1]))
+		})
+		for articleID in articleIDs {
+			pendingTitleArticles.removeValue(forKey: articleID)
+		}
+	}
+
 	func runLoop() async {
 		while !Task.isCancelled {
 			if isPaused {
@@ -242,14 +390,14 @@ private extension AIJobExecutor {
 
 		guard isConfigured() else {
 			let message = "未配置模型 API key"
-			try? await store.failJob(id: job.id, error: message, retryAt: nil)
+			try? await store.failJobPermanently(id: job.id, error: message)
 			postFailure(articleID: job.articleID, error: message)
 			return
 		}
 
 		guard let article = await resolver.article(for: job.articleID) else {
 			let message = "找不到文章"
-			try? await store.failJob(id: job.id, error: message, retryAt: nil)
+			try? await store.failJobPermanently(id: job.id, error: message)
 			postFailure(articleID: job.articleID, error: message)
 			return
 		}
@@ -320,26 +468,38 @@ private extension AIJobExecutor {
 private extension AIJobExecutor {
 
 	func installObserverIfNeeded() {
-		guard observerToken == nil else {
-			return
+		if observerToken == nil {
+			observerToken = notificationCenter.addObserver(forName: .AccountDidDownloadArticles, object: nil, queue: .main) { [weak self] notification in
+				guard let self else {
+					return
+				}
+				var articles: [Article] = []
+				if let newArticles = notification.userInfo?[Account.UserInfoKey.newArticles] as? Set<Article> {
+					articles.append(contentsOf: newArticles)
+				}
+				if let updatedArticles = notification.userInfo?[Account.UserInfoKey.updatedArticles] as? Set<Article> {
+					articles.append(contentsOf: updatedArticles)
+				}
+				guard !articles.isEmpty else {
+					return
+				}
+				let aiArticles = articles.map { AIArticle(article: $0) }
+				Task { @MainActor [weak self] in
+					await self?.enqueueForNewArticles(aiArticles)
+				}
+			}
 		}
-		observerToken = notificationCenter.addObserver(forName: .AccountDidDownloadArticles, object: nil, queue: .main) { [weak self] notification in
-			guard let self else {
-				return
-			}
-			var articles: [Article] = []
-			if let newArticles = notification.userInfo?[Account.UserInfoKey.newArticles] as? Set<Article> {
-				articles.append(contentsOf: newArticles)
-			}
-			if let updatedArticles = notification.userInfo?[Account.UserInfoKey.updatedArticles] as? Set<Article> {
-				articles.append(contentsOf: updatedArticles)
-			}
-			guard !articles.isEmpty else {
-				return
-			}
-			let aiArticles = articles.map { AIArticle(article: $0) }
-			Task { @MainActor [weak self] in
-				await self?.enqueueForNewArticles(aiArticles)
+
+		if feedRemovalObserverToken == nil {
+			feedRemovalObserverToken = notificationCenter.addObserver(forName: .AccountDidRemoveFeeds, object: nil, queue: .main) { [weak self] notification in
+				guard let self,
+				      let articleIDs = notification.userInfo?[Account.UserInfoKey.articleIDs] as? Set<String>,
+				      !articleIDs.isEmpty else {
+					return
+				}
+				Task { @MainActor [weak self] in
+					await self?.handleRemovedFeeds(articleIDs: articleIDs)
+				}
 			}
 		}
 	}
