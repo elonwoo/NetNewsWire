@@ -909,7 +909,7 @@ extension AppDelegate {
 			return
 		}
 
-		let item = NSMenuItem(title: AILocalization.string("Import WeChat Official Accounts"), action: action, keyEquivalent: "")
+		let item = NSMenuItem(title: "导入微信公众号目录", action: action, keyEquivalent: "")
 		item.target = self
 
 		if let importIndex = fileMenu.items.firstIndex(where: { $0.action == #selector(importOPMLFromFile(_:)) }) {

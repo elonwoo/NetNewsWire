@@ -2490,24 +2490,6 @@
           }
         }
       }
-    },
-    "aiC-ht-001.title" : {
-      "comment" : "Class = \"NSMenuItem\"; title = \"AI Chat Panel\"; ObjectID = \"aiC-ht-001\";",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "AI Chat Panel"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "AI 对话栏"
-          }
-        }
-      }
     }
   },
   "version" : "1.2"

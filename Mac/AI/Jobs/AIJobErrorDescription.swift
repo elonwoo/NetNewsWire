@@ -12,34 +12,34 @@ enum AIJobErrorDescription {
 		if let engineError = error as? AIEngineError {
 			switch engineError {
 			case .emptyContent:
-				return AILocalization.string("Article content is empty")
+				return "文章内容为空"
 			case .invalidModelResponse(let detail):
-				return AILocalization.format("Invalid model response format: %@", detail)
+				return "模型返回格式无效：\(detail)"
 			case .incompleteTranslation(let missing):
 				let indices = missing.map(String.init).joined(separator: ", ")
-				return AILocalization.format("Translation is missing blocks: %@", indices)
+				return "译文缺少块：\(indices)"
 			}
 		}
 
 		if let rewriteError = error as? AIRewriteError {
 			switch rewriteError {
 			case .qualityRejected(let reason):
-				return AILocalization.format("Rewrite quality check failed: %@", reason)
+				return "改写质量校验失败：\(reason)"
 			}
 		}
 
 		if let clientError = error as? AIClientError {
 			switch clientError {
 			case .invalidResponse:
-				return AILocalization.string("Invalid model response")
+				return "模型响应无效"
 			case .httpStatus(let code):
-				return AILocalization.format("Model request failed (HTTP %lld)", code)
+				return "模型请求失败（HTTP \(code)）"
 			case .missingContent:
-				return AILocalization.string("Model response is missing content")
+				return "模型响应缺少内容"
 			case .emptyContent:
-				return AILocalization.string("Model returned empty content")
+				return "模型返回空内容"
 			case .truncated:
-				return AILocalization.string("Model output was truncated")
+				return "模型输出被截断"
 			}
 		}
 

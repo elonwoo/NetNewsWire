@@ -16,7 +16,7 @@ enum AIMarkdownRenderer {
 	/// Wraps rendered Markdown in the reading pane's HTML document.
 	static func document(from markdown: String) -> String {
 		let body = html(from: markdown)
-		let content = body.isEmpty ? "<p class=\"empty\">\(AILocalization.string("The rewrite is empty."))</p>" : body
+		let content = body.isEmpty ? "<p class=\"empty\">改写内容为空。</p>" : body
 
 		return """
 		<!doctype html>

@@ -12,14 +12,14 @@ import RSCore
 /// Imports the WeChat feeds from the built-in catalog into the local account.
 ///
 /// The catalog is fetched on demand and written to a temporary OPML file whose
-/// feeds live in a single WeChat folder. Feeds that are already
+/// feeds live in a single “微信公众号” folder. Feeds that are already
 /// subscribed are left out before the import.
 @MainActor
 final class WeChatCatalogImporter {
 
 	static let shared = WeChatCatalogImporter()
 
-	private static let folderName = AILocalization.string("WeChat")
+	private static let folderName = "微信公众号"
 	private static let logger = Logger(subsystem: Logger.nnwSubsystem, category: "WeChatCatalog")
 
 	private(set) var isImporting = false

@@ -44,7 +44,7 @@ final class AIDetailPaneViewController: NSViewController {
 		self.detailViewController = detailViewController
 		self.rewriteViewController = rewriteViewController
 		self.translationViewController = translationViewController
-		self.tabControl = NSSegmentedControl(labels: [AILocalization.string("Original"), AILocalization.string("Chinese Rewrite"), AILocalization.string("Chinese Translation")], trackingMode: .selectOne, target: nil, action: nil)
+		self.tabControl = NSSegmentedControl(labels: ["原文", "中文改写", "中文翻译"], trackingMode: .selectOne, target: nil, action: nil)
 		if let stored = UserDefaults.standard.object(forKey: Self.tabDefaultsKey) as? Int, let tab = Tab(rawValue: stored) {
 			self.selectedTab = tab
 		} else {

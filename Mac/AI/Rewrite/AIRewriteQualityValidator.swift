@@ -33,7 +33,7 @@ enum AIRewriteQualityValidator {
 		if isRefusal(opening) {
 			return AIRewriteQuality(
 				ok: false,
-				reason: AILocalization.string("The model refused to answer"),
+				reason: "模型返回了拒答",
 				sourceLength: sourceLength,
 				hanLength: han,
 				paragraphCount: paragraphs,
@@ -45,7 +45,7 @@ enum AIRewriteQualityValidator {
 		if han < minHan {
 			return AIRewriteQuality(
 				ok: false,
-				reason: AILocalization.format("Chinese body is too short (%lld/%lld)", han, minHan),
+				reason: "中文正文过短（\(han)/\(minHan)）",
 				sourceLength: sourceLength,
 				hanLength: han,
 				paragraphCount: paragraphs,
@@ -57,7 +57,7 @@ enum AIRewriteQualityValidator {
 		if paragraphs < minParagraphs {
 			return AIRewriteQuality(
 				ok: false,
-				reason: AILocalization.format("Not enough body paragraphs (%lld/%lld)", paragraphs, minParagraphs),
+				reason: "正文段落不足（\(paragraphs)/\(minParagraphs)）",
 				sourceLength: sourceLength,
 				hanLength: han,
 				paragraphCount: paragraphs,

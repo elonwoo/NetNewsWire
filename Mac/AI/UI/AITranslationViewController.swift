@@ -39,14 +39,14 @@ final class AITranslationViewController: NSViewController {
 	private static let modeDefaultsKey = "aiTranslationViewMode"
 
 	private let headerBar = NSView()
-	private let modeControl = NSSegmentedControl(labels: [AILocalization.string("Side by Side"), AILocalization.string("Chinese Only")], trackingMode: .selectOne, target: nil, action: nil)
+	private let modeControl = NSSegmentedControl(labels: ["对照", "纯中文"], trackingMode: .selectOne, target: nil, action: nil)
 	private let contentView = NSView()
 	private let emptyView = NSStackView()
-	private let emptyLabel = NSTextField(wrappingLabelWithString: AILocalization.string("No Chinese translation yet"))
+	private let emptyLabel = NSTextField(wrappingLabelWithString: "还没有中文译文")
 	private let translateButton = NSButton()
 	private let loadingView = NSStackView()
 	private let loadingIndicator = NSProgressIndicator()
-	private let loadingLabel = NSTextField(labelWithString: AILocalization.string("Loading translation"))
+	private let loadingLabel = NSTextField(labelWithString: "正在读取译文")
 	private let errorView = NSStackView()
 	private let errorLabel = NSTextField(wrappingLabelWithString: "")
 	private let retryButton = NSButton()
@@ -137,7 +137,7 @@ final class AITranslationViewController: NSViewController {
 				guard self.loadToken == token else {
 					return
 				}
-				self.state = .error(AILocalization.format("Failed to load translation: %@", error.localizedDescription))
+				self.state = .error("读取译文失败：\(error.localizedDescription)")
 				self.updateContent()
 			}
 		}
@@ -179,7 +179,7 @@ private extension AITranslationViewController {
 		emptyLabel.textColor = .secondaryLabelColor
 		emptyLabel.alignment = .center
 
-		translateButton.title = AILocalization.string("Translate")
+		translateButton.title = "翻译"
 		translateButton.bezelStyle = .rounded
 		translateButton.target = self
 		translateButton.action = #selector(translateButtonClicked)
@@ -204,7 +204,7 @@ private extension AITranslationViewController {
 		errorLabel.textColor = .systemRed
 		errorLabel.alignment = .center
 		errorLabel.maximumNumberOfLines = 4
-		retryButton.title = AILocalization.string("Retry")
+		retryButton.title = "重试"
 		retryButton.bezelStyle = .rounded
 		retryButton.target = self
 		retryButton.action = #selector(retryButtonClicked)
@@ -250,19 +250,19 @@ private extension AITranslationViewController {
 
 		switch state {
 		case .noArticle:
-			emptyLabel.stringValue = AILocalization.string("Select an article to see its Chinese translation")
+			emptyLabel.stringValue = "选择一篇文章后可查看中文译文"
 			translateButton.isHidden = true
 			emptyView.isHidden = false
 		case .reading:
-			loadingLabel.stringValue = AILocalization.string("Loading translation")
+			loadingLabel.stringValue = "正在读取译文"
 			loadingIndicator.startAnimation(nil)
 			loadingView.isHidden = false
 		case .empty:
-			emptyLabel.stringValue = AILocalization.string("No Chinese translation yet")
+			emptyLabel.stringValue = "还没有中文译文"
 			translateButton.isHidden = false
 			emptyView.isHidden = false
 		case .translating:
-			loadingLabel.stringValue = AILocalization.string("Translation submitted. It will refresh when ready.")
+			loadingLabel.stringValue = "翻译任务已提交，完成后会自动刷新"
 			loadingIndicator.startAnimation(nil)
 			loadingView.isHidden = false
 		case .translation(let translation):
@@ -309,7 +309,7 @@ private extension AITranslationViewController {
 			do {
 				try await AIEnvironment.shared.queue.enqueue(job)
 			} catch {
-				self.state = .error(AILocalization.format("Failed to submit translation: %@", error.localizedDescription))
+				self.state = .error("提交翻译任务失败：\(error.localizedDescription)")
 				self.updateContent()
 			}
 		}
@@ -375,7 +375,7 @@ private extension AITranslationViewController {
 		}
 
 		if blocks.isEmpty {
-			blocks = "<p class=\"empty\">\(AILocalization.string("The translation is empty."))</p>"
+			blocks = "<p class=\"empty\">正文译文为空。</p>"
 		}
 
 		let titleHTML = title.isEmpty ? "" : "<h1>\(title)</h1>"

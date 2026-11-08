@@ -945,9 +945,7 @@ extension MainWindowController: MainWindowStatusBarViewDelegate {
 		menu.insertItem(withTitle: sidebarTitle, action: #selector(NSSplitViewController.toggleSidebar(_:)), keyEquivalent: "", at: index)
 		index += 1
 
-		let aiTitle = isAIPaneVisible
-			? AILocalization.string("Hide AI Chat Panel")
-			: AILocalization.string("Show AI Chat Panel")
+		let aiTitle = isAIPaneVisible ? "隐藏 AI 对话栏" : "显示 AI 对话栏"
 		let aiItem = NSMenuItem(title: aiTitle, action: #selector(toggleAIPane(_:)), keyEquivalent: "")
 		aiItem.target = self
 		menu.insertItem(aiItem, at: index)
@@ -1087,7 +1085,7 @@ extension MainWindowController: NSToolbarDelegate {
 			return buildToolbarButton(.cleanUp, title, Assets.Images.cleanUp, "cleanUp:")
 
 		case .aiChat:
-			let title = AILocalization.string("AI Chat Panel")
+			let title = "AI 对话栏"
 			let image = NSImage(systemSymbolName: "bubble.left.and.bubble.right", accessibilityDescription: title) ?? NSImage(size: NSSize(width: 16, height: 16))
 			return buildToolbarButton(.aiChat, title, image, "toggleAIPane:")
 

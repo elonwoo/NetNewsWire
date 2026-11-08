@@ -70,7 +70,7 @@ enum SourceCatalog {
 		),
 		SourceDefinition(
 			id: "product-hunt",
-			displayName: AILocalization.string("Product Hunt"),
+			displayName: "Product Hunt",
 			endpoint: .directFeed(makeURL("https://www.producthunt.com/feed")),
 			websiteURL: makeURL("https://www.producthunt.com"),
 			rewriteHint: .productHunt,
@@ -78,7 +78,7 @@ enum SourceCatalog {
 		),
 		SourceDefinition(
 			id: "hugging-face-papers",
-			displayName: AILocalization.string("Hugging Face Daily Papers"),
+			displayName: "Hugging Face 每日论文",
 			endpoint: .rssHub(path: "/huggingface/daily-papers"),
 			websiteURL: makeURL("https://huggingface.co/papers"),
 			rewriteHint: .paper,
@@ -86,7 +86,7 @@ enum SourceCatalog {
 		),
 		SourceDefinition(
 			id: "wechat-catalog",
-			displayName: AILocalization.string("WeChat Official Accounts"),
+			displayName: "微信公众号目录",
 			endpoint: .weChatCatalog,
 			websiteURL: makeURL("https://bestblogs.dev"),
 			rewriteHint: .article,
