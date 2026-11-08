@@ -43,8 +43,12 @@ final class AIPreferencesViewController: NSViewController {
 
 		apiKeyField.placeholderString = "网关 API key"
 		apiKeyField.font = .systemFont(ofSize: 13)
+		apiKeyField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+		apiKeyField.widthAnchor.constraint(greaterThanOrEqualToConstant: 280).isActive = true
 
 		statusLabel.font = .systemFont(ofSize: 12)
+		statusLabel.setContentHuggingPriority(.required, for: .horizontal)
+		statusLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
 
 		let keyRow = NSStackView(views: [apiKeyField, statusLabel])
 		keyRow.orientation = .horizontal
