@@ -18,6 +18,8 @@ final class AIEnvironment {
 
 	private static let credentialServer = "magpie"
 	private static let credentialUsername = "magpie"
+	private static let baseURLDefaultsKey = "AI.GatewayBaseURL"
+	private static let modelDefaultsKey = "AI.GatewayModel"
 
 	let store: SQLiteAIStore
 	let queue: AIQueue
@@ -25,8 +27,7 @@ final class AIEnvironment {
 	private(set) var config: AIConfig
 
 	private init() {
-		let apiKey = Self.loadAPIKey()
-		let config = AIConfig(apiKey: apiKey)
+		let config = Self.loadConfig()
 		let store = SQLiteAIStore(databasePath: Self.databasePath)
 		self.config = config
 		self.store = store
@@ -45,7 +46,20 @@ final class AIEnvironment {
 	/// use it. The database and queue are untouched.
 	func updateAPIKey(_ apiKey: String) throws {
 		try Self.saveAPIKey(apiKey)
-		let config = AIConfig(apiKey: apiKey)
+		apply(AIConfig(baseURL: config.baseURL, model: config.model, apiKey: apiKey))
+	}
+
+	/// Persists the gateway address and model, and optionally a new key.
+	func updateGateway(baseURL: URL, model: String, apiKey: String?) throws {
+		if let apiKey {
+			try Self.saveAPIKey(apiKey)
+		}
+		UserDefaults.standard.set(baseURL.absoluteString, forKey: Self.baseURLDefaultsKey)
+		UserDefaults.standard.set(model, forKey: Self.modelDefaultsKey)
+		apply(AIConfig(baseURL: baseURL, model: model, apiKey: apiKey ?? config.apiKey))
+	}
+
+	private func apply(_ config: AIConfig) {
 		self.config = config
 		self.engine = AIEngine(store: store, client: OpenAIChatClient(config: config), config: config)
 	}
@@ -59,6 +73,14 @@ private extension AIEnvironment {
 		let folderURL = applicationSupportURL.appendingPathComponent("NetNewsWire", isDirectory: true)
 		try? FileManager.default.createDirectory(at: folderURL, withIntermediateDirectories: true)
 		return folderURL.appendingPathComponent("AI.sqlite").path
+	}
+
+	static func loadConfig() -> AIConfig {
+		let defaults = UserDefaults.standard
+		let baseURLString = defaults.string(forKey: baseURLDefaultsKey) ?? AIConfig.defaultBaseURL.absoluteString
+		let baseURL = URL(string: baseURLString) ?? AIConfig.defaultBaseURL
+		let model = defaults.string(forKey: modelDefaultsKey) ?? AIConfig.defaultModel
+		return AIConfig(baseURL: baseURL, model: model, apiKey: loadAPIKey())
 	}
 
 	static func loadAPIKey() -> String? {

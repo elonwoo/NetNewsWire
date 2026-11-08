@@ -12,8 +12,8 @@ final class AIPreferencesViewController: NSViewController {
 	private static let preferredWidth: CGFloat = 512
 	private static let preferredHeight: CGFloat = 300
 
-	private let baseURLField = NSTextField(labelWithString: "")
-	private let modelField = NSTextField(labelWithString: "")
+	private let baseURLField = NSTextField()
+	private let modelField = NSTextField()
 	private let apiKeyField = NSSecureTextField()
 	private let statusLabel = NSTextField(labelWithString: "")
 	private let messageLabel = NSTextField(wrappingLabelWithString: "")
@@ -38,8 +38,8 @@ final class AIPreferencesViewController: NSViewController {
 		intro.font = .systemFont(ofSize: 12)
 		intro.textColor = .secondaryLabelColor
 
-		configureReadOnly(baseURLField, value: AIEnvironment.shared.config.baseURL.absoluteString)
-		configureReadOnly(modelField, value: AIEnvironment.shared.config.model)
+		configureEditable(baseURLField, placeholder: "http://127.0.0.1:3425/v1")
+		configureEditable(modelField, placeholder: "deepseek-v4.1-flash")
 
 		apiKeyField.placeholderString = "网关 API key"
 		apiKeyField.font = .systemFont(ofSize: 13)
@@ -107,6 +107,8 @@ final class AIPreferencesViewController: NSViewController {
 
 	override func viewWillAppear() {
 		super.viewWillAppear()
+		baseURLField.stringValue = AIEnvironment.shared.config.baseURL.absoluteString
+		modelField.stringValue = AIEnvironment.shared.config.model
 		apiKeyField.stringValue = ""
 		messageLabel.stringValue = ""
 		updateStatus()
@@ -118,16 +120,27 @@ final class AIPreferencesViewController: NSViewController {
 private extension AIPreferencesViewController {
 
 	@objc func saveAPIKey() {
-		let apiKey = apiKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-		guard !apiKey.isEmpty else {
-			showMessage("请输入 API key。", isError: false)
+		let baseURLString = baseURLField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+		guard let baseURL = URL(string: baseURLString),
+			  let scheme = baseURL.scheme?.lowercased(),
+			  scheme == "http" || scheme == "https",
+			  baseURL.host?.isEmpty == false else {
+			showMessage("网关地址无效，需要以 http:// 或 https:// 开头。", isError: true)
 			return
 		}
 
+		let model = modelField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+		guard !model.isEmpty else {
+			showMessage("请填写模型名。", isError: true)
+			return
+		}
+
+		let apiKey = apiKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+
 		do {
-			try AIEnvironment.shared.updateAPIKey(apiKey)
+			try AIEnvironment.shared.updateGateway(baseURL: baseURL, model: model, apiKey: apiKey.isEmpty ? nil : apiKey)
 			apiKeyField.stringValue = ""
-			showMessage("已保存。", isError: false)
+			showMessage(apiKey.isEmpty ? "已保存。API key 未改动。" : "已保存。", isError: false)
 			updateStatus()
 		} catch {
 			showMessage("保存失败：\(error.localizedDescription)", isError: true)
@@ -156,15 +169,15 @@ private extension AIPreferencesViewController {
 		return label
 	}
 
-	func configureReadOnly(_ field: NSTextField, value: String) {
-		field.stringValue = value
-		field.isSelectable = true
-		field.isEditable = false
-		field.isBezeled = false
-		field.drawsBackground = false
+	func configureEditable(_ field: NSTextField, placeholder: String) {
+		field.placeholderString = placeholder
 		field.font = .systemFont(ofSize: 13)
-		field.textColor = .secondaryLabelColor
-		field.lineBreakMode = .byTruncatingMiddle
+		field.isEditable = true
+		field.isSelectable = true
+		field.isBezeled = true
+		field.bezelStyle = .roundedBezel
+		field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+		field.widthAnchor.constraint(greaterThanOrEqualToConstant: 280).isActive = true
 	}
 
 	func updateStatus() {
