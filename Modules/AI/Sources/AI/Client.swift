@@ -40,8 +40,22 @@ public struct AIConfig: Sendable {
 	}
 }
 
+/// Whether a reasoning model may spend tokens on its reasoning step.
+///
+/// Only translation turns thinking off; rewrites and chat keep the model default.
+public enum AIThinkingMode: String, Sendable {
+	case enabled
+	case disabled
+}
+
 public protocol AIClient: Sendable {
-	func complete(messages: [AIMessage], temperature: Double?, maxTokens: Int?) async throws -> String
+	func complete(messages: [AIMessage], temperature: Double?, maxTokens: Int?, thinking: AIThinkingMode?) async throws -> String
+}
+
+public extension AIClient {
+	func complete(messages: [AIMessage], temperature: Double? = nil, maxTokens: Int? = nil) async throws -> String {
+		try await complete(messages: messages, temperature: temperature, maxTokens: maxTokens, thinking: nil)
+	}
 }
 
 /// Minimal OpenAI-compatible chat completions client.
@@ -53,13 +67,22 @@ public final class OpenAIChatClient: AIClient, Sendable {
 	private let config: AIConfig
 	private let session: URLSession
 
-	public init(config: AIConfig, session: URLSession = .shared) {
+	/// Long articles can take minutes to rewrite, so the default session allows
+	/// far more time than `URLSession.shared` does.
+	private static let defaultSession: URLSession = {
+		let configuration = URLSessionConfiguration.ephemeral
+		configuration.timeoutIntervalForRequest = 240
+		configuration.timeoutIntervalForResource = 480
+		return URLSession(configuration: configuration)
+	}()
+
+	public init(config: AIConfig, session: URLSession? = nil) {
 		self.config = config
-		self.session = session
+		self.session = session ?? Self.defaultSession
 	}
 
-	public func complete(messages: [AIMessage], temperature: Double? = nil, maxTokens: Int? = nil) async throws -> String {
-		let request = try makeRequest(messages: messages, temperature: temperature, maxTokens: maxTokens)
+	public func complete(messages: [AIMessage], temperature: Double?, maxTokens: Int?, thinking: AIThinkingMode?) async throws -> String {
+		let request = try makeRequest(messages: messages, temperature: temperature, maxTokens: maxTokens, thinking: thinking)
 		let (data, response) = try await session.data(for: request)
 		guard let httpResponse = response as? HTTPURLResponse else {
 			throw AIClientError.invalidResponse
@@ -109,7 +132,7 @@ public final class OpenAIChatClient: AIClient, Sendable {
 		return decoded.data.map(\.id).filter { !$0.isEmpty }
 	}
 
-	private func makeRequest(messages: [AIMessage], temperature: Double?, maxTokens: Int?) throws -> URLRequest {
+	private func makeRequest(messages: [AIMessage], temperature: Double?, maxTokens: Int?, thinking: AIThinkingMode?) throws -> URLRequest {
 		let url = config.baseURL.appendingPathComponent("chat/completions")
 		var request = URLRequest(url: url)
 		request.httpMethod = "POST"
@@ -122,7 +145,8 @@ public final class OpenAIChatClient: AIClient, Sendable {
 			model: config.model,
 			messages: messages.map { ChatCompletionRequest.Message(role: $0.role, content: $0.content) },
 			temperature: temperature ?? config.temperature,
-			maxTokens: maxTokens ?? config.maxTokens
+			maxTokens: maxTokens ?? config.maxTokens,
+			thinking: thinking.map { ChatCompletionRequest.AIThinkingRequest(type: $0.rawValue) }
 		)
 		request.httpBody = try JSONEncoder().encode(body)
 		return request
@@ -144,16 +168,31 @@ private struct ChatCompletionRequest: Encodable {
 		let content: String
 	}
 
+	struct AIThinkingRequest: Encodable {
+		let type: String
+	}
+
 	let model: String
 	let messages: [Message]
 	let temperature: Double
 	let maxTokens: Int
+	let thinking: AIThinkingRequest?
 
 	enum CodingKeys: String, CodingKey {
 		case model
 		case messages
 		case temperature
 		case maxTokens = "max_tokens"
+		case thinking
+	}
+
+	func encode(to encoder: Encoder) throws {
+		var container = encoder.container(keyedBy: CodingKeys.self)
+		try container.encode(model, forKey: .model)
+		try container.encode(messages, forKey: .messages)
+		try container.encode(temperature, forKey: .temperature)
+		try container.encode(maxTokens, forKey: .maxTokens)
+		try container.encodeIfPresent(thinking, forKey: .thinking)
 	}
 }
 

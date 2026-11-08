@@ -55,6 +55,49 @@ import Testing
 		#expect(messages[1]["content"] as? String == "hello")
 	}
 
+	@Test func sendsThinkingDisabledWhenRequested() async throws {
+		MockURLProtocol.handler = { request in
+			MockURLProtocol.lastBody = MockURLProtocol.bodyData(from: request)
+			let json = #"{"choices":[{"message":{"content":"ok"}}]}"#
+			return (200, Data(json.utf8))
+		}
+
+		let baseURL = try #require(URL(string: "http://example.com/v1"))
+		let config = AIConfig(baseURL: baseURL, model: "test-model")
+		let client = OpenAIChatClient(config: config, session: MockURLProtocol.makeSession())
+
+		_ = try await client.complete(
+			messages: [AIMessage(role: "user", content: "hi")],
+			temperature: nil,
+			maxTokens: nil,
+			thinking: .disabled
+		)
+
+		let body = try #require(MockURLProtocol.lastBody)
+		let object = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+		let thinking = try #require(object["thinking"] as? [String: Any])
+		#expect(thinking.count == 1)
+		#expect(thinking["type"] as? String == "disabled")
+	}
+
+	@Test func omitsThinkingKeyByDefault() async throws {
+		MockURLProtocol.handler = { request in
+			MockURLProtocol.lastBody = MockURLProtocol.bodyData(from: request)
+			let json = #"{"choices":[{"message":{"content":"ok"}}]}"#
+			return (200, Data(json.utf8))
+		}
+
+		let baseURL = try #require(URL(string: "http://example.com/v1"))
+		let config = AIConfig(baseURL: baseURL, model: "test-model")
+		let client = OpenAIChatClient(config: config, session: MockURLProtocol.makeSession())
+
+		_ = try await client.complete(messages: [AIMessage(role: "user", content: "hi")])
+
+		let body = try #require(MockURLProtocol.lastBody)
+		let object = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+		#expect(object.index(forKey: "thinking") == nil)
+	}
+
 	@Test func perCallOverridesTakePrecedence() async throws {
 		MockURLProtocol.handler = { request in
 			MockURLProtocol.lastBody = MockURLProtocol.bodyData(from: request)

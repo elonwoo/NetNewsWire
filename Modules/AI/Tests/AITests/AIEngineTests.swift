@@ -161,7 +161,7 @@ private final class MockAIClient: AIClient, Sendable {
 		self.handler = handler
 	}
 
-	func complete(messages: [AIMessage], temperature: Double?, maxTokens: Int?) async throws -> String {
+	func complete(messages: [AIMessage], temperature: Double?, maxTokens: Int?, thinking: AIThinkingMode?) async throws -> String {
 		try handler(messages)
 	}
 }

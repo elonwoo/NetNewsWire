@@ -52,7 +52,8 @@ public actor AIEngine {
 					AIMessage(role: "user", content: String(decoding: payload, as: UTF8.self))
 				],
 				temperature: nil,
-				maxTokens: nil
+				maxTokens: nil,
+				thinking: .disabled
 			)
 			let response = try decodeJSON(TitleResponse.self, from: raw)
 
@@ -104,7 +105,8 @@ public actor AIEngine {
 					AIMessage(role: "user", content: String(decoding: payload, as: UTF8.self))
 				],
 				temperature: nil,
-				maxTokens: nil
+				maxTokens: nil,
+				thinking: .disabled
 			)
 			let response = try decodeJSON(TranslateResponse.self, from: raw)
 			for block in response.blocks {
