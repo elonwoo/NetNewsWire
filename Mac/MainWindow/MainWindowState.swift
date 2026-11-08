@@ -17,15 +17,20 @@ final class MainWindowState: NSObject, NSSecureCoding {
 	// Timeline height in column layout. Zero when never saved.
 	let columnLayoutTimelineHeight: Int
 	let isSidebarHidden: Bool
+	// The AI pane’s visibility and width. Zero width means never saved.
+	let isAIPaneVisible: Bool
+	let aiPaneWidth: Int
 	let sidebarWindowState: SidebarWindowState?
 	let timelineWindowState: TimelineWindowState?
 	let detailWindowState: DetailWindowState?
 
-	init(isFullScreen: Bool, splitViewWidths: [Int], columnLayoutTimelineHeight: Int = 0, isSidebarHidden: Bool, sidebarWindowState: SidebarWindowState? = nil, timelineWindowState: TimelineWindowState? = nil, detailWindowState: DetailWindowState? = nil) {
+	init(isFullScreen: Bool, splitViewWidths: [Int], columnLayoutTimelineHeight: Int = 0, isSidebarHidden: Bool, isAIPaneVisible: Bool = false, aiPaneWidth: Int = 0, sidebarWindowState: SidebarWindowState? = nil, timelineWindowState: TimelineWindowState? = nil, detailWindowState: DetailWindowState? = nil) {
 		self.isFullScreen = isFullScreen
 		self.splitViewWidths = splitViewWidths
 		self.columnLayoutTimelineHeight = columnLayoutTimelineHeight
 		self.isSidebarHidden = isSidebarHidden
+		self.isAIPaneVisible = isAIPaneVisible
+		self.aiPaneWidth = aiPaneWidth
 		self.sidebarWindowState = sidebarWindowState
 		self.timelineWindowState = timelineWindowState
 		self.detailWindowState = detailWindowState
@@ -36,6 +41,8 @@ final class MainWindowState: NSObject, NSSecureCoding {
 		static let splitViewWidths = "splitViewWidths"
 		static let columnLayoutTimelineHeight = "columnLayoutTimelineHeight"
 		static let isSidebarHidden = "isSidebarHidden"
+		static let isAIPaneVisible = "isAIPaneVisible"
+		static let aiPaneWidth = "aiPaneWidth"
 		static let sidebarWindowState = "sidebarWindowState"
 		static let timelineWindowState = "timelineWindowState"
 		static let detailWindowState = "detailWindowState"
@@ -46,6 +53,8 @@ final class MainWindowState: NSObject, NSSecureCoding {
 		splitViewWidths = coder.decodeObject(of: [NSArray.self, NSNumber.self], forKey: Key.splitViewWidths) as? [Int] ?? []
 		columnLayoutTimelineHeight = coder.decodeInteger(forKey: Key.columnLayoutTimelineHeight)
 		isSidebarHidden = coder.decodeBool(forKey: Key.isSidebarHidden)
+		isAIPaneVisible = coder.decodeBool(forKey: Key.isAIPaneVisible)
+		aiPaneWidth = coder.decodeInteger(forKey: Key.aiPaneWidth)
 		sidebarWindowState = coder.decodeObject(of: SidebarWindowState.self, forKey: Key.sidebarWindowState)
 		timelineWindowState = coder.decodeObject(of: TimelineWindowState.self, forKey: Key.timelineWindowState)
 		detailWindowState = coder.decodeObject(of: DetailWindowState.self, forKey: Key.detailWindowState)
@@ -56,6 +65,8 @@ final class MainWindowState: NSObject, NSSecureCoding {
 		coder.encode(splitViewWidths, forKey: Key.splitViewWidths)
 		coder.encode(columnLayoutTimelineHeight, forKey: Key.columnLayoutTimelineHeight)
 		coder.encode(isSidebarHidden, forKey: Key.isSidebarHidden)
+		coder.encode(isAIPaneVisible, forKey: Key.isAIPaneVisible)
+		coder.encode(aiPaneWidth, forKey: Key.aiPaneWidth)
 		coder.encode(sidebarWindowState, forKey: Key.sidebarWindowState)
 		coder.encode(timelineWindowState, forKey: Key.timelineWindowState)
 		coder.encode(detailWindowState, forKey: Key.detailWindowState)
@@ -65,6 +76,6 @@ final class MainWindowState: NSObject, NSSecureCoding {
 		let sidebar = sidebarWindowState?.description ?? "nil"
 		let timeline = timelineWindowState?.description ?? "nil"
 		let detail = detailWindowState?.description ?? "nil"
-		return "MainWindowState: fullScreen=\(isFullScreen), widths=\(splitViewWidths), timelineHeight=\(columnLayoutTimelineHeight), sidebarHidden=\(isSidebarHidden), sidebar=[\(sidebar)], timeline=[\(timeline)], detail=[\(detail)]"
+		return "MainWindowState: fullScreen=\(isFullScreen), widths=\(splitViewWidths), timelineHeight=\(columnLayoutTimelineHeight), sidebarHidden=\(isSidebarHidden), aiVisible=\(isAIPaneVisible), aiWidth=\(aiPaneWidth), sidebar=[\(sidebar)], timeline=[\(timeline)], detail=[\(detail)]"
 	}
 }
