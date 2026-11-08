@@ -8,8 +8,8 @@ import WebKit
 import AI
 import Articles
 
-/// The Chinese tab of the reading area: empty state, translation progress, and the
-/// translated article in either bilingual or Chinese-only mode.
+/// The Chinese translation tab of the reading area: empty state, translation
+/// progress, and the translated article in either bilingual or Chinese-only mode.
 @MainActor
 final class AITranslationViewController: NSViewController {
 
