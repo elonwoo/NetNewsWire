@@ -16,6 +16,7 @@ extension Notification.Name {
 
 enum AIUserInfoKey {
 	static let articleID = "articleID"
+	static let error = "error"
 }
 
 /// A plain flipped view, so stack views inside scroll views start at the top.

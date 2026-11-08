@@ -348,7 +348,7 @@ private extension AIJobExecutor {
 		notificationCenter.post(
 			name: .aiTranslationReady,
 			object: nil,
-			userInfo: [AIJobNotificationKey.articleID: articleID]
+			userInfo: [AIUserInfoKey.articleID: articleID]
 		)
 	}
 
@@ -356,7 +356,7 @@ private extension AIJobExecutor {
 		notificationCenter.post(
 			name: .aiRewriteReady,
 			object: nil,
-			userInfo: [AIJobNotificationKey.articleID: articleID]
+			userInfo: [AIUserInfoKey.articleID: articleID]
 		)
 	}
 
@@ -365,8 +365,8 @@ private extension AIJobExecutor {
 			name: .aiJobFailed,
 			object: nil,
 			userInfo: [
-				AIJobNotificationKey.articleID: articleID,
-				AIJobNotificationKey.error: error
+				AIUserInfoKey.articleID: articleID,
+				AIUserInfoKey.error: error
 			]
 		)
 	}
