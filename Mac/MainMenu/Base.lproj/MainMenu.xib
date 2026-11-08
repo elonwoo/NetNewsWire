@@ -367,6 +367,12 @@
                                     <action selector="toggleSidebar:" target="-1" id="CZ1-aO-CkF"/>
                                 </connections>
                             </menuItem>
+                            <menuItem title="AI 对话栏" keyEquivalent="a" id="aiC-ht-001">
+                                <modifierMask key="keyEquivalentModifierMask" option="YES" command="YES"/>
+                                <connections>
+                                    <action selector="toggleAIPane:" target="-1" id="aiC-ht-002"/>
+                                </connections>
+                            </menuItem>
                             <menuItem title="Hide Read Feeds" keyEquivalent="F" id="E9K-zV-nLv">
                                 <connections>
                                     <action selector="toggleReadFeedsFilter:" target="-1" id="5pI-YT-xai"/>

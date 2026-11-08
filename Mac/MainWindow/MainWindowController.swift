@@ -45,10 +45,13 @@ final class MainWindowController: NSWindowController, NSUserInterfaceValidations
 	private static let detailViewMinimumHeight: CGFloat = 200
 	private static let timelineMinimumHeight: CGFloat = 120
 	private static let sidebarMinimumWidth: CGFloat = 96
+	private static let aiPaneMinimumWidth: CGFloat = 280
+	private static let aiPaneDefaultWidth = 340
 	// Used for the timeline when column layout has no saved height.
 	private static let defaultColumnLayoutTimelineHeightFraction: CGFloat = 0.4
 	private static let sidebarHoldingPriority: Float = 260
 	private static let timelineHoldingPriority: Float = 255
+	private static let aiPaneHoldingPriority: Float = 250
 	private static let toolbarIdentifier = "MainWindowToolbar"
 	private var splitViewController: NSSplitViewController?
 	// Column layout only: the vertical split holding the timeline above the article view.
@@ -60,6 +63,12 @@ final class MainWindowController: NSWindowController, NSUserInterfaceValidations
 	private var sidebarViewController: SidebarViewController?
 	private var timelineContainerViewController: TimelineContainerViewController?
 	private var detailViewController: DetailViewController?
+	private var detailPaneViewController: AIDetailPaneViewController?
+	private var aiViewController: AIChatViewController?
+	private var aiSplitViewItem: NSSplitViewItem?
+	private var isAIPaneVisible = false
+	private var rememberedAIPaneWidth = MainWindowController.aiPaneDefaultWidth
+	private var isUserResizingAIPane = false
 	private var currentSearchField: NSSearchField?
 	private var searchString: String?
 	private var lastSentSearchString: String?
@@ -68,6 +77,7 @@ final class MainWindowController: NSWindowController, NSUserInterfaceValidations
 			timelineContainerViewController?.showTimeline(for: timelineSourceMode)
 			detailViewController?.showDetail(for: timelineSourceMode)
 			updateStatusBarLink()
+			updateAIPaneArticle()
 		}
 	}
 	private var searchSmartFeed: SmartFeed?
@@ -111,6 +121,15 @@ final class MainWindowController: NSWindowController, NSUserInterfaceValidations
 		detailViewController.delegate = self
 		self.detailViewController = detailViewController
 
+		let detailPaneViewController = AIDetailPaneViewController(detailViewController: detailViewController)
+		self.detailPaneViewController = detailPaneViewController
+
+		let aiViewController = AIChatViewController()
+		aiViewController.selectedTextProvider = { [weak self] completion in
+			self?.fetchSelectedTextForAI(completion)
+		}
+		self.aiViewController = aiViewController
+
 		mainWindowContentViewController.statusBarView.delegate = self
 		updateStatusBarVisibility()
 
@@ -129,6 +148,8 @@ final class MainWindowController: NSWindowController, NSUserInterfaceValidations
 
 		NotificationCenter.default.addObserver(self, selector: #selector(articleThemeNamesDidChangeNotification(_:)), name: .ArticleThemeNamesDidChangeNotification, object: nil)
 		NotificationCenter.default.addObserver(self, selector: #selector(currentArticleThemeDidChangeNotification(_:)), name: .CurrentArticleThemeDidChangeNotification, object: nil)
+
+		NotificationCenter.default.addObserver(self, selector: #selector(handleAIAskRequested(_:)), name: .aiAskRequested, object: nil)
 
 		DispatchQueue.main.async {
 			self.updateWindowTitle()
@@ -194,6 +215,12 @@ final class MainWindowController: NSWindowController, NSUserInterfaceValidations
 	@objc nonisolated func handleUserDefaultsDidChange(_ note: Notification) {
 		Task { @MainActor in
 			self.userDefaultsDidChange()
+		}
+	}
+
+	@objc nonisolated func handleAIAskRequested(_ note: Notification) {
+		Task { @MainActor in
+			self.setAIPaneVisible(true, focus: true)
 		}
 	}
 
@@ -313,6 +340,13 @@ final class MainWindowController: NSWindowController, NSUserInterfaceValidations
 
 		if item.action == #selector(toggleArticleExtractor(_:)) {
 			return validateToggleArticleExtractor(item)
+		}
+
+		if item.action == #selector(toggleAIPane(_:)) {
+			if let menuItem = item as? NSMenuItem {
+				menuItem.state = isAIPaneVisible ? .on : .off
+			}
+			return true
 		}
 
 		if item.action == #selector(toolbarShowShareMenu(_:)) {
@@ -561,7 +595,11 @@ final class MainWindowController: NSWindowController, NSUserInterfaceValidations
 	}
 
 	@IBAction func navigateToDetail(_ sender: Any?) {
-		detailViewController?.focus()
+		detailPaneViewController?.focus()
+	}
+
+	@IBAction func toggleAIPane(_ sender: Any?) {
+		setAIPaneVisible(!isAIPaneVisible, focus: true)
 	}
 
 	@IBAction func goToPreviousSubscription(_ sender: Any?) {
@@ -751,6 +789,10 @@ extension MainWindowController: TimelineContainerViewControllerDelegate {
 
 		detailViewController?.setState(detailState, mode: mode)
 		updateStatusBarLink()
+
+		let selectedArticle = (articles?.count == 1) ? articles?.first : nil
+		aiViewController?.article = selectedArticle
+		detailPaneViewController?.article = selectedArticle
 	}
 
 	func timelineRequestedFeedSelection(_: TimelineContainerViewController, feed: Feed) {
@@ -901,7 +943,15 @@ extension MainWindowController: MainWindowStatusBarViewDelegate {
 		let isSidebarHidden = sidebarSplitViewItem?.isCollapsed ?? false
 		let sidebarTitle = isSidebarHidden ? NSLocalizedString("Show Sidebar", comment: "Command") : NSLocalizedString("Hide Sidebar", comment: "Command")
 		menu.insertItem(withTitle: sidebarTitle, action: #selector(NSSplitViewController.toggleSidebar(_:)), keyEquivalent: "", at: index)
-		menu.insertItem(NSMenuItem.separator(), at: index + 1)
+		index += 1
+
+		let aiTitle = isAIPaneVisible ? "隐藏 AI 对话栏" : "显示 AI 对话栏"
+		let aiItem = NSMenuItem(title: aiTitle, action: #selector(toggleAIPane(_:)), keyEquivalent: "")
+		aiItem.target = self
+		menu.insertItem(aiItem, at: index)
+		index += 1
+
+		menu.insertItem(NSMenuItem.separator(), at: index)
 
 		return menu
 	}
@@ -935,6 +985,7 @@ extension NSToolbarItem.Identifier {
 	static let share = NSToolbarItem.Identifier("share")
 	static let articleThemeMenu = NSToolbarItem.Identifier("articleThemeMenu")
 	static let cleanUp = NSToolbarItem.Identifier("cleanUp")
+	static let aiChat = NSToolbarItem.Identifier("aiChat")
 }
 
 extension MainWindowController: NSToolbarDelegate {
@@ -1033,6 +1084,11 @@ extension MainWindowController: NSToolbarDelegate {
 			let title = NSLocalizedString("Clean Up", comment: "Clean Up button")
 			return buildToolbarButton(.cleanUp, title, Assets.Images.cleanUp, "cleanUp:")
 
+		case .aiChat:
+			let title = "AI 对话栏"
+			let image = NSImage(systemSymbolName: "bubble.left.and.bubble.right", accessibilityDescription: title) ?? NSImage(size: NSSize(width: 16, height: 16))
+			return buildToolbarButton(.aiChat, title, image, "toggleAIPane:")
+
 		default:
 			break
 		}
@@ -1058,7 +1114,8 @@ extension MainWindowController: NSToolbarDelegate {
 			.share,
 			.articleThemeMenu,
 			.search,
-			.cleanUp
+			.cleanUp,
+			.aiChat
 		]
 	}
 
@@ -1079,6 +1136,7 @@ extension MainWindowController: NSToolbarDelegate {
 			.share,
 			.openInBrowser,
 			.flexibleSpace,
+			.aiChat,
 			.search
 		]
 	}
@@ -1124,7 +1182,7 @@ private extension MainWindowController {
 	/// Builds the split views for `layout` around the existing panes, replacing any current ones.
 	/// Selection, loaded articles, and the article view’s web view all survive, since the panes are reparented, not recreated.
 	func installSplitViewController(for layout: TimelineLayout) {
-		guard let window, let sidebarViewController, let timelineContainerViewController, let detailViewController else {
+		guard let window, let sidebarViewController, let timelineContainerViewController, let detailPaneViewController, let aiViewController else {
 			return
 		}
 
@@ -1146,9 +1204,9 @@ private extension MainWindowController {
 		let newSplitViewController: NSSplitViewController
 		switch layout {
 		case .standard:
-			newSplitViewController = makeStandardSplitViewController(sidebar: sidebarViewController, timeline: timelineContainerViewController, detail: detailViewController)
+			newSplitViewController = makeStandardSplitViewController(sidebar: sidebarViewController, timeline: timelineContainerViewController, detail: detailPaneViewController, ai: aiViewController)
 		case .column:
-			let columnLayoutSplitViewControllers = makeColumnLayoutSplitViewControllers(sidebar: sidebarViewController, timeline: timelineContainerViewController, detail: detailViewController)
+			let columnLayoutSplitViewControllers = makeColumnLayoutSplitViewControllers(sidebar: sidebarViewController, timeline: timelineContainerViewController, detail: detailPaneViewController, ai: aiViewController)
 			newSplitViewController = columnLayoutSplitViewControllers.split
 			contentSplitViewController = columnLayoutSplitViewControllers.content
 		}
@@ -1173,6 +1231,9 @@ private extension MainWindowController {
 
 		window.contentView?.layoutSubtreeIfNeeded()
 		applyRememberedGeometry()
+		if isAIPaneVisible {
+			applyAIPaneWidth()
+		}
 		sidebarSplitViewItem?.isCollapsed = isSidebarHidden
 
 		if let firstResponderView, firstResponderView.window === window {
@@ -1212,9 +1273,10 @@ private extension MainWindowController {
 		}
 		contentSplitViewController = nil
 		splitViewController = nil
+		aiSplitViewItem = nil
 	}
 
-	func makeStandardSplitViewController(sidebar: SidebarViewController, timeline: TimelineContainerViewController, detail: DetailViewController) -> NSSplitViewController {
+	func makeStandardSplitViewController(sidebar: SidebarViewController, timeline: TimelineContainerViewController, detail: AIDetailPaneViewController, ai: AIChatViewController) -> NSSplitViewController {
 		let splitViewController = makeEmptySplitViewController(isVertical: true)
 
 		let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebar)
@@ -1232,13 +1294,20 @@ private extension MainWindowController {
 			detailItem.titlebarSeparatorStyle = .line
 		}
 
-		splitViewController.splitViewItems = [sidebarItem, timelineItem, detailItem]
+		var splitViewItems = [sidebarItem, timelineItem, detailItem]
+		if isAIPaneVisible {
+			let aiItem = makeAIPaneSplitViewItem(viewController: ai)
+			aiSplitViewItem = aiItem
+			splitViewItems.append(aiItem)
+		}
+
+		splitViewController.splitViewItems = splitViewItems
 		sidebar.splitViewItem = sidebarItem
 		return splitViewController
 	}
 
 	/// Returns the outer split (sidebar and content) and the content split (timeline above detail) it contains.
-	func makeColumnLayoutSplitViewControllers(sidebar: SidebarViewController, timeline: TimelineContainerViewController, detail: DetailViewController) -> (split: NSSplitViewController, content: NSSplitViewController) {
+	func makeColumnLayoutSplitViewControllers(sidebar: SidebarViewController, timeline: TimelineContainerViewController, detail: AIDetailPaneViewController, ai: AIChatViewController) -> (split: NSSplitViewController, content: NSSplitViewController) {
 		let contentSplitViewController = makeEmptySplitViewController(isVertical: false, splitView: ColumnLayoutSplitView())
 		contentSplitViewController.splitView.dividerStyle = .paneSplitter
 
@@ -1265,9 +1334,29 @@ private extension MainWindowController {
 			contentItem.titlebarSeparatorStyle = .line
 		}
 
-		splitViewController.splitViewItems = [sidebarItem, contentItem]
+		var splitViewItems = [sidebarItem, contentItem]
+		if isAIPaneVisible {
+			let aiItem = makeAIPaneSplitViewItem(viewController: ai)
+			aiSplitViewItem = aiItem
+			splitViewItems.append(aiItem)
+		}
+
+		splitViewController.splitViewItems = splitViewItems
 		sidebar.splitViewItem = sidebarItem
 		return (splitViewController, contentSplitViewController)
+	}
+
+	func makeAIPaneSplitViewItem(viewController: AIChatViewController) -> NSSplitViewItem {
+		let item = NSSplitViewItem(viewController: viewController)
+		// Start at the remembered width: a required minimum is the one constraint
+		// the split view controller honors when a pane is added to a live split view.
+		item.minimumThickness = CGFloat(max(rememberedAIPaneWidth, Int(Self.aiPaneMinimumWidth)))
+		item.canCollapse = false
+		item.holdingPriority = NSLayoutConstraint.Priority(Self.aiPaneHoldingPriority)
+		if #unavailable(macOS 26.0) {
+			item.titlebarSeparatorStyle = .line
+		}
+		return item
 	}
 
 	func makeEmptySplitViewController(isVertical: Bool, splitView: NSSplitView = MainWindowSplitView()) -> NSSplitViewController {
@@ -1327,6 +1416,8 @@ private extension MainWindowController {
 							   splitViewWidths: rememberedStandardLayoutWidths,
 							   columnLayoutTimelineHeight: rememberedColumnLayoutTimelineHeight,
 							   isSidebarHidden: isSidebarHidden,
+							   isAIPaneVisible: isAIPaneVisible,
+							   aiPaneWidth: rememberedAIPaneWidth,
 							   sidebarWindowState: sidebarViewController?.windowState,
 							   timelineWindowState: timelineContainerViewController?.windowState,
 							   detailWindowState: detailViewController?.windowState)
@@ -1345,17 +1436,26 @@ private extension MainWindowController {
 		let previousSidebarWidth = rememberedStandardLayoutWidths.count == 3 ? rememberedStandardLayoutWidths[0] : 0
 		let sidebarWidth = isSidebarHidden ? previousSidebarWidth : Int(floor(visibleSidebarWidth))
 
+		let aiWidth: CGFloat
+		if isAIPaneVisible, let aiView = splitView.arrangedSubviews.last {
+			aiWidth = aiView.frame.width
+			rememberedAIPaneWidth = Int(floor(aiWidth))
+		} else {
+			aiWidth = 0
+		}
+
 		switch timelineLayout {
 		case .standard:
-			guard splitView.arrangedSubviews.count == 3 else {
+			let expectedPaneCount = isAIPaneVisible ? 4 : 3
+			guard splitView.arrangedSubviews.count == expectedPaneCount else {
 				return
 			}
 			let detailWidth = splitView.arrangedSubviews[2].frame.width
 			// Starting with macOS 26, timelineWidth has to be calculated —
 			// because its width is greater than its apparent width,
 			// so that things can slide under the sidebar.
-			let dividerCount: CGFloat = isSidebarHidden ? 1.0 : 2.0
-			let timelineWidth = window.frame.width - (visibleSidebarWidth + detailWidth + (dividerThickness * dividerCount))
+			let dividerCount: CGFloat = CGFloat(splitView.arrangedSubviews.count - 1) - (isSidebarHidden ? 1.0 : 0.0)
+			let timelineWidth = window.frame.width - (visibleSidebarWidth + detailWidth + aiWidth + (dividerThickness * dividerCount))
 			rememberedStandardLayoutWidths = [sidebarWidth, Int(floor(timelineWidth)), Int(floor(detailWidth))]
 
 		case .column:
@@ -1411,6 +1511,90 @@ private extension MainWindowController {
 		}
 	}
 
+	func applyAIPaneWidth() {
+		guard isAIPaneVisible, let splitView = splitViewController?.splitView else {
+			return
+		}
+		let paneCount = splitView.arrangedSubviews.count
+		guard paneCount >= 2 else {
+			return
+		}
+		splitView.layoutSubtreeIfNeeded()
+		let width = CGFloat(max(rememberedAIPaneWidth, Int(Self.aiPaneMinimumWidth)))
+		let position = splitView.bounds.width - width
+		guard position > 0 else {
+			return
+		}
+		splitView.setPosition(position, ofDividerAt: paneCount - 2)
+	}
+
+	func setAIPaneVisible(_ visible: Bool, focus: Bool) {
+		guard visible != isAIPaneVisible else {
+			if visible && focus {
+				aiViewController?.focusInput()
+			}
+			return
+		}
+		guard let splitViewController, let aiViewController else {
+			return
+		}
+
+		if visible {
+			ensureWindowWideEnoughForAIPane()
+			let aiItem = makeAIPaneSplitViewItem(viewController: aiViewController)
+			isAIPaneVisible = true
+			aiSplitViewItem = aiItem
+			splitViewController.addSplitViewItem(aiItem)
+			splitViewController.view.layoutSubtreeIfNeeded()
+			applyAIPaneWidth()
+			updateAIPaneArticle()
+			if focus {
+				aiViewController.focusInput()
+			}
+		} else {
+			// Capture the width while the pane is still in the split view, so reopening
+			// later restores the width the reader chose.
+			rememberCurrentLayoutGeometry()
+			let item = aiSplitViewItem
+			isAIPaneVisible = false
+			aiSplitViewItem = nil
+			if let item {
+				splitViewController.removeSplitViewItem(item)
+			}
+		}
+
+		makeToolbarValidate()
+		invalidateRestorableState()
+		window?.recalculateKeyViewLoop()
+	}
+
+	func ensureWindowWideEnoughForAIPane() {
+		guard let window, let splitView = splitViewController?.splitView else {
+			return
+		}
+		let isSidebarHidden = sidebarSplitViewItem?.isCollapsed ?? false
+		let sidebarWidth = isSidebarHidden ? 0.0 : (splitView.arrangedSubviews.first?.frame.width ?? 0)
+		let timelineMinimumWidth: CGFloat = 200
+		let timelineWidth = splitView.arrangedSubviews.count > 1 ? splitView.arrangedSubviews[1].frame.width : timelineMinimumWidth
+		// Grow for the remembered width, not just the minimum, so reopening the pane
+		// keeps the width the reader chose instead of squeezing it to its minimum.
+		let requestedAIWidth = CGFloat(max(rememberedAIPaneWidth, Int(Self.aiPaneMinimumWidth)))
+		let requiredWidth = sidebarWidth + max(timelineWidth, timelineMinimumWidth) + CGFloat(Self.detailViewMinimumWidth) + requestedAIWidth + (3 * splitView.dividerThickness) + 16
+		guard window.frame.width < requiredWidth else {
+			return
+		}
+		let maximumWidth = window.screen?.visibleFrame.width ?? requiredWidth
+		var frame = window.frame
+		frame.size.width = min(requiredWidth, maximumWidth)
+		window.setFrame(frame, display: true)
+	}
+
+	func updateAIPaneArticle() {
+		let article = oneSelectedArticle
+		aiViewController?.article = article
+		detailPaneViewController?.article = article
+	}
+
 	func restoreState(from state: MainWindowState) {
 		if state.isFullScreen {
 			// Defer the toggle — during launch the window isn't on screen yet,
@@ -1433,6 +1617,8 @@ private extension MainWindowController {
 		if isShowingExtractedArticle {
 			startArticleExtractorForCurrentLink()
 		}
+
+		updateAIPaneArticle()
 	}
 
 	/// Restore state using pre-secure-state-restoration data.
@@ -1459,6 +1645,8 @@ private extension MainWindowController {
 			restoreArticleWindowScrollY = articleWindowScrollY
 			startArticleExtractorForCurrentLink()
 		}
+
+		updateAIPaneArticle()
 	}
 
 	// MARK: - Command Validation
@@ -1774,13 +1962,50 @@ private extension MainWindowController {
 		}
 	}
 
+	/// Passes the reading area’s selected text to the AI pane as plain text.
+	func fetchSelectedTextForAI(_ completion: @escaping (String?) -> Void) {
+		detailViewController?.fetchSelectedHTML { html in
+			guard let html, !html.isEmpty else {
+				completion(nil)
+				return
+			}
+			completion(Self.plainText(fromHTML: html))
+		}
+	}
+
+	static func plainText(fromHTML html: String) -> String {
+		guard let data = html.data(using: .utf8),
+			  let attributedString = try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.html, .characterEncoding: String.Encoding.utf8.rawValue], documentAttributes: nil) else {
+			let stripped = html.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+			return stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+		}
+		return attributedString.string.trimmingCharacters(in: .whitespacesAndNewlines)
+	}
+
 	func restoreSplitViewState(from state: MainWindowState) {
+		// AppKit’s restoration archive can lag behind the state we save ourselves
+		// (it is encoded on its own schedule), so prefer the saved state for the
+		// AI pane, which changes every time the reader drags its divider.
+		let aiState = Self.savedUserDefaultsState() ?? state
 		if state.splitViewWidths.count == 3 {
 			rememberedStandardLayoutWidths = state.splitViewWidths
 		}
 		rememberedColumnLayoutTimelineHeight = state.columnLayoutTimelineHeight
+		if aiState.aiPaneWidth > 0 {
+			rememberedAIPaneWidth = aiState.aiPaneWidth
+		}
 		applyRememberedGeometry()
+		if aiState.isAIPaneVisible {
+			setAIPaneVisible(true, focus: false)
+		}
 		sidebarSplitViewItem?.isCollapsed = state.isSidebarHidden
+	}
+
+	static func savedUserDefaultsState() -> MainWindowState? {
+		guard let data = AppDefaults.secureWindowState else {
+			return nil
+		}
+		return try? NSKeyedUnarchiver.unarchivedObject(ofClass: MainWindowState.self, from: data)
 	}
 
 	/// Restore main window split view using legacy state restoration data.
@@ -1872,14 +2097,76 @@ private extension MainWindowController {
 	/// Tracks the sidebar divider in the status bar. Call after the split view controller is replaced.
 	func observeSplitViewForStatusBar() {
 		NotificationCenter.default.removeObserver(self, name: NSSplitView.didResizeSubviewsNotification, object: nil)
+		NotificationCenter.default.removeObserver(self, name: NSSplitView.willResizeSubviewsNotification, object: nil)
 		if let splitView = splitViewController?.splitView {
 			NotificationCenter.default.addObserver(self, selector: #selector(handleSplitViewDidResizeSubviews(_:)), name: NSSplitView.didResizeSubviewsNotification, object: splitView)
+			NotificationCenter.default.addObserver(self, selector: #selector(handleSplitViewWillResizeSubviews(_:)), name: NSSplitView.willResizeSubviewsNotification, object: splitView)
 		}
 		updateStatusBarSidebarDivider()
 	}
 
+	@objc func handleSplitViewWillResizeSubviews(_ notification: Notification) {
+		// Lower the required minimum before each drag step so the divider can move
+		// freely in both directions; the width is locked again when the drag ends.
+		guard isAIPaneVisible, let splitView = splitViewController?.splitView, splitView.inLiveResize == true, NSEvent.pressedMouseButtons != 0 else {
+			return
+		}
+		guard isPointerOnAIDivider(in: splitView) else {
+			return
+		}
+		isUserResizingAIPane = true
+		if let aiSplitViewItem, aiSplitViewItem.minimumThickness > Self.aiPaneMinimumWidth {
+			aiSplitViewItem.minimumThickness = Self.aiPaneMinimumWidth
+		}
+	}
+
 	@objc func handleSplitViewDidResizeSubviews(_ notification: Notification) {
 		updateStatusBarSidebarDivider()
+		updateAIPaneWidthAfterResize()
+	}
+
+	func isPointerOnAIDivider(in splitView: NSSplitView) -> Bool {
+		guard let aiView = splitView.arrangedSubviews.last, let window = splitView.window else {
+			return false
+		}
+		let dividerPosition = aiView.frame.minX - splitView.dividerThickness
+		let windowPoint = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+		let splitPoint = splitView.convert(windowPoint, from: nil)
+		return abs(splitPoint.x - dividerPosition) <= 6
+	}
+
+	/// The split view controller ignores programmatic divider positions for a pane
+	/// added after layout, but it does honor the item's required minimum thickness.
+	/// A drag leaves no other record of the width it ended at, so read it from the
+	/// pointer and turn it into the item's minimum once the drag is over; otherwise
+	/// the pane snaps back to its minimum and the remembered width is lost.
+	func updateAIPaneWidthAfterResize() {
+		guard isUserResizingAIPane, isAIPaneVisible, let splitView = splitViewController?.splitView, let aiView = splitView.arrangedSubviews.last else {
+			return
+		}
+		if splitView.inLiveResize == true {
+			return
+		}
+
+		let pointerWidth: CGFloat?
+		if let window = splitView.window {
+			let windowPoint = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+			let splitPoint = splitView.convert(windowPoint, from: nil)
+			pointerWidth = splitView.bounds.width - splitPoint.x - (splitView.dividerThickness / 2)
+		} else {
+			pointerWidth = nil
+		}
+		let finalWidth = max(pointerWidth ?? aiView.frame.width, Self.aiPaneMinimumWidth)
+		rememberedAIPaneWidth = Int(floor(finalWidth))
+		isUserResizingAIPane = false
+		// The split view controller ignores a minimum-thickness change made from
+		// inside the resize notification, so apply it on the next run loop turn.
+		Task { @MainActor in
+			guard self.isAIPaneVisible, let aiSplitViewItem = self.aiSplitViewItem else {
+				return
+			}
+			aiSplitViewItem.minimumThickness = finalWidth
+		}
 	}
 
 	func updateStatusBarSidebarDivider() {
