@@ -48,6 +48,7 @@ extension AppDefaults.Key {
 	static let importOPMLAccountID = "importOPMLAccountID"
 	static let exportOPMLAccountID = "exportOPMLAccountID"
 	static let defaultBrowserID = "defaultBrowserID"
+	static let aiAutoRewriteEnabled = "aiAutoRewriteEnabled"
 
 	// Hidden prefs
 	static let showDebugMenu = "ShowDebugMenu"
@@ -134,6 +135,19 @@ extension AppDefaults {
 		}
 		set {
 			UserDefaults.standard.set(newValue, forKey: Key.defaultBrowserID)
+		}
+	}
+
+	/// New articles get a rewrite job automatically. On by default.
+	static var aiAutoRewriteEnabled: Bool {
+		get {
+			if UserDefaults.standard.object(forKey: Key.aiAutoRewriteEnabled) == nil {
+				return true
+			}
+			return UserDefaults.standard.bool(forKey: Key.aiAutoRewriteEnabled)
+		}
+		set {
+			UserDefaults.standard.set(newValue, forKey: Key.aiAutoRewriteEnabled)
 		}
 	}
 
@@ -298,7 +312,8 @@ extension AppDefaults {
 			Key.showDebugMenu: showDebugMenu,
 			Key.timelineShowSeparators: false,
 			Key.timelineIconDimension: IconSize.large.rawValue,
-			Key.timelineNumberOfLines: 3
+			Key.timelineNumberOfLines: 3,
+			Key.aiAutoRewriteEnabled: true
 		]
 
 		let defaults = commonRegisteredDefaults.merging(platformDefaults) { _, platformValue in platformValue }
