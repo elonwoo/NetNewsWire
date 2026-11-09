@@ -128,6 +128,9 @@ final class MainWindowController: NSWindowController, NSUserInterfaceValidations
 		aiViewController.selectedTextProvider = { [weak self] completion in
 			self?.fetchSelectedTextForAI(completion)
 		}
+		aiViewController.onEscape = { [weak self] in
+			self?.detailPaneViewController?.focus()
+		}
 		self.aiViewController = aiViewController
 
 		mainWindowContentViewController.statusBarView.delegate = self
@@ -220,7 +223,7 @@ final class MainWindowController: NSWindowController, NSUserInterfaceValidations
 
 	@objc nonisolated func handleAIAskRequested(_ note: Notification) {
 		Task { @MainActor in
-			self.setAIPaneVisible(true, focus: true)
+			self.setAIPaneVisible(!self.isAIPaneVisible, focus: false)
 		}
 	}
 
@@ -1170,6 +1173,20 @@ extension MainWindowController: NSToolbarDelegate {
 			searchItem.searchField.action = nil
 			currentSearchField = nil
 		}
+	}
+}
+
+// MARK: - AI Pane
+
+extension MainWindowController {
+
+	/// Closes the AI pane when it is showing. Returns true when it did.
+	func closeAIPaneIfVisible() -> Bool {
+		guard isAIPaneVisible else {
+			return false
+		}
+		setAIPaneVisible(false, focus: false)
+		return true
 	}
 }
 

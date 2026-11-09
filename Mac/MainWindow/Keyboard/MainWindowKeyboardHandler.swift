@@ -23,9 +23,15 @@ import RSCore
 
 	func keydown(_ event: NSEvent, in view: NSView) -> Bool {
 		// Escape is not representable in the shortcut plists, so handle it here.
-		// Only consume it when immersive reading is actually on.
-		if event.keyCode == Self.escapeKeyCode, ImmersiveReadingMode.shared.exit(for: view.window) {
-			return true
+		// The AI bar closes first; immersive reading exits on the next press.
+		if event.keyCode == Self.escapeKeyCode {
+			if let mainWindowController = view.window?.windowController as? MainWindowController,
+			   mainWindowController.closeAIPaneIfVisible() {
+				return true
+			}
+			if ImmersiveReadingMode.shared.exit(for: view.window) {
+				return true
+			}
 		}
 
 		let key = KeyboardKey(with: event)

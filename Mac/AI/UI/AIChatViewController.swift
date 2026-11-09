@@ -14,6 +14,9 @@ final class AIChatViewController: NSViewController {
 	/// Fetches the text selected in the reading area.
 	var selectedTextProvider: ((@escaping (String?) -> Void) -> Void)?
 
+	/// Called when Escape is pressed in the input field. The input keeps its text.
+	var onEscape: (() -> Void)?
+
 	var article: Article? {
 		didSet {
 			guard article?.articleID != oldValue?.articleID else {
@@ -464,6 +467,10 @@ private extension AIChatViewController {
 extension AIChatViewController: NSTextViewDelegate {
 
 	func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+		if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+			onEscape?()
+			return true
+		}
 		guard commandSelector == #selector(NSResponder.insertNewline(_:)) else {
 			return false
 		}
