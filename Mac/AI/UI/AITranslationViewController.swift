@@ -62,7 +62,7 @@ final class AITranslationViewController: NSViewController {
 	init() {
 		let configuration = WKWebViewConfiguration()
 		configuration.defaultWebpagePreferences.allowsContentJavaScript = false
-		self.webView = WKWebView(frame: .zero, configuration: configuration)
+		self.webView = AIReaderWebView(frame: .zero, configuration: configuration)
 		self.mode = ViewMode(rawValue: UserDefaults.standard.integer(forKey: Self.modeDefaultsKey)) ?? .bilingual
 		super.init(nibName: nil, bundle: nil)
 		NotificationCenter.default.addObserver(self, selector: #selector(handleTranslationReady(_:)), name: .aiTranslationReady, object: nil)
@@ -74,7 +74,7 @@ final class AITranslationViewController: NSViewController {
 	}
 
 	override func loadView() {
-		let rootView = NSView()
+		let rootView = AIReaderContainerView()
 		view = rootView
 
 		makeHeaderBar()
@@ -104,7 +104,14 @@ final class AITranslationViewController: NSViewController {
 	}
 
 	func focus() {
-		view.window?.makeFirstResponder(webView)
+		guard let window = view.window else {
+			return
+		}
+		// A hidden web view takes focus but never sees key events, which cuts the
+		// reading shortcuts off, so fall back to the pane's own view.
+		if webView.isHidden || !window.makeFirstResponder(webView) {
+			window.makeFirstResponder(view)
+		}
 	}
 
 	/// Tracks whether the translation tab is the one on screen. The pane is

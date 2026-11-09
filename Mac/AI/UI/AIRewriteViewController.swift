@@ -24,7 +24,7 @@ final class AIRewriteViewController: NSViewController {
 
 	/// The tab label changes for paper articles.
 	var tabTitle: String {
-		isPaper ? "论文解读" : "中文改写"
+		isPaper ? "论文解读" : "改写"
 	}
 
 	private enum ContentState {
@@ -59,7 +59,7 @@ final class AIRewriteViewController: NSViewController {
 	init() {
 		let configuration = WKWebViewConfiguration()
 		configuration.defaultWebpagePreferences.allowsContentJavaScript = false
-		self.webView = WKWebView(frame: .zero, configuration: configuration)
+		self.webView = AIReaderWebView(frame: .zero, configuration: configuration)
 		super.init(nibName: nil, bundle: nil)
 		NotificationCenter.default.addObserver(self, selector: #selector(handleRewriteReady(_:)), name: .aiRewriteReady, object: nil)
 		NotificationCenter.default.addObserver(self, selector: #selector(handleJobFailed(_:)), name: .aiJobFailed, object: nil)
@@ -71,7 +71,7 @@ final class AIRewriteViewController: NSViewController {
 	}
 
 	override func loadView() {
-		let rootView = NSView()
+		let rootView = AIReaderContainerView()
 		view = rootView
 
 		makeHeaderBar()
@@ -101,7 +101,14 @@ final class AIRewriteViewController: NSViewController {
 	}
 
 	func focus() {
-		view.window?.makeFirstResponder(webView)
+		guard let window = view.window else {
+			return
+		}
+		// A hidden web view takes focus but never sees key events, which cuts the
+		// reading shortcuts off, so fall back to the pane's own view.
+		if webView.isHidden || !window.makeFirstResponder(webView) {
+			window.makeFirstResponder(view)
+		}
 	}
 
 	/// Re-checks the store when the tab is selected and there is nothing to show.
@@ -257,7 +264,7 @@ private extension AIRewriteViewController {
 
 		switch state {
 		case .noArticle:
-			emptyLabel.stringValue = "选择一篇文章后可查看中文改写"
+			emptyLabel.stringValue = "选择一篇文章后可查看改写"
 			generateButton.isHidden = true
 			emptyView.isHidden = false
 		case .reading:
@@ -265,7 +272,7 @@ private extension AIRewriteViewController {
 			loadingIndicator.startAnimation(nil)
 			loadingView.isHidden = false
 		case .empty:
-			emptyLabel.stringValue = isPaper ? "这篇论文还没有 AI 解读。" : "这篇文章还没有中文改写。"
+			emptyLabel.stringValue = isPaper ? "这篇论文还没有 AI 解读。" : "这篇文章还没有改写。"
 			generateButton.title = isPaper ? "生成解读" : "生成"
 			generateButton.isHidden = false
 			emptyView.isHidden = false

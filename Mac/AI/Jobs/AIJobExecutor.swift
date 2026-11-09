@@ -146,13 +146,17 @@ final class AIJobExecutor {
 		}
 		let now = Date()
 		let usable = articles.filter { !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-		let translatable = usable.filter { AutoWorkPolicy.shouldTranslate($0, now: now) }
+		// A job that already exists, including one waiting to retry, must not be
+		// queued again by a later download notification.
+		let activeRewriteIDs = (try? await store.activeJobArticleIDs(kinds: [.rewrite])) ?? []
+		let activeTitleIDs = (try? await store.activeJobArticleIDs(kinds: [.titleTranslation])) ?? []
+		let translatable = usable.filter { AutoWorkPolicy.shouldTranslate($0, now: now) && !activeTitleIDs.contains($0.id) }
 		await enqueueTitleTranslations(for: translatable)
 
 		guard AppDefaults.aiAutoRewriteEnabled else {
 			return
 		}
-		for article in usable where AutoWorkPolicy.shouldRewrite(article, now: now) {
+		for article in usable where AutoWorkPolicy.shouldRewrite(article, now: now) && !activeRewriteIDs.contains(article.id) {
 			await enqueueRewrite(for: article)
 		}
 	}

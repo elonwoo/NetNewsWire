@@ -7,9 +7,8 @@ import AI
 import AppKit
 import Articles
 
-/// The reading area: a three-tab header (原文 / 中文改写 / 中文翻译) above the
-/// existing article view, the Chinese rewrite view and the Chinese translation
-/// view.
+/// The reading area: a three-tab header (改写 / 原文 / 翻译) above the Chinese
+/// rewrite view, the existing article view and the Chinese translation view.
 @MainActor
 final class AIDetailPaneViewController: NSViewController {
 
@@ -30,8 +29,8 @@ final class AIDetailPaneViewController: NSViewController {
 	}
 
 	private enum Tab: Int {
-		case original = 0
-		case rewrite = 1
+		case rewrite = 0
+		case original = 1
 		case translation = 2
 	}
 
@@ -39,12 +38,13 @@ final class AIDetailPaneViewController: NSViewController {
 	private let tabControl: NSSegmentedControl
 	private let contentView = NSView()
 	private var selectedTab: Tab
+	private var defaultTabToken: UUID?
 
 	init(detailViewController: DetailViewController, rewriteViewController: AIRewriteViewController = AIRewriteViewController(), translationViewController: AITranslationViewController = AITranslationViewController()) {
 		self.detailViewController = detailViewController
 		self.rewriteViewController = rewriteViewController
 		self.translationViewController = translationViewController
-		self.tabControl = NSSegmentedControl(labels: ["原文", "中文改写", "中文翻译"], trackingMode: .selectOne, target: nil, action: nil)
+		self.tabControl = NSSegmentedControl(labels: ["改写", "原文", "翻译"], trackingMode: .selectOne, target: nil, action: nil)
 		self.selectedTab = .rewrite
 		super.init(nibName: nil, bundle: nil)
 	}
@@ -116,6 +116,7 @@ final class AIDetailPaneViewController: NSViewController {
 			])
 		}
 
+		NotificationCenter.default.addObserver(self, selector: #selector(rewriteDidBecomeReady(_:)), name: .aiRewriteReady, object: nil)
 		updateTabTitles()
 		updateVisibleContent()
 	}
@@ -138,12 +139,31 @@ private extension AIDetailPaneViewController {
 		tabControl.setLabel(rewriteViewController.tabTitle, forSegment: Tab.rewrite.rawValue)
 	}
 
+	/// Shows the rewrite when one is cached and the original otherwise. The store
+	/// is read off the main actor, so a token stops a late answer for an article
+	/// the reader has already left — or a tab they already picked — from
+	/// switching the pane.
 	func updateDefaultTab() {
 		guard let article else {
 			return
 		}
-		selectedTab = AutoWorkPolicy.isChinese(AIArticle(article: article)) ? .original : .rewrite
-		tabControl.selectedSegment = selectedTab.rawValue
+		let articleID = article.articleID
+		let token = UUID()
+		defaultTabToken = token
+		show(.original)
+
+		Task { @MainActor in
+			let rewrite = try? await AIEnvironment.shared.store.rewrite(for: articleID)
+			guard self.defaultTabToken == token, rewrite != nil else {
+				return
+			}
+			self.show(.rewrite)
+		}
+	}
+
+	private func show(_ tab: Tab) {
+		selectedTab = tab
+		tabControl.selectedSegment = tab.rawValue
 		updateVisibleContent()
 	}
 
@@ -154,11 +174,27 @@ private extension AIDetailPaneViewController {
 		translationViewController.setPaneVisible(selectedTab == .translation)
 	}
 
+	/// A rewrite that lands while the reader is still on the original takes the
+	/// pane, which is where an article that already had one would have opened.
+	@objc func rewriteDidBecomeReady(_ notification: Notification) {
+		guard let articleID = notification.userInfo?[AIUserInfoKey.articleID] as? String,
+		      articleID == article?.articleID,
+		      selectedTab == .original else {
+			return
+		}
+		defaultTabToken = nil
+		show(.rewrite)
+	}
+
 	@objc func tabChanged(_ sender: NSSegmentedControl) {
+		defaultTabToken = nil
 		selectedTab = Tab(rawValue: sender.selectedSegment) ?? .rewrite
 		updateVisibleContent()
 		if selectedTab == .rewrite {
 			rewriteViewController.refreshIfNeeded()
 		}
+		// The tab control keeps focus after a click, and it does not route the
+		// reading shortcuts, so hand focus to the pane the reader just picked.
+		focus()
 	}
 }

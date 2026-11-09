@@ -144,6 +144,11 @@ let appName = "NetNewsWire"
 	// MARK: - NSApplicationDelegate
 
 	func applicationWillFinishLaunching(_ notification: Notification) {
+		// Before window restoration: restored windows build their sidebar while
+		// launching, and the sidebar asks the defaults which smart feeds to show.
+		// Unregistered defaults read as false, which drops the whole group.
+		AppDefaults.registerDefaults()
+
 		FaviconGenerator.templateImage = Assets.Images.faviconTemplate
 		applyUserInterfaceColorPalette()
 
@@ -183,7 +188,6 @@ let appName = "NetNewsWire"
 			Self.logger.error("Failed to start software updater with error: \(error.localizedDescription)")
 		}
 
-		AppDefaults.registerDefaults()
 		let isFirstRun = AppDefaults.isFirstRun
 		if isFirstRun {
 			Self.logger.debug("Is first run.")
