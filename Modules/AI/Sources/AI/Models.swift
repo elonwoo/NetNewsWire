@@ -13,8 +13,9 @@ public struct AIArticle: Sendable, Equatable {
 	public let url: String?
 	public let feedID: String?
 	public let publishedAt: Date?
+	public let isRead: Bool
 
-	public init(id: String, title: String, contentHTML: String? = nil, contentText: String? = nil, url: String? = nil, feedID: String? = nil, publishedAt: Date? = nil) {
+	public init(id: String, title: String, contentHTML: String? = nil, contentText: String? = nil, url: String? = nil, feedID: String? = nil, publishedAt: Date? = nil, isRead: Bool = false) {
 		self.id = id
 		self.title = title
 		self.contentHTML = contentHTML
@@ -22,6 +23,19 @@ public struct AIArticle: Sendable, Equatable {
 		self.url = url
 		self.feedID = feedID
 		self.publishedAt = publishedAt
+		self.isRead = isRead
+	}
+
+	/// True when the article has text or HTML to translate or rewrite. A feed
+	/// that only ships a title cannot produce a body translation or a rewrite.
+	public var hasBody: Bool {
+		if let contentText, !contentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+			return true
+		}
+		if let contentHTML, !contentHTML.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+			return true
+		}
+		return false
 	}
 }
 

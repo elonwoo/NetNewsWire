@@ -4,35 +4,76 @@
 //
 
 import AI
-import CryptoKit
 import Foundation
+
+/// How a stored rewrite relates to the current article and pipeline.
+enum AIRewriteState: Equatable {
+	case missing
+	case current
+	/// Stored by the pre-pipeline rewrite algorithm. Shown as stale but never
+	/// re-run automatically.
+	case pipelineOutdated
+	case contentChanged
+}
 
 /// Content hashes must match the ones the engine stores so that a cached
 /// translation or rewrite can be recognised as current.
+///
+/// There is deliberately no combined title/rewrite entry point: title
+/// translations, rewrites and body translations each have their own hash and
+/// must never overwrite one another.
 enum AIContentHash {
 
-	/// Hash used for title translations and rewrites: `contentText`, falling
-	/// back to `contentHTML`, then the title.
-	static func titleOrRewrite(for article: AIArticle) -> String {
-		sha256Hex(article.contentText ?? article.contentHTML ?? article.title)
+	static func title(for article: AIArticle) -> String {
+		ContentFingerprint.title(for: article)
 	}
 
-	/// Hash used for body translations: HTML when present, otherwise text.
 	static func body(for article: AIArticle) -> String {
-		if let html = article.contentHTML, !html.isEmpty {
-			return sha256Hex(html)
-		}
-		return sha256Hex(article.contentText ?? "")
+		ContentFingerprint.body(for: article)
 	}
 
-	/// A title translation may have been written by either a title job or a
-	/// body translation, which use different hashes for the same content.
+	static func rewrite(for article: AIArticle) -> String {
+		ContentFingerprint.rewrite(for: article, kind: AIRewriteKindSelector.kind(for: article).engineKind)
+	}
+
+	static func legacyRewrite(for article: AIArticle) -> String {
+		ContentFingerprint.legacyRewrite(for: article)
+	}
+
+	/// A title translation may have been written by a title job, an older body
+	/// translation, or the current body pipeline. It is never written by a
+	/// rewrite, so `r2:` hashes are not accepted.
 	static func matchesTitleHash(_ stored: String, article: AIArticle) -> Bool {
-		stored == titleOrRewrite(for: article) || stored == body(for: article)
+		stored == ContentFingerprint.title(for: article)
+			|| stored == ContentFingerprint.legacyBody(for: article)
+			|| stored == ContentFingerprint.body(for: article)
+	}
+
+	static func rewriteState(stored: String?, article: AIArticle) -> AIRewriteState {
+		guard let stored, !stored.isEmpty else {
+			return .missing
+		}
+		if stored == rewrite(for: article) {
+			return .current
+		}
+		if stored == ContentFingerprint.legacyRewrite(for: article) {
+			return .pipelineOutdated
+		}
+		return .contentChanged
+	}
+
+	/// Legacy and pipeline-outdated rewrites are treated as up to date by every
+	/// automatic path; only content changes or a missing rewrite are queued.
+	static func isRewriteUpToDate(stored: String?, article: AIArticle) -> Bool {
+		switch rewriteState(stored: stored, article: article) {
+		case .current, .pipelineOutdated:
+			return true
+		case .missing, .contentChanged:
+			return false
+		}
 	}
 
 	static func sha256Hex(_ text: String) -> String {
-		let digest = SHA256.hash(data: Data(text.utf8))
-		return digest.map { String(format: "%02x", $0) }.joined()
+		ContentFingerprint.sha256Hex(text)
 	}
 }

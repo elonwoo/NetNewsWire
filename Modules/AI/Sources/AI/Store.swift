@@ -12,6 +12,8 @@ public protocol AIStore: Sendable {
 	func saveTranslation(_ translation: Translation) async throws
 	func saveTitleTranslation(articleID: String, titleZh: String, model: String, contentHash: String, at date: Date) async throws
 	func rewrite(for articleID: String) async throws -> Rewrite?
+	func completedRewriteArticleIDs(for articleIDs: Set<String>) async throws -> Set<String>
+	func completedTranslationArticleIDs(for articleIDs: Set<String>) async throws -> Set<String>
 	func saveRewrite(_ rewrite: Rewrite) async throws
 	func chatMessages(for articleID: String) async throws -> [ChatMessage]
 	func appendChatMessage(_ message: ChatMessage) async throws
@@ -122,6 +124,78 @@ public final class SQLiteAIStore: AIStore, Sendable {
 			}
 			return Self.rewrite(from: resultSet)
 		}
+	}
+
+	/// Returns the subset of `articleIDs` that already have a saved rewrite.
+	/// The IDs are queried in batches to keep the SQL parameter count bounded.
+	public func completedRewriteArticleIDs(for articleIDs: Set<String>) async throws -> Set<String> {
+		guard !articleIDs.isEmpty else {
+			return []
+		}
+		let ids = Array(articleIDs)
+		var completed: Set<String> = []
+		var start = 0
+		while start < ids.count {
+			let end = min(start + 500, ids.count)
+			let batch = Array(ids[start..<end])
+			let placeholders = Array(repeating: "?", count: batch.count).joined(separator: ", ")
+			let sql = "select articleID from rewrites where articleID in (\(placeholders));"
+			let found = try await read { database -> Set<String> in
+				guard let resultSet = database.executeQuery(sql, withArgumentsIn: batch) else {
+					return []
+				}
+				defer {
+					resultSet.close()
+				}
+				var batchIDs: Set<String> = []
+				while resultSet.next() {
+					if let articleID = resultSet.swiftString(forColumn: "articleID") {
+						batchIDs.insert(articleID)
+					}
+				}
+				return batchIDs
+			}
+			completed.formUnion(found)
+			start = end
+		}
+		return completed
+	}
+
+	/// Returns the subset of `articleIDs` that already have a saved body
+	/// translation. A title-only row is not a completed body translation, so it
+	/// is excluded even though it shares the same `translations` row. The IDs
+	/// are queried in batches to keep the SQL parameter count bounded.
+	public func completedTranslationArticleIDs(for articleIDs: Set<String>) async throws -> Set<String> {
+		guard !articleIDs.isEmpty else {
+			return []
+		}
+		let ids = Array(articleIDs)
+		var completed: Set<String> = []
+		var start = 0
+		while start < ids.count {
+			let end = min(start + 500, ids.count)
+			let batch = Array(ids[start..<end])
+			let placeholders = Array(repeating: "?", count: batch.count).joined(separator: ", ")
+			let sql = "select articleID from translations where articleID in (\(placeholders)) and length(trim(blocks)) > 2;"
+			let found = try await read { database -> Set<String> in
+				guard let resultSet = database.executeQuery(sql, withArgumentsIn: batch) else {
+					return []
+				}
+				defer {
+					resultSet.close()
+				}
+				var batchIDs: Set<String> = []
+				while resultSet.next() {
+					if let articleID = resultSet.swiftString(forColumn: "articleID") {
+						batchIDs.insert(articleID)
+					}
+				}
+				return batchIDs
+			}
+			completed.formUnion(found)
+			start = end
+		}
+		return completed
 	}
 
 	public func saveRewrite(_ rewrite: Rewrite) async throws {
@@ -358,6 +432,91 @@ public final class SQLiteAIStore: AIStore, Sendable {
 			}
 		}
 	}
+
+	// MARK: - Cleanup
+
+	/// Snapshot of the rows a cleanup migration needs to compare before and
+	/// after a deletion, and to verify a `VACUUM INTO` backup.
+	public func inventory() async throws -> AIArtifactInventory {
+		try await read { database in
+			AIArtifactInventory(
+				rewriteArticleIDs: Self.articleIDs(in: "rewrites", database: database),
+				translationArticleIDs: Self.articleIDs(in: "translations", database: database),
+				activeJobArticleIDs: Self.articleIDs(in: "ai_jobs", where: "status in ('pending', 'running', 'retry')", database: database),
+				completedJobArticleIDs: Self.articleIDs(in: "ai_jobs", where: "status = 'completed'", database: database),
+				failedJobArticleIDs: Self.articleIDs(in: "ai_jobs", where: "status = 'failed'", database: database),
+				chatMessageCount: Self.rowCount(in: "chat_messages", database: database)
+			)
+		}
+	}
+
+	/// Writes a consistent copy while the database stays open. `VACUUM INTO`
+	/// refuses to overwrite an existing file, so callers pick a fresh path.
+	public func vacuumInto(_ path: String) async throws {
+		let escapedPath = path.replacingOccurrences(of: "'", with: "''")
+		try await write { database in
+			guard database.executeStatements("VACUUM INTO '\(escapedPath)';") else {
+				throw AIStoreError.writeFailed(database.lastErrorMessage())
+			}
+		}
+	}
+
+	/// Deletes the cache rows and unfinished jobs for the given articles, leaving
+	/// the completed and failed job history and every chat message in place.
+	public func deleteActiveAIArtifacts(articleIDs: Set<String>) async throws -> AIArtifactDeletion {
+		guard !articleIDs.isEmpty else {
+			return AIArtifactDeletion(rewriteCount: 0, translationCount: 0, jobCount: 0)
+		}
+		let ids = Array(articleIDs)
+		let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ", ")
+		return try await writeInTransaction { database -> AIArtifactDeletion in
+			let statements = [
+				"delete from rewrites where articleID in (\(placeholders));",
+				"delete from translations where articleID in (\(placeholders));",
+				"delete from ai_jobs where articleID in (\(placeholders)) and status in ('pending', 'retry', 'running');"
+			]
+			var counts: [Int] = []
+			for sql in statements {
+				guard database.executeUpdate(sql, withArgumentsIn: ids) else {
+					throw AIStoreError.writeFailed(database.lastErrorMessage())
+				}
+				counts.append(Int(database.changes()))
+			}
+			return AIArtifactDeletion(rewriteCount: counts[0], translationCount: counts[1], jobCount: counts[2])
+		}
+	}
+}
+
+// MARK: - Cleanup values
+
+public struct AIArtifactInventory: Sendable, Equatable {
+	public let rewriteArticleIDs: Set<String>
+	public let translationArticleIDs: Set<String>
+	public let activeJobArticleIDs: Set<String>
+	public let completedJobArticleIDs: Set<String>
+	public let failedJobArticleIDs: Set<String>
+	public let chatMessageCount: Int
+
+	init(rewriteArticleIDs: Set<String>, translationArticleIDs: Set<String>, activeJobArticleIDs: Set<String>, completedJobArticleIDs: Set<String>, failedJobArticleIDs: Set<String>, chatMessageCount: Int) {
+		self.rewriteArticleIDs = rewriteArticleIDs
+		self.translationArticleIDs = translationArticleIDs
+		self.activeJobArticleIDs = activeJobArticleIDs
+		self.completedJobArticleIDs = completedJobArticleIDs
+		self.failedJobArticleIDs = failedJobArticleIDs
+		self.chatMessageCount = chatMessageCount
+	}
+}
+
+public struct AIArtifactDeletion: Sendable, Equatable {
+	public let rewriteCount: Int
+	public let translationCount: Int
+	public let jobCount: Int
+
+	init(rewriteCount: Int, translationCount: Int, jobCount: Int) {
+		self.rewriteCount = rewriteCount
+		self.translationCount = translationCount
+		self.jobCount = jobCount
+	}
 }
 
 // MARK: - Schema
@@ -412,6 +571,39 @@ private extension SQLiteAIStore {
 // MARK: - Row mapping
 
 private extension SQLiteAIStore {
+
+	static func articleIDs(in table: String, where clause: String? = nil, database: FMDatabase) -> Set<String> {
+		var sql = "select distinct articleID from \(table);"
+		if let clause {
+			sql = "select distinct articleID from \(table) where \(clause);"
+		}
+		guard let resultSet = database.executeQuery(sql, withArgumentsIn: nil) else {
+			return []
+		}
+		defer {
+			resultSet.close()
+		}
+		var articleIDs: Set<String> = []
+		while resultSet.next() {
+			if let articleID = resultSet.swiftString(forColumn: "articleID") {
+				articleIDs.insert(articleID)
+			}
+		}
+		return articleIDs
+	}
+
+	static func rowCount(in table: String, database: FMDatabase) -> Int {
+		guard let resultSet = database.executeQuery("select count(*) as rowCount from \(table);", withArgumentsIn: nil) else {
+			return 0
+		}
+		defer {
+			resultSet.close()
+		}
+		guard resultSet.next() else {
+			return 0
+		}
+		return Int(resultSet.int(forColumn: "rowCount"))
+	}
 
 	static func translation(from resultSet: FMResultSet) throws -> Translation {
 		let blocksJSON = resultSet.swiftString(forColumn: "blocks") ?? "[]"

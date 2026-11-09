@@ -20,6 +20,15 @@ import os
 	func localAccountRefresher(_ refresher: LocalAccountRefresher, articleChanges: ArticleChanges)
 }
 
+struct RefresherStatsSnapshot: Equatable {
+
+	let feedsErrored: Int
+	let newArticlesCount: Int
+	let updatedArticlesCount: Int
+	let outstandingParseTasks: Int
+	let pendingRSSHubRetries: Int
+}
+
 @MainActor final class LocalAccountRefresher: ProgressInfoReporter {
 	var delegate: LocalAccountRefresherDelegate?
 
@@ -53,7 +62,10 @@ import os
 		return parts.joined(separator: ", ")
 	}
 
-	private var refreshActivityID: Int?
+	private var refreshActivity: (generation: Int, id: Int)?
+	private var refreshGeneration = 0
+	private var pendingRSSHubRetries = 0
+	private var retryingFeedIDs = Set<String>()
 	private var feedsTotal = 0
 	private var feedsSkipped = 0
 	private var feedsErrored = 0
@@ -64,6 +76,24 @@ import os
 
 	private var completion: (() -> Void)?
 	private var isSuspended = false
+
+	private let rssHubRetrier: RSSHubFallbackRetrier
+
+	init(rssHubRetrier: RSSHubFallbackRetrier = RSSHubFallbackRetrier()) {
+		self.rssHubRetrier = rssHubRetrier
+	}
+
+	var refreshStatsSnapshot: RefresherStatsSnapshot {
+		RefresherStatsSnapshot(feedsErrored: feedsErrored,
+							   newArticlesCount: newArticlesCount,
+							   updatedArticlesCount: updatedArticlesCount,
+							   outstandingParseTasks: outstandingParseTasks,
+							   pendingRSSHubRetries: pendingRSSHubRetries)
+	}
+
+	var currentRefreshGeneration: Int {
+		refreshGeneration
+	}
 
 	private lazy var downloadSession: DownloadSession = {
 		let session = DownloadSession(delegate: self)
@@ -86,6 +116,22 @@ import os
 	}
 
 	@MainActor private func refreshFeeds(_ feeds: Set<Feed>, completion: (() -> Void)? = nil) {
+		// This refresh replaces any in-flight one, so resume its caller rather than
+		// stranding it, and settle the old generation before starting a new one.
+		if let previousCompletion = self.completion {
+			previousCompletion()
+			self.completion = nil
+		}
+		completeRefreshActivity(message: "Interrupted by a new refresh")
+		if let accountID {
+			completeRemainingActivities(accountID: accountID)
+		}
+
+		refreshGeneration += 1
+		let generation = refreshGeneration
+		pendingRSSHubRetries = 0
+		retryingFeedIDs.removeAll()
+
 		let specialCaseCutoffDate = Date().bySubtracting(hours: 25)
 		let redditURLToRefresh = Self.redditURLToRefresh(in: feeds)
 
@@ -115,8 +161,9 @@ import os
 		if let owner = activityOwner {
 			let activityLog = ActivityLog.shared
 			if publishesRefreshActivity {
-				refreshActivityID = activityLog.createActivity(owner: owner, kind: .refreshAll)
-				activityLog.didStart(id: refreshActivityID!)
+				let activityID = activityLog.createActivity(owner: owner, kind: .refreshAll)
+				activityLog.didStart(id: activityID)
+				refreshActivity = (generation, activityID)
 			}
 			for feed in filteredFeeds {
 				activityLog.createActivity(owner: owner, kind: .refreshFeedContent(feedURL: feed.url), detail: feed.nameForDisplay)
@@ -126,13 +173,12 @@ import os
 			}
 		}
 
+		self.completion = completion
+
 		guard !filteredFeeds.isEmpty else {
-			// All feeds were skipped. Still need to complete the parent activity.
+			// All feeds were skipped. Finish through the same finalizer.
 			downloadSessionIsComplete = true
-			completeRefreshActivityIfReady()
-			Task { @MainActor in
-				completion?()
-			}
+			finalizeRefreshIfReady()
 			return
 		}
 
@@ -147,12 +193,6 @@ import os
 			urls.insert(url)
 		}
 
-		// This refresh replaces any in-flight one, so resume its caller rather than stranding it.
-		if let previousCompletion = self.completion {
-			previousCompletion()
-		}
-
-		self.completion = completion
 		downloadSession.download(urls)
 	}
 
@@ -165,8 +205,18 @@ import os
 	}
 
 	@MainActor public func suspend() {
-		downloadSession.cancelAll()
 		isSuspended = true
+		// Invalidate in-flight retry and parse tasks, then settle this generation
+		// so its completion cannot hang.
+		refreshGeneration += 1
+		downloadSession.cancelAll()
+
+		completeRefreshActivity(message: "Interrupted by suspend")
+		pendingRSSHubRetries = 0
+		retryingFeedIDs.removeAll()
+		outstandingParseTasks = 0
+		downloadSessionIsComplete = true
+		finalizeRefreshIfReady()
 	}
 
 	@MainActor public func resume() {
@@ -235,6 +285,21 @@ import os
 			return
 		}
 		let kind = ActivityKind.refreshFeedContent(feedURL: url.absoluteString)
+		let feed = urlToFeedDictionary[url.absoluteString]
+
+		// DownloadSession only skips because of its in-memory 4xx cache (or a
+		// previous 429). That cache is populated by `httpError`, which also wrote
+		// `lastResponseCode`, so this 4xx check depends on httpError running first.
+		if let feed,
+		   !isSuspended,
+		   let statusCode = feed.lastResponseCode,
+		   (400..<500).contains(statusCode),
+		   statusCode != 429,
+		   attemptRSSHubRetry(feed: feed, url: url, generation: refreshGeneration, triggerError: nil) {
+			ActivityLog.shared.startIfNeeded(owner, kind: kind)
+			return
+		}
+
 		ActivityLog.shared.startIfNeeded(owner, kind: kind)
 		ActivityLog.shared.didComplete(owner, kind: kind, message: reason, durationIsSignificant: false)
 	}
@@ -242,6 +307,13 @@ import os
 	func downloadSession(_ downloadSession: DownloadSession, downloadDidComplete url: URL, response: URLResponse?, data: Data, error: NSError?) {
 
 		guard let feed = urlToFeedDictionary[url.absoluteString] else {
+			return
+		}
+		handleDownloadCompletion(feed: feed, url: url, response: response, data: data, error: error, generation: refreshGeneration)
+	}
+
+	func handleDownloadCompletion(feed: Feed, url: URL, response: URLResponse?, data: Data, error: NSError?, generation: Int) {
+		guard generation == refreshGeneration else {
 			return
 		}
 
@@ -254,11 +326,17 @@ import os
 		let activityKind = ActivityKind.refreshFeedContent(feedURL: feed.url)
 
 		if let error {
+			if attemptRSSHubRetry(feed: feed, url: url, generation: generation, triggerError: error) {
+				return
+			}
 			reportFeedRefreshError(feed: feed, error: error, activityKind: activityKind)
 			return
 		}
 		guard let httpResponse = response as? HTTPURLResponse else {
 			let error = NSError(domain: "LocalAccountRefresher", code: 0, userInfo: [NSLocalizedDescriptionKey: "Unexpected response (not HTTP)"])
+			if attemptRSSHubRetry(feed: feed, url: url, generation: generation, triggerError: error) {
+				return
+			}
 			reportFeedRefreshError(feed: feed, error: error, activityKind: activityKind)
 			return
 		}
@@ -270,6 +348,9 @@ import os
 		guard statusIsOKOrNotModified else {
 			let statusCode = httpResponse.statusCode
 			let error = NSError(domain: "LocalAccountRefresher", code: statusCode, userInfo: [NSLocalizedDescriptionKey: "HTTP \(statusCode)"])
+			if attemptRSSHubRetry(feed: feed, url: url, generation: generation, triggerError: error) {
+				return
+			}
 			reportFeedRefreshError(feed: feed, error: error, activityKind: activityKind)
 			return
 		}
@@ -295,6 +376,17 @@ import os
 			feed.cacheControlInfo = cacheControlInfo
 		}
 
+		processFeedData(feed: feed, url: url, data: data, generation: generation)
+	}
+
+	/// Parses and stores downloaded data, on either the normal or the fallback
+	/// success path. The hash short-circuit applies to both paths.
+	///
+	/// Deliberate simplification: a 2xx response that cannot be parsed is not
+	/// retried, so the first fallback instance returning a 200 error page ends
+	/// the candidate chain.
+	private func processFeedData(feed: Feed, url: URL, data: Data, generation: Int) {
+		let activityKind = ActivityKind.refreshFeedContent(feedURL: feed.url)
 		let dataHash = data.md5String
 		let dataSizeMessage = ActivityLog.dataSizeMessage(data)
 		if dataHash == feed.contentHash {
@@ -307,8 +399,16 @@ import os
 		outstandingParseTasks += 1
 		Task { @MainActor in
 			defer {
-				self.outstandingParseTasks -= 1
-				self.completeRefreshActivityIfReady()
+				// A stale task belongs to a superseded refresh. That refresh already
+				// reset this counter, so leave it alone.
+				if generation == self.refreshGeneration {
+					self.outstandingParseTasks -= 1
+					self.finalizeRefreshIfReady()
+				}
+			}
+
+			guard generation == self.refreshGeneration else {
+				return
 			}
 
 			Self.logger.debug("LocalAccountRefresher: parsing feed for \(url.absoluteString)")
@@ -317,15 +417,21 @@ import os
 			let parsedFeed: ParsedFeed
 			do {
 				guard let result = try await FeedParser.parse(parserData) else {
-					if let activityOwner {
+					guard generation == self.refreshGeneration else {
+						return
+					}
+					if let activityOwner = self.activityOwner {
 						ActivityLog.shared.didComplete(activityOwner, kind: activityKind, message: dataSizeMessage)
 					}
 					return
 				}
 				parsedFeed = result
 			} catch {
+				guard generation == self.refreshGeneration else {
+					return
+				}
 				Self.logger.error("LocalAccountRefresher: feed parse error for \(url.absoluteString): \(error.localizedDescription)")
-				if let activityOwner {
+				if let activityOwner = self.activityOwner {
 					ActivityLog.shared.didFail(activityOwner, kind: activityKind, error: error)
 				}
 				self.feedsErrored += 1
@@ -335,8 +441,12 @@ import os
 				}
 				return
 			}
+
+			guard generation == self.refreshGeneration else {
+				return
+			}
 			guard let account = feed.account else {
-				if let activityOwner {
+				if let activityOwner = self.activityOwner {
 					ActivityLog.shared.didComplete(activityOwner, kind: activityKind, message: dataSizeMessage)
 				}
 				return
@@ -345,13 +455,17 @@ import os
 			assert(Thread.isMainThread)
 			let articleChanges = await account.updateAsync(feed: feed, parsedFeed: parsedFeed)
 
+			guard generation == self.refreshGeneration else {
+				return
+			}
+
 			self.newArticlesCount += articleChanges.new?.count ?? 0
 			self.updatedArticlesCount += articleChanges.updated?.count ?? 0
 
 			Self.logger.debug("LocalAccountRefresher: setting contentHash for \(url.absoluteString)")
 			feed.contentHash = dataHash
 
-			if let activityOwner {
+			if let activityOwner = self.activityOwner {
 				ActivityLog.shared.didComplete(activityOwner, kind: activityKind, message: dataSizeMessage)
 			}
 
@@ -363,6 +477,13 @@ import os
 		guard let feed = urlToFeedDictionary[url.absoluteString] else {
 			return
 		}
+		handleHTTPError(feed: feed, url: url, statusCode: statusCode, generation: refreshGeneration)
+	}
+
+	func handleHTTPError(feed: Feed, url: URL, statusCode: Int, generation: Int) {
+		guard generation == refreshGeneration else {
+			return
+		}
 
 		feed.lastCheckDate = Date()
 		feed.lastResponseCode = statusCode
@@ -372,6 +493,9 @@ import os
 		let errorMessage = "HTTP \(statusCode) \(statusDescription): \(url.absoluteString)"
 		let error = NSError(domain: "NetNewsWire", code: statusCode, userInfo: [NSLocalizedDescriptionKey: errorMessage])
 
+		if attemptRSSHubRetry(feed: feed, url: url, generation: generation, triggerError: error) {
+			return
+		}
 		reportFeedRefreshError(feed: feed, error: error, activityKind: .refreshFeedContent(feedURL: feed.url))
 	}
 
@@ -404,18 +528,90 @@ import os
 	}
 
 	func downloadSessionDidComplete(_ downloadSession: DownloadSession) {
+		downloadSessionIsComplete = true
+		finalizeRefreshIfReady()
+	}
+}
 
-		if let accountID {
-			completeRemainingActivities(accountID: accountID)
+// MARK: - RSSHub Fallback
+
+@MainActor extension LocalAccountRefresher {
+
+	func handleRSSHubFallbackSuccess(feed: Feed, originalURL: URL, data: Data, generation: Int) {
+		guard generation == refreshGeneration else {
+			return
 		}
 
-		downloadSessionIsComplete = true
-		completeRefreshActivityIfReady()
+		feed.lastCheckDate = Date()
+		feed.lastResponseCode = 200
+		// Drop the original URL's 4xx cache entry, so the next refresh requests it
+		// again instead of skipping it and never reaching this fallback.
+		downloadSession.clearHTTP4xxResponse(for: originalURL)
+		// The fallback instance's conditional-GET and Cache-Control headers do not
+		// describe the subscribed URL, so they are deliberately not stored.
+		processFeedData(feed: feed, url: originalURL, data: data, generation: generation)
+	}
+
+	/// Starts one retry chain for `feed` if it is on a known RSSHub instance.
+	/// Returns true when the caller must not report the error: either a chain is
+	/// already running or one was started.
+	@discardableResult
+	func attemptRSSHubRetry(feed: Feed, url: URL, generation: Int, triggerError: Error?) -> Bool {
+		guard generation == refreshGeneration, !isSuspended else {
+			return false
+		}
+
+		// suspend() cancels DownloadSession tasks, which surface here as an
+		// NSURLErrorCancelled completion. That is not a transport failure.
+		if let triggerError {
+			let nsError = triggerError as NSError
+			if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+				return false
+			}
+		}
+
+		if retryingFeedIDs.contains(feed.feedID) {
+			return true
+		}
+		guard !rssHubRetrier.candidateURLs(for: url).isEmpty else {
+			return false
+		}
+
+		retryingFeedIDs.insert(feed.feedID)
+		pendingRSSHubRetries += 1
+		let activityKind = ActivityKind.refreshFeedContent(feedURL: feed.url)
 
 		Task { @MainActor in
-			completion?()
-			completion = nil
+			defer {
+				// A stale chain's result belongs to a superseded refresh, which has
+				// already reset the counter.
+				if generation == self.refreshGeneration {
+					self.pendingRSSHubRetries -= 1
+					self.finalizeRefreshIfReady()
+				}
+			}
+
+			do {
+				let result = try await self.rssHubRetrier.fetch(feedURL: url)
+				guard generation == self.refreshGeneration else {
+					return
+				}
+				self.handleRSSHubFallbackSuccess(feed: feed, originalURL: url, data: result.data, generation: generation)
+			} catch {
+				guard generation == self.refreshGeneration else {
+					return
+				}
+				let reportError: Error
+				if let triggerError {
+					reportError = triggerError
+				} else {
+					let statusCode = feed.lastResponseCode ?? 0
+					reportError = NSError(domain: "LocalAccountRefresher", code: statusCode, userInfo: [NSLocalizedDescriptionKey: "HTTP \(statusCode)"])
+				}
+				self.reportFeedRefreshError(feed: feed, error: reportError, activityKind: activityKind)
+			}
 		}
+		return true
 	}
 }
 
@@ -423,16 +619,37 @@ import os
 
 @MainActor private extension LocalAccountRefresher {
 
-	func completeRefreshActivityIfReady() {
-		guard downloadSessionIsComplete && outstandingParseTasks == 0 else {
+	func completeRefreshActivity(message: String) {
+		guard let refreshActivity else {
 			return
 		}
-		guard let refreshActivityID else {
+		ActivityLog.shared.didComplete(id: refreshActivity.id, message: message)
+		self.refreshActivity = nil
+	}
+
+	/// The single place a refresh is declared finished. Downloads, parse tasks
+	/// and RSSHub retry chains all funnel here.
+	func finalizeRefreshIfReady() {
+		guard downloadSessionIsComplete && outstandingParseTasks == 0 && pendingRSSHubRetries == 0 else {
 			return
 		}
 
-		ActivityLog.shared.didComplete(id: refreshActivityID, message: refreshStatsMessage)
-		self.refreshActivityID = nil
+		if let accountID {
+			completeRemainingActivities(accountID: accountID)
+		}
+
+		if let refreshActivity, refreshActivity.generation == refreshGeneration {
+			ActivityLog.shared.didComplete(id: refreshActivity.id, message: refreshStatsMessage)
+			self.refreshActivity = nil
+		}
+
+		let completion = self.completion
+		self.completion = nil
+		if let completion {
+			Task { @MainActor in
+				completion()
+			}
+		}
 	}
 
 	/// Clean up any leftover per-feed activities at the end of a refresh.

@@ -6,10 +6,11 @@
 import AppKit
 import WebKit
 import AI
+import Account
 import Articles
 
 /// The Chinese translation tab of the reading area: empty state, translation
-/// progress, and the translated article in either bilingual or Chinese-only mode.
+/// progress, and the translated article in Chinese-only mode.
 @MainActor
 final class AITranslationViewController: NSViewController {
 
@@ -22,24 +23,17 @@ final class AITranslationViewController: NSViewController {
 		}
 	}
 
-	private enum ViewMode: Int {
-		case bilingual = 0
-		case chineseOnly = 1
-	}
-
 	private enum ContentState {
 		case noArticle
 		case reading
-		case empty
+		case empty(titleTranslated: Bool)
+		case noBody(AI.Translation?)
 		case translating
 		case translation(AI.Translation)
 		case error(String)
 	}
 
-	private static let modeDefaultsKey = "aiTranslationViewMode"
-
 	private let headerBar = NSView()
-	private let modeControl = NSSegmentedControl(labels: ["对照", "纯中文"], trackingMode: .selectOne, target: nil, action: nil)
 	private let contentView = NSView()
 	private let emptyView = NSStackView()
 	private let emptyLabel = NSTextField(wrappingLabelWithString: "还没有中文译文")
@@ -55,15 +49,12 @@ final class AITranslationViewController: NSViewController {
 	private var state: ContentState = .noArticle
 	private var isPaneVisible = false
 	private var loadToken = UUID()
-	private var currentTranslation: AI.Translation?
-	private var mode: ViewMode
 	private var headerHeightConstraint: NSLayoutConstraint?
 
 	init() {
 		let configuration = WKWebViewConfiguration()
 		configuration.defaultWebpagePreferences.allowsContentJavaScript = false
 		self.webView = AIReaderWebView(frame: .zero, configuration: configuration)
-		self.mode = ViewMode(rawValue: UserDefaults.standard.integer(forKey: Self.modeDefaultsKey)) ?? .bilingual
 		super.init(nibName: nil, bundle: nil)
 		NotificationCenter.default.addObserver(self, selector: #selector(handleTranslationReady(_:)), name: .aiTranslationReady, object: nil)
 	}
@@ -123,10 +114,17 @@ final class AITranslationViewController: NSViewController {
 	}
 
 	/// Queues a translation only when the pane is on screen, an article is
-	/// showing with no cached translation, and no job is in flight, so opening
-	/// the tab never repeats work.
+	/// showing with no cached translation, its feed still allows translation,
+	/// and no job is in flight, so opening the tab never repeats work. The
+	/// acceptance gate leaves the tab empty instead of looping on a gated
+	/// enqueue.
 	func enqueueTranslationIfNeeded() {
-		guard isPaneVisible, case .empty = state else {
+		guard !AIJobExecutor.shared.isAutoWorkDisabled,
+		      isPaneVisible,
+		      case .empty = state,
+		      article?.feed?.aiTranslationEnabled != false,
+		      let article,
+		      AIArticleLanguageGate.allows(article) else {
 			return
 		}
 		translateButtonClicked()
@@ -134,15 +132,14 @@ final class AITranslationViewController: NSViewController {
 
 	func reload() {
 		guard let articleID = article?.articleID else {
-			currentTranslation = nil
 			state = .noArticle
 			updateContent()
 			return
 		}
+		let hasBody = article.map { AIArticle(article: $0).hasBody } ?? false
 
 		let token = UUID()
 		loadToken = token
-		currentTranslation = nil
 		state = .reading
 		updateContent()
 
@@ -152,11 +149,12 @@ final class AITranslationViewController: NSViewController {
 				guard self.loadToken == token, self.article?.articleID == articleID else {
 					return
 				}
-				if let translation {
-					self.currentTranslation = translation
+				if !hasBody {
+					self.state = .noBody(translation)
+				} else if let translation, !translation.blocks.isEmpty {
 					self.state = .translation(translation)
 				} else {
-					self.state = .empty
+					self.state = .empty(titleTranslated: translation?.titleZh?.isEmpty == false)
 				}
 				self.updateContent()
 				self.enqueueTranslationIfNeeded()
@@ -179,22 +177,12 @@ private extension AITranslationViewController {
 		headerBar.wantsLayer = true
 		headerBar.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
 
-		modeControl.translatesAutoresizingMaskIntoConstraints = false
-		modeControl.selectedSegment = mode.rawValue
-		modeControl.controlSize = .small
-		modeControl.segmentStyle = .rounded
-		modeControl.target = self
-		modeControl.action = #selector(modeChanged(_:))
-		headerBar.addSubview(modeControl)
-
 		let separator = NSBox()
 		separator.boxType = .separator
 		separator.translatesAutoresizingMaskIntoConstraints = false
 		headerBar.addSubview(separator)
 
 		NSLayoutConstraint.activate([
-			modeControl.centerXAnchor.constraint(equalTo: headerBar.centerXAnchor),
-			modeControl.centerYAnchor.constraint(equalTo: headerBar.centerYAnchor),
 			separator.leadingAnchor.constraint(equalTo: headerBar.leadingAnchor),
 			separator.trailingAnchor.constraint(equalTo: headerBar.trailingAnchor),
 			separator.bottomAnchor.constraint(equalTo: headerBar.bottomAnchor)
@@ -284,10 +272,20 @@ private extension AITranslationViewController {
 			loadingLabel.stringValue = "正在读取译文"
 			loadingIndicator.startAnimation(nil)
 			loadingView.isHidden = false
-		case .empty:
-			emptyLabel.stringValue = "还没有中文译文"
+		case .empty(let titleTranslated):
+			emptyLabel.stringValue = titleTranslated ? "标题已翻译，正文未翻译" : "还没有中文译文"
 			translateButton.isHidden = false
 			emptyView.isHidden = false
+		case .noBody(let translation):
+			if let translation {
+				headerBar.isHidden = false
+				webView.isHidden = false
+				render(translation)
+			} else {
+				emptyLabel.stringValue = "这篇文章没有正文"
+				translateButton.isHidden = true
+				emptyView.isHidden = false
+			}
 		case .translating:
 			loadingLabel.stringValue = "翻译任务已提交，完成后会自动刷新"
 			loadingIndicator.startAnimation(nil)
@@ -305,8 +303,7 @@ private extension AITranslationViewController {
 	}
 
 	func render(_ translation: AI.Translation) {
-		modeControl.selectedSegment = mode.rawValue
-		webView.loadHTMLString(Self.html(for: translation, mode: mode), baseURL: nil)
+		webView.loadHTMLString(Self.html(for: translation), baseURL: nil)
 	}
 }
 
@@ -315,28 +312,24 @@ private extension AITranslationViewController {
 private extension AITranslationViewController {
 
 	@objc func translateButtonClicked() {
-		guard let articleID = article?.articleID else {
+		guard let article = article else {
 			return
 		}
-
-		let now = Date()
-		let job = AIJob(
-			id: "bodyTranslation:\(articleID)",
-			articleID: articleID,
-			kind: .bodyTranslation,
-			priority: 100,
-			availableAt: now,
-			createdAt: now
-		)
+		let aiArticle = AIArticle(article: article)
 
 		state = .translating
 		updateContent()
 
 		Task { @MainActor in
-			do {
-				try await AIEnvironment.shared.queue.enqueue(job)
-			} catch {
-				self.state = .error("提交翻译任务失败：\(error.localizedDescription)")
+			let result = await AIJobExecutor.shared.enqueueBodyTranslation(for: aiArticle)
+			switch result {
+			case .enqueued, .alreadyInFlight:
+				self.state = .translating
+				self.updateContent()
+			case .notNeeded:
+				self.reload()
+			case .failed:
+				self.state = .error("提交翻译任务失败")
 				self.updateContent()
 			}
 		}
@@ -344,14 +337,6 @@ private extension AITranslationViewController {
 
 	@objc func retryButtonClicked() {
 		reload()
-	}
-
-	@objc func modeChanged(_ sender: NSSegmentedControl) {
-		mode = ViewMode(rawValue: sender.selectedSegment) ?? .bilingual
-		UserDefaults.standard.set(mode.rawValue, forKey: Self.modeDefaultsKey)
-		if let currentTranslation {
-			render(currentTranslation)
-		}
 	}
 
 	@objc nonisolated func handleTranslationReady(_ note: Notification) {
@@ -369,13 +354,12 @@ private extension AITranslationViewController {
 
 private extension AITranslationViewController {
 
-	private static func html(for translation: AI.Translation, mode: ViewMode) -> String {
+	private static func html(for translation: AI.Translation) -> String {
 		let title = translation.titleZh.map(escapeHTML) ?? ""
 		let summary = translation.summaryZh.map(escapeHTML) ?? ""
 
 		var blocks = ""
 		for block in translation.blocks {
-			let source = escapeHTML(block.source).replacingOccurrences(of: "\n", with: "<br>")
 			let target: String
 			if let targetHTML = block.targetHTML, !targetHTML.isEmpty {
 				target = targetHTML
@@ -384,21 +368,11 @@ private extension AITranslationViewController {
 				target = "<p>\(escapedTarget)</p>"
 			}
 
-			switch mode {
-			case .bilingual:
-				blocks += """
-				<section class="block">
-					<div class="source">\(source)</div>
-					<div class="target">\(target)</div>
-				</section>
-				"""
-			case .chineseOnly:
-				blocks += """
-				<section class="block chinese-only">
-					<div class="target">\(target)</div>
-				</section>
-				"""
-			}
+			blocks += """
+			<section class="block chinese-only">
+				<div class="target">\(target)</div>
+			</section>
+			"""
 		}
 
 		if blocks.isEmpty {
@@ -436,9 +410,7 @@ private extension AITranslationViewController {
 		body { font-family: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif; font-size: 15px; line-height: 1.75; padding: 20px 24px 48px; }
 		h1 { font-size: 21px; line-height: 1.4; margin: 0 0 10px; }
 		.summary { color: var(--muted); font-size: 14px; margin-bottom: 20px; }
-		.block { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; padding: 14px 0; border-top: 1px solid var(--line); }
-		.block.chinese-only { display: block; }
-		.source { color: var(--muted); font-size: 13px; line-height: 1.65; }
+		.block { padding: 14px 0; border-top: 1px solid var(--line); }
 		.target { min-width: 0; }
 		.target p:first-child { margin-top: 0; }
 		.target p:last-child { margin-bottom: 0; }
@@ -448,10 +420,6 @@ private extension AITranslationViewController {
 		pre, code { font-family: "SF Mono", Menlo, monospace; font-size: 13px; }
 		pre { overflow-x: auto; padding: 10px; background: rgba(127, 127, 127, 0.12); border-radius: 6px; }
 		.empty { color: var(--muted); }
-		@media (max-width: 680px) {
-			.block { grid-template-columns: minmax(0, 1fr); gap: 8px; }
-			.source { border-left: 3px solid var(--line); padding-left: 10px; }
-		}
 		</style>
 		</head>
 		<body>

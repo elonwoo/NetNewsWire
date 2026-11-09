@@ -153,6 +153,51 @@ import Articles
 		}
 	}
 
+	/// When true the feed offers the rewrite tab and automatic rewrite jobs.
+	public var aiRewriteEnabled: Bool {
+		get {
+			settings.aiRewriteEnabled
+		}
+		set {
+			settings.aiRewriteEnabled = newValue
+		}
+	}
+
+	/// When true the feed offers the translation tab and automatic title
+	/// translation jobs.
+	public var aiTranslationEnabled: Bool {
+		get {
+			settings.aiTranslationEnabled
+		}
+		set {
+			settings.aiTranslationEnabled = newValue
+		}
+	}
+
+	/// True when the user has overridden the automatic Chinese-feed detection by
+	/// turning an AI switch back on. Automatic detection no longer disables AI
+	/// for this feed, so its Chinese articles follow the normal rules.
+	public var aiLanguageOverride: Bool {
+		settings.aiLanguageOverride
+	}
+
+	/// The automatic Chinese-feed detection result: turns both AI switches off in
+	/// one conditional UPDATE, but only while the user has not overridden the
+	/// setting. Returns true when the switches were turned off.
+	@discardableResult
+	public func applyAutomaticChineseOff() -> Bool {
+		settings.applyAutomaticChineseOff()
+	}
+
+	/// Called when the user turns an AI switch from off to on. Writes the
+	/// override and the switch they turned on in one UPDATE; the switch they did
+	/// not touch keeps its stored value. Turning a switch off must keep using the
+	/// `aiRewriteEnabled` / `aiTranslationEnabled` setters instead, so it does not
+	/// set the override.
+	public func setAIEnabledByUser(rewriteEnabled: Bool, translationEnabled: Bool) {
+		settings.setAIEnabledByUser(rewriteEnabled: rewriteEnabled, translationEnabled: translationEnabled)
+	}
+
 	public var externalID: String? {
 		get {
 			settings.externalID

@@ -20,6 +20,8 @@ final class FeedInspectorViewController: NSViewController, Inspector {
 	@IBOutlet var urlTextField: NSTextField?
 	@IBOutlet var newArticleNotificationsEnabledCheckBox: NSButton!
 	@IBOutlet var readerViewAlwaysEnabledCheckBox: NSButton?
+	@IBOutlet var aiRewriteEnabledCheckBox: NSButton?
+	@IBOutlet var aiTranslationEnabledCheckBox: NSButton?
 
 	private var feed: Feed? {
 		didSet {
@@ -55,6 +57,7 @@ final class FeedInspectorViewController: NSViewController, Inspector {
 		updateUI()
 		NotificationCenter.default.addObserver(self, selector: #selector(handleFeedIconImageDidChange(_:)), name: .feedIconImageDidChange, object: nil)
 		NotificationCenter.default.addObserver(self, selector: #selector(updateUI), name: .DidUpdateFeedPreferencesFromContextMenu, object: nil)
+		NotificationCenter.default.addObserver(self, selector: #selector(feedSettingDidChange(_:)), name: .feedSettingDidChange, object: nil)
 	}
 
 	override func viewDidAppear() {
@@ -112,10 +115,45 @@ final class FeedInspectorViewController: NSViewController, Inspector {
 		feed?.readerViewAlwaysEnabled = (readerViewAlwaysEnabledCheckBox?.state ?? .off) == .on ? true : false
 	}
 
+	@IBAction func aiRewriteEnabledChanged(_ sender: Any) {
+		guard let feed else {
+			return
+		}
+		if (aiRewriteEnabledCheckBox?.state ?? .off) == .on {
+			feed.setAIEnabledByUser(rewriteEnabled: true, translationEnabled: feed.aiTranslationEnabled)
+		} else {
+			feed.aiRewriteEnabled = false
+		}
+	}
+
+	@IBAction func aiTranslationEnabledChanged(_ sender: Any) {
+		guard let feed else {
+			return
+		}
+		if (aiTranslationEnabledCheckBox?.state ?? .off) == .on {
+			feed.setAIEnabledByUser(rewriteEnabled: feed.aiRewriteEnabled, translationEnabled: true)
+		} else {
+			feed.aiTranslationEnabled = false
+		}
+	}
+
 	// MARK: Notifications
 
 	@objc func handleFeedIconImageDidChange(_ notification: Notification) {
 		updateImage()
+	}
+
+	@objc func feedSettingDidChange(_ notification: Notification) {
+		guard let key = notification.userInfo?[Feed.SettingUserInfoKey] as? Feed.SettingKey else {
+			return
+		}
+		guard key == .aiRewriteEnabled || key == .aiTranslationEnabled else {
+			return
+		}
+		guard notification.object as? Feed == feed else {
+			return
+		}
+		updateAIToggles()
 	}
 }
 
@@ -143,6 +181,7 @@ private extension FeedInspectorViewController {
 		updateFeedURL()
 		updateNewArticleNotificationsEnabled()
 		updateReaderViewAlwaysEnabled()
+		updateAIToggles()
 		windowTitle = feed?.nameForDisplay ?? NSLocalizedString("Feed Inspector", comment: "Feed Inspector window title")
 		readerViewAlwaysEnabledCheckBox?.isEnabled = true
 		view.needsLayout = true
@@ -181,6 +220,11 @@ private extension FeedInspectorViewController {
 
 	func updateReaderViewAlwaysEnabled() {
 		readerViewAlwaysEnabledCheckBox?.state = (feed?.readerViewAlwaysEnabled ?? false) ? .on : .off
+	}
+
+	func updateAIToggles() {
+		aiRewriteEnabledCheckBox?.state = (feed?.aiRewriteEnabled ?? true) ? .on : .off
+		aiTranslationEnabledCheckBox?.state = (feed?.aiTranslationEnabled ?? true) ? .on : .off
 	}
 
 	func updateNotificationSettings() {

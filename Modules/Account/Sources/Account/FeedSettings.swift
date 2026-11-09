@@ -87,6 +87,44 @@ import Articles
 		}
 	}
 
+	// The two AI switches use backing storage so syncing values written by the
+	// language detector or a user override cannot trigger the setters and write
+	// the database a second time.
+	private var aiRewriteEnabledValue = true
+	var aiRewriteEnabled: Bool {
+		get {
+			aiRewriteEnabledValue
+		}
+		set {
+			guard newValue != aiRewriteEnabledValue else {
+				return
+			}
+			aiRewriteEnabledValue = newValue
+			database.setBool(newValue, for: feedURL, column: .aiRewriteEnabled)
+			postSettingDidChange(.aiRewriteEnabled)
+		}
+	}
+
+	private var aiTranslationEnabledValue = true
+	var aiTranslationEnabled: Bool {
+		get {
+			aiTranslationEnabledValue
+		}
+		set {
+			guard newValue != aiTranslationEnabledValue else {
+				return
+			}
+			aiTranslationEnabledValue = newValue
+			database.setBool(newValue, for: feedURL, column: .aiTranslationEnabled)
+			postSettingDidChange(.aiTranslationEnabled)
+		}
+	}
+
+	/// True when the user turned an AI switch back on after the automatic
+	/// Chinese-feed detection turned it off. Automatic detection leaves the feed
+	/// alone from then on.
+	private(set) var aiLanguageOverride = false
+
 	var authors: Set<Author>? {
 		didSet {
 			if authors != oldValue {
@@ -180,6 +218,9 @@ import Articles
 		self.contentHash = row.contentHash
 		self.newArticleNotificationsEnabled = row.newArticleNotificationsEnabled
 		self.readerViewAlwaysEnabled = row.readerViewAlwaysEnabled
+		self.aiRewriteEnabledValue = row.aiRewriteEnabled
+		self.aiTranslationEnabledValue = row.aiTranslationEnabled
+		self.aiLanguageOverride = row.aiLanguageOverride
 		self.authors = row.authors
 		self.conditionalGetInfo = row.conditionalGetInfo
 		self.conditionalGetInfoDate = row.conditionalGetInfoDate
@@ -198,7 +239,66 @@ import Articles
 		database.ensureFeedExists(feedURL, feedID: feedID)
 	}
 
+	/// Applies the automatic Chinese-feed result. The conditional UPDATE is the
+	/// only database write, so a user override that lands first wins. Returns
+	/// false when the user had already overridden the setting.
+	@discardableResult
+	func applyAutomaticChineseOff() -> Bool {
+		guard database.applyAutomaticChineseOff(for: feedURL) else {
+			return false
+		}
+		syncAIState(FeedSettingsDatabase.AIState(rewriteEnabled: false, translationEnabled: false, languageOverride: false))
+		postSettingDidChange(.aiRewriteEnabled)
+		postSettingDidChange(.aiTranslationEnabled)
+		return true
+	}
+
+	/// Called when the user turns an AI switch from off to on. Writes the
+	/// override and the switch they turned on through a single UPDATE; the
+	/// switch they did not touch keeps its stored value. Turning a switch off
+	/// does not come through here, so it never sets the override.
+	@discardableResult
+	func setAIEnabledByUser(rewriteEnabled: Bool, translationEnabled: Bool) -> Bool {
+		let turningOnRewrite = rewriteEnabled && rewriteEnabled != aiRewriteEnabledValue
+		let turningOnTranslation = translationEnabled && translationEnabled != aiTranslationEnabledValue
+		guard turningOnRewrite || turningOnTranslation else {
+			return false
+		}
+		guard let state = database.setAIEnabledByUser(
+			for: feedURL,
+			rewriteEnabled: turningOnRewrite ? true : nil,
+			translationEnabled: turningOnTranslation ? true : nil
+		) else {
+			return false
+		}
+		let oldRewriteEnabled = aiRewriteEnabledValue
+		let oldTranslationEnabled = aiTranslationEnabledValue
+		syncAIState(state)
+		if oldRewriteEnabled != state.rewriteEnabled {
+			postSettingDidChange(.aiRewriteEnabled)
+		}
+		if oldTranslationEnabled != state.translationEnabled {
+			postSettingDidChange(.aiTranslationEnabled)
+		}
+		return true
+	}
+
+	private func syncAIState(_ state: FeedSettingsDatabase.AIState) {
+		aiRewriteEnabledValue = state.rewriteEnabled
+		aiTranslationEnabledValue = state.translationEnabled
+		aiLanguageOverride = state.languageOverride
+	}
+
 	private func postSettingDidChange(_ key: Feed.SettingKey) {
-		feed?.postFeedSettingDidChangeNotification(key)
+		guard let feed else {
+			// Settings used without a live Feed still report their changes.
+			NotificationCenter.default.post(
+				name: .feedSettingDidChange,
+				object: self,
+				userInfo: [Feed.SettingUserInfoKey: key]
+			)
+			return
+		}
+		feed.postFeedSettingDidChangeNotification(key)
 	}
 }

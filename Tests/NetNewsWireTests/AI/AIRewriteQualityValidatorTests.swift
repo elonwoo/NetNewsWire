@@ -3,6 +3,7 @@
 //  NetNewsWireTests
 //
 
+import AI
 import Foundation
 import Testing
 
@@ -75,5 +76,15 @@ import Testing
 		#expect(result.minParagraphCount == 3)
 		#expect(!result.ok)
 		#expect(result.reason.hasPrefix("正文段落不足"))
+	}
+
+	@Test func normalizedOutputCountsOnlyCanonicalPlainText() {
+		let output = "# 标题\n\n<p>正文内容</p> {{img:0}}"
+		let normalized = RewriteOutputNormalizer.normalize(output, images: [HTMLImageRef(url: "https://example.com/a.png", alt: "A")])
+		let plain = AIRewriteQualityValidator.plainText(normalized)
+
+		#expect(!plain.contains("<"))
+		#expect(!plain.contains("{{img:"))
+		#expect(plain.contains("正文内容"))
 	}
 }

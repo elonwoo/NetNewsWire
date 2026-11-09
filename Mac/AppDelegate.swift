@@ -246,8 +246,18 @@ let appName = "NetNewsWire"
 		ArticleThemesManager.shared.start()
 		NetworkMonitor.shared.start()
 		MemoryPressureMonitor.shared.start()
-		AIJobExecutor.shared.start()
-		Self.logger.info("AI job executor started")
+		if Platform.isRunningUnitTests {
+			AIJobExecutor.shared.start()
+		} else {
+			Task { @MainActor in
+				// The cleanup must finish before the executor can claim a job;
+				// otherwise a stale Chinese retry could run first.
+				await AIChineseCleanup.runIfNeeded()
+				AIFeedLanguageDetector.shared.start()
+				AIJobExecutor.shared.start()
+				Self.logger.info("AI job executor started")
+			}
+		}
 
 #if !SKIP_APP_GROUP_ACCESS
 		ExtensionContainersFile.shared.start()
@@ -669,6 +679,21 @@ let appName = "NetNewsWire"
 			inspectorWindowController!.objects = objectsForInspector()
 			inspectorWindowController!.showWindow(self)
 		}
+	}
+
+	/// Shows the inspector for one specific feed without toggling it closed. The
+	/// sidebar context menu uses this to target the right-clicked feed even when
+	/// the current selection is different.
+	func showInspector(for feed: Feed) {
+		if inspectorWindowController == nil {
+			inspectorWindowController = InspectorWindowController()
+		}
+		guard let inspectorWindowController else {
+			return
+		}
+		inspectorWindowController.objects = [feed]
+		inspectorWindowController.showWindow(self)
+		inspectorWindowController.window?.makeKeyAndOrderFront(self)
 	}
 
 	@IBAction func importOPMLFromFile(_ sender: Any?) {

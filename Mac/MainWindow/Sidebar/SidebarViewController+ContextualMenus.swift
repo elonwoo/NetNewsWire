@@ -163,6 +163,17 @@ extension SidebarViewController {
 		NotificationCenter.default.post(Notification(name: .DidUpdateFeedPreferencesFromContextMenu))
 	}
 
+	@objc func showFeedInspectorFromContextMenu(_ sender: Any?) {
+		guard let item = sender as? NSMenuItem,
+			  let feed = item.representedObject as? Feed else {
+			return
+		}
+		if !selectedObjects.contains(where: { ($0 as? Feed) == feed }) {
+			selectFeed(feed)
+		}
+		(NSApplication.shared.delegate as? AppDelegate)?.showInspector(for: feed)
+	}
+
 	nonisolated func showNotificationsNotEnabledAlert() {
 		DispatchQueue.main.async {
 			let alert = NSAlert()
@@ -280,6 +291,9 @@ private extension SidebarViewController {
 		menu.addItem(articleExtractorMenuItem)
 
 		menu.addItem(NSMenuItem.separator())
+
+		let propertiesMenuItem = menuItem(NSLocalizedString("Properties", comment: "Command"), #selector(showFeedInspectorFromContextMenu(_:)), feed)
+		menu.addItem(propertiesMenuItem)
 
 		menu.addItem(renameMenuItem(feed))
 		menu.addItem(deleteMenuItem([feed]))

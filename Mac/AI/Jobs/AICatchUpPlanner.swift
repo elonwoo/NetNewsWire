@@ -22,11 +22,21 @@ enum AICatchUpPlanner {
 	///   - cachedRewrites: Article ID to the content hash of its stored rewrite.
 	///   - cachedTitleHashes: Article ID to the content hash stored with a
 	///     non-empty translated title.
+	///   - rewriteExcludedArticleIDs: Articles whose feeds have rewrite turned
+	///     off. They never enter `rewriteArticleIDs` and never consume a limit
+	///     slot.
+	///   - translationExcludedArticleIDs: Articles whose feeds have translation
+	///     turned off. They never enter `titleTranslationArticleIDs`.
+	///   - chineseAllowedFeedIDs: Feeds whose language override lets Chinese
+	///     articles keep automatic work.
 	///   - limit: Maximum number of jobs in the returned plan.
 	static func plan(articles: [AIArticle],
 					 now: Date,
 					 cachedRewrites: [String: String],
 					 cachedTitleHashes: [String: String],
+					 rewriteExcludedArticleIDs: Set<String> = [],
+					 translationExcludedArticleIDs: Set<String> = [],
+					 chineseAllowedFeedIDs: Set<String> = [],
 					 limit: Int) -> AICatchUpPlan {
 		var plan = AICatchUpPlan(rewriteArticleIDs: [], titleTranslationArticleIDs: [])
 		guard limit > 0 else {
@@ -43,12 +53,15 @@ enum AICatchUpPlanner {
 				continue
 			}
 
-			if AutoWorkPolicy.shouldRewrite(article, now: now),
+			let chineseAllowed = AIArticleLanguageGate.allows(article, chineseAllowedFeedIDs: chineseAllowedFeedIDs)
+			if AutoWorkPolicy.shouldRewrite(article, now: now, chineseAllowed: chineseAllowed),
+			   !rewriteExcludedArticleIDs.contains(article.id),
 			   !isRewriteUpToDate(article, cachedRewrites: cachedRewrites),
 			   plan.rewriteArticleIDs.count + plan.titleTranslationArticleIDs.count < limit {
 				plan.rewriteArticleIDs.append(article.id)
 			}
-			if AutoWorkPolicy.shouldTranslate(article, now: now),
+			if AutoWorkPolicy.shouldTranslate(article, now: now, chineseAllowed: chineseAllowed),
+			   !translationExcludedArticleIDs.contains(article.id),
 			   !isTitleUpToDate(article, cachedTitleHashes: cachedTitleHashes),
 			   plan.rewriteArticleIDs.count + plan.titleTranslationArticleIDs.count < limit {
 				plan.titleTranslationArticleIDs.append(article.id)
@@ -64,7 +77,7 @@ private extension AICatchUpPlanner {
 		guard let cachedHash = cachedRewrites[article.id] else {
 			return false
 		}
-		return cachedHash == AIContentHash.titleOrRewrite(for: article)
+		return AIContentHash.isRewriteUpToDate(stored: cachedHash, article: article)
 	}
 
 	static func isTitleUpToDate(_ article: AIArticle, cachedTitleHashes: [String: String]) -> Bool {

@@ -28,6 +28,22 @@ final class UnreadIndicatorView: NSView {
 		}
 	}
 
+	var isRewriteComplete = false {
+		didSet {
+			if isRewriteComplete != oldValue {
+				needsDisplay = true
+			}
+		}
+	}
+
+	var isTranslationComplete = false {
+		didSet {
+			if isTranslationComplete != oldValue {
+				needsDisplay = true
+			}
+		}
+	}
+
 	static let bezierPath: NSBezierPath = {
 		let r = NSRect(x: 0.0, y: 0.0, width: unreadCircleDimension, height: unreadCircleDimension)
 		return NSBezierPath(ovalIn: r)
@@ -36,6 +52,10 @@ final class UnreadIndicatorView: NSView {
     override func draw(_ dirtyRect: NSRect) {
 		if isSelected && isEmphasized {
 			NSColor.white.setFill()
+		} else if isRewriteComplete {
+			NSColor.systemGreen.setFill()
+		} else if isTranslationComplete {
+			NSColor.systemYellow.setFill()
 		} else {
 			NSColor.controlAccentColor.setFill()
 		}

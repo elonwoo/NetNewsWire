@@ -202,6 +202,92 @@ import Testing
 
 		#expect(try await store.claimNextJob(now: date.addingTimeInterval(24 * 60 * 60)) == nil)
 	}
+
+	@Test func completedRewriteArticleIDsIsEmptyForEmptyInput() async throws {
+		let completed = try await store.completedRewriteArticleIDs(for: [])
+		#expect(completed.isEmpty)
+	}
+
+	@Test func completedRewriteArticleIDsReturnsOnlyArticlesWithRewrites() async throws {
+		let date = Date(timeIntervalSince1970: 1_700_000_900)
+		try await store.saveRewrite(Rewrite(articleID: "has-rewrite", title: "标题", bodyMarkdown: "正文", model: "m", contentHash: "h", createdAt: date, updatedAt: date))
+		try await store.saveTranslation(Translation(articleID: "translation-only", titleZh: "标题", blocks: [], model: "m", provider: "p", contentHash: "h", createdAt: date, updatedAt: date))
+
+		let completed = try await store.completedRewriteArticleIDs(for: ["has-rewrite", "translation-only", "missing"])
+		#expect(completed == ["has-rewrite"])
+	}
+
+	@Test func completedRewriteArticleIDsQueriesAcrossBatchesAndSubsets() async throws {
+		let date = Date(timeIntervalSince1970: 1_700_001_000)
+		let rewrittenIDs = Set((0..<501).map { "batch-\($0)" })
+		for articleID in rewrittenIDs {
+			try await store.saveRewrite(Rewrite(articleID: articleID, title: "标题", bodyMarkdown: "正文", model: "m", contentHash: "h", createdAt: date, updatedAt: date))
+		}
+		let missingIDs = Set((501..<521).map { "batch-\($0)" })
+
+		let completed = try await store.completedRewriteArticleIDs(for: rewrittenIDs.union(missingIDs))
+		#expect(completed == rewrittenIDs)
+	}
+
+	@Test func completedTranslationArticleIDsIsEmptyForEmptyInput() async throws {
+		let completed = try await store.completedTranslationArticleIDs(for: [])
+		#expect(completed.isEmpty)
+	}
+
+	@Test func completedTranslationArticleIDsExcludesTitleOnlyTranslation() async throws {
+		let date = Date(timeIntervalSince1970: 1_700_001_100)
+		try await store.saveTitleTranslation(articleID: "title-only", titleZh: "标题", model: "m", contentHash: "h", at: date)
+
+		let completed = try await store.completedTranslationArticleIDs(for: ["title-only", "missing"])
+		#expect(completed.isEmpty)
+	}
+
+	@Test func completedTranslationArticleIDsCountsBodyTranslation() async throws {
+		let date = Date(timeIntervalSince1970: 1_700_001_200)
+		let translation = Translation(
+			articleID: "body-translated",
+			titleZh: nil,
+			blocks: [TranslationBlock(index: 0, source: "Hello", target: "你好")],
+			model: "m",
+			provider: "p",
+			contentHash: "h",
+			createdAt: date,
+			updatedAt: date
+		)
+		try await store.saveTranslation(translation)
+
+		let completed = try await store.completedTranslationArticleIDs(for: ["body-translated", "missing"])
+		#expect(completed == ["body-translated"])
+	}
+
+	@Test func completedTranslationArticleIDsReturnsOnlyBodyTranslatedSubset() async throws {
+		let date = Date(timeIntervalSince1970: 1_700_001_250)
+		try await store.saveTitleTranslation(articleID: "title-only", titleZh: "标题", model: "m", contentHash: "h", at: date)
+		try await store.saveTranslation(Translation(articleID: "body-translated", titleZh: "标题", blocks: [TranslationBlock(index: 0, source: "Hello", target: "你好")], model: "m", provider: "p", contentHash: "h", createdAt: date, updatedAt: date))
+
+		let completed = try await store.completedTranslationArticleIDs(for: ["title-only", "body-translated", "missing"])
+		#expect(completed == ["body-translated"])
+	}
+
+	@Test func completedTranslationArticleIDsIgnoresRewriteOnlyRows() async throws {
+		let date = Date(timeIntervalSince1970: 1_700_001_300)
+		try await store.saveRewrite(Rewrite(articleID: "rewrite-only", title: "标题", bodyMarkdown: "正文", model: "m", contentHash: "h", createdAt: date, updatedAt: date))
+
+		let completed = try await store.completedTranslationArticleIDs(for: ["rewrite-only"])
+		#expect(completed.isEmpty)
+	}
+
+	@Test func completedTranslationArticleIDsQueriesAcrossBatchesAndSubsets() async throws {
+		let date = Date(timeIntervalSince1970: 1_700_001_400)
+		let translatedIDs = Set((0..<501).map { "batch-t-\($0)" })
+		for articleID in translatedIDs {
+			try await store.saveTranslation(Translation(articleID: articleID, titleZh: "标题", blocks: [TranslationBlock(index: 0, source: "Hello", target: "你好")], model: "m", provider: "p", contentHash: "h", createdAt: date, updatedAt: date))
+		}
+		let missingIDs = Set((501..<521).map { "batch-t-\($0)" })
+
+		let completed = try await store.completedTranslationArticleIDs(for: translatedIDs.union(missingIDs))
+		#expect(completed == translatedIDs)
+	}
 }
 
 private extension SQLiteAIStoreTests {

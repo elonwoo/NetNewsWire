@@ -6,6 +6,7 @@
 import AppKit
 import WebKit
 import AI
+import Account
 import Articles
 
 /// The Chinese rewrite tab of the reading area: empty state, generation
@@ -308,7 +309,12 @@ private extension AIRewriteViewController {
 		guard let article else {
 			return false
 		}
-		return rewrite.contentHash != AIContentHash.titleOrRewrite(for: AIArticle(article: article))
+		switch AIContentHash.rewriteState(stored: rewrite.contentHash, article: AIArticle(article: article)) {
+		case .pipelineOutdated, .contentChanged:
+			return true
+		case .missing, .current:
+			return false
+		}
 	}
 }
 
@@ -317,9 +323,16 @@ private extension AIRewriteViewController {
 private extension AIRewriteViewController {
 
 	@objc func generateButtonClicked() {
-		guard let articleID = article?.articleID else {
+		guard let article = article else {
 			return
 		}
+		// A feed with rewrite turned off has no rewrite UI, but keep the entry
+		// point locked down in case it is triggered some other way. Chinese
+		// articles stay locked unless the feed's language override is set.
+		guard article.feed?.aiRewriteEnabled != false, AIArticleLanguageGate.allows(article) else {
+			return
+		}
+		let articleID = article.articleID
 
 		let now = Date()
 		let job = AIJob(

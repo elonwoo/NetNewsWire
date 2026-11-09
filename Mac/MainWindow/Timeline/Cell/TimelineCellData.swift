@@ -27,8 +27,10 @@ import Images
 	let showThumbnail: Bool // Make space even when thumbnail is nil
 	let read: Bool
 	let starred: Bool
+	let hasRewrite: Bool
+	let hasTranslation: Bool
 
-	init(article: Article, showFeedName: TimelineShowFeedName, feedName: String?, byline: String?, iconImage: IconImage?, showIcon: Bool, thumbnail: NSImage?, showThumbnail: Bool) {
+	init(article: Article, showFeedName: TimelineShowFeedName, feedName: String?, byline: String?, iconImage: IconImage?, showIcon: Bool, thumbnail: NSImage?, showThumbnail: Bool, hasRewrite: Bool = false, hasTranslation: Bool = false) {
 
 		self.title = ArticleStringFormatter.shared.truncatedTitle(article)
 		self.attributedTitle = ArticleStringFormatter.shared.attributedTruncatedTitle(article)
@@ -59,6 +61,8 @@ import Images
 
 		self.read = article.status.read
 		self.starred = article.status.starred
+		self.hasRewrite = hasRewrite
+		self.hasTranslation = hasTranslation
 	}
 
 	/// The article’s summary, or “(No Text)” when it has neither a title nor a summary.
@@ -83,6 +87,8 @@ import Images
 		self.showThumbnail = false
 		self.read = true
 		self.starred = false
+		self.hasRewrite = false
+		self.hasTranslation = false
 		self.attributedTitle = NSAttributedString()
 	}
 }

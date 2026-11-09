@@ -11,12 +11,14 @@ import Foundation
 /// and an article without a publication date is never picked up automatically.
 /// Manual entry points do not consult this policy.
 ///
-/// Rewrites apply to both Chinese and non-Chinese articles; translation applies
-/// only to non-Chinese articles.
+/// Chinese articles are skipped unless the feed's language override is set:
+/// rewrites and translations apply to non-Chinese articles by default, and an
+/// overridden feed gets both for its Chinese articles too. An article without a
+/// language sample counts as non-Chinese, the conservative fallback.
 public enum AutoWorkPolicy {
 
 	/// Articles published before this window are ignored by the automatic paths.
-	public static let recencyWindow: TimeInterval = 7 * 24 * 60 * 60
+	public static let recencyWindow: TimeInterval = 2 * 24 * 60 * 60
 
 	/// Minimum body length, after stripping HTML and whitespace, for a rewrite.
 	public static let minimumRewriteLength = 2000
@@ -27,18 +29,27 @@ public enum AutoWorkPolicy {
 	/// CJK characters must make up at least this share of CJK plus letters.
 	public static let chineseRatioThreshold = 0.4
 
-	public static func shouldRewrite(_ article: AIArticle, now: Date) -> Bool {
+	public static func shouldRewrite(_ article: AIArticle, now: Date, chineseAllowed: Bool = false) -> Bool {
+		guard !article.isRead else {
+			return false
+		}
 		guard isRecent(article, now: now) else {
+			return false
+		}
+		guard chineseAllowed || !isChinese(article) else {
 			return false
 		}
 		return bodyLength(article) >= minimumRewriteLength
 	}
 
-	public static func shouldTranslate(_ article: AIArticle, now: Date) -> Bool {
+	public static func shouldTranslate(_ article: AIArticle, now: Date, chineseAllowed: Bool = false) -> Bool {
+		guard !article.isRead else {
+			return false
+		}
 		guard isRecent(article, now: now) else {
 			return false
 		}
-		return !isChinese(article)
+		return chineseAllowed || !isChinese(article)
 	}
 }
 
@@ -54,6 +65,22 @@ extension AutoWorkPolicy {
 	}
 
 	public static func isChinese(_ article: AIArticle) -> Bool {
+		let counts = languageCounts(article)
+		let total = counts.cjk + counts.letters
+		guard total > 0 else {
+			return false
+		}
+		return Double(counts.cjk) / Double(total) >= chineseRatioThreshold
+	}
+
+	/// False when the title and body produce no letters at all. Such an article
+	/// counts as non-Chinese so it is never blocked for lacking a sample.
+	public static func hasLanguageSample(_ article: AIArticle) -> Bool {
+		let counts = languageCounts(article)
+		return counts.cjk + counts.letters > 0
+	}
+
+	static func languageCounts(_ article: AIArticle) -> (cjk: Int, letters: Int) {
 		let sample = article.title + String(bodyText(article).prefix(languageSampleLength))
 		var cjkCount = 0
 		var letterCount = 0
@@ -64,11 +91,7 @@ extension AutoWorkPolicy {
 				letterCount += 1
 			}
 		}
-		let total = cjkCount + letterCount
-		guard total > 0 else {
-			return false
-		}
-		return Double(cjkCount) / Double(total) >= chineseRatioThreshold
+		return (cjkCount, letterCount)
 	}
 
 	/// Prefers the extracted text and falls back to stripping tags from the HTML.

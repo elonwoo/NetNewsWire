@@ -27,9 +27,9 @@ final class AIBodyTranslationRunner {
 
 	func translate(_ article: AIArticle) async throws -> AI.Translation {
 		let expectedHash = AIContentHash.body(for: article)
-		if let cached = try? await store.translation(for: article.id),
-		   cached.contentHash == expectedHash,
-		   !cached.blocks.isEmpty {
+		// Body translations are never re-run automatically: readable blocks stay
+		// even when the source or pipeline version changes.
+		if let cached = try? await store.translation(for: article.id), !cached.blocks.isEmpty {
 			return cached
 		}
 
@@ -87,13 +87,27 @@ private extension AIBodyTranslationRunner {
 	}
 
 	static func syntheticArticleID(articleID: String, segment: AIBodySegment) -> String {
-		"\(articleID)#ai-segment-\(segment.key)"
+		"\(articleID)#ai-segment-b2-\(segment.key)"
+	}
+
+	static func segmentArticle(article: AIArticle, segment: AIBodySegment) -> AIArticle {
+		AIArticle(
+			id: syntheticArticleID(articleID: article.id, segment: segment),
+			title: article.title,
+			contentHTML: segment.isHTML ? segment.content : nil,
+			contentText: segment.isHTML ? nil : segment.content,
+			url: article.url,
+			feedID: article.feedID,
+			publishedAt: article.publishedAt
+		)
 	}
 
 	func hasProgress(article: AIArticle, segments: [AIBodySegment]) async throws -> Bool {
 		for segment in segments {
-			let syntheticID = Self.syntheticArticleID(articleID: article.id, segment: segment)
-			if let cached = try? await store.translation(for: syntheticID), !cached.blocks.isEmpty {
+			let segmentArticle = Self.segmentArticle(article: article, segment: segment)
+			if let cached = try? await store.translation(for: segmentArticle.id),
+			   !cached.blocks.isEmpty,
+			   cached.contentHash == AIContentHash.body(for: segmentArticle) {
 				return true
 			}
 		}
@@ -135,20 +149,12 @@ private extension AIBodyTranslationRunner {
 	}
 
 	func translateSegment(_ article: AIArticle, segment: AIBodySegment) async throws -> AI.Translation {
-		let syntheticID = Self.syntheticArticleID(articleID: article.id, segment: segment)
-		if let cached = try? await store.translation(for: syntheticID), !cached.blocks.isEmpty {
+		let segmentArticle = Self.segmentArticle(article: article, segment: segment)
+		if let cached = try? await store.translation(for: segmentArticle.id),
+		   !cached.blocks.isEmpty,
+		   cached.contentHash == AIContentHash.body(for: segmentArticle) {
 			return cached
 		}
-
-		let segmentArticle = AIArticle(
-			id: syntheticID,
-			title: article.title,
-			contentHTML: segment.isHTML ? segment.content : nil,
-			contentText: segment.isHTML ? nil : segment.content,
-			url: article.url,
-			feedID: article.feedID,
-			publishedAt: article.publishedAt
-		)
 		return try await engine.translateBody(segmentArticle)
 	}
 }

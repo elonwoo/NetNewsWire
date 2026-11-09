@@ -13,11 +13,12 @@ import Testing
 
 	private let now = Date(timeIntervalSince1970: 1_700_000_000)
 
-	private func chineseArticle(id: String, publishedAt: Date) -> AIArticle {
+	private func chineseArticle(id: String, publishedAt: Date, feedID: String = "zh-feed") -> AIArticle {
 		AIArticle(
 			id: id,
 			title: "标题",
 			contentText: String(repeating: "中", count: 2500),
+			feedID: feedID,
 			publishedAt: publishedAt
 		)
 	}
@@ -31,16 +32,17 @@ import Testing
 		)
 	}
 
-	private func longEnglishArticle(id: String, publishedAt: Date) -> AIArticle {
+	private func longEnglishArticle(id: String, publishedAt: Date, isRead: Bool = false) -> AIArticle {
 		AIArticle(
 			id: id,
 			title: "Title",
 			contentText: String(repeating: "a", count: 2500),
-			publishedAt: publishedAt
+			publishedAt: publishedAt,
+			isRead: isRead
 		)
 	}
 
-	@Test func chineseLongArticleNeedsRewrite() {
+	@Test func chineseLongArticleIsSkippedWithoutOverride() {
 		let article = chineseArticle(id: "zh", publishedAt: now)
 		let plan = AICatchUpPlanner.plan(
 			articles: [article],
@@ -50,13 +52,28 @@ import Testing
 			limit: 200
 		)
 
-		#expect(plan.rewriteArticleIDs == ["zh"])
+		#expect(plan.rewriteArticleIDs.isEmpty)
 		#expect(plan.titleTranslationArticleIDs.isEmpty)
+	}
+
+	@Test func chineseLongArticleIsQueuedWhenTheFeedIsOverridden() {
+		let article = chineseArticle(id: "zh", publishedAt: now)
+		let plan = AICatchUpPlanner.plan(
+			articles: [article],
+			now: now,
+			cachedRewrites: [:],
+			cachedTitleHashes: [:],
+			chineseAllowedFeedIDs: ["zh-feed"],
+			limit: 200
+		)
+
+		#expect(plan.rewriteArticleIDs == ["zh"])
+		#expect(plan.titleTranslationArticleIDs == ["zh"])
 	}
 
 	@Test func cachedRewriteWithMatchingHashIsSkipped() {
 		let article = chineseArticle(id: "zh", publishedAt: now)
-		let hash = AIContentHash.titleOrRewrite(for: article)
+		let hash = AIContentHash.rewrite(for: article)
 		let plan = AICatchUpPlanner.plan(
 			articles: [article],
 			now: now,
@@ -69,7 +86,20 @@ import Testing
 		#expect(plan.titleTranslationArticleIDs.isEmpty)
 	}
 
-	@Test func cachedRewriteWithStaleHashIsQueuedAgain() {
+	@Test func legacyRewriteIsNotQueuedAutomatically() {
+		let article = chineseArticle(id: "zh", publishedAt: now)
+		let plan = AICatchUpPlanner.plan(
+			articles: [article],
+			now: now,
+			cachedRewrites: ["zh": AIContentHash.legacyRewrite(for: article)],
+			cachedTitleHashes: [:],
+			limit: 200
+		)
+
+		#expect(plan.rewriteArticleIDs.isEmpty)
+	}
+
+	@Test func chineseStaleRewriteIsNotQueuedWithoutOverride() {
 		let article = chineseArticle(id: "zh", publishedAt: now)
 		let plan = AICatchUpPlanner.plan(
 			articles: [article],
@@ -79,7 +109,20 @@ import Testing
 			limit: 200
 		)
 
-		#expect(plan.rewriteArticleIDs == ["zh"])
+		#expect(plan.rewriteArticleIDs.isEmpty)
+	}
+
+	@Test func englishStaleRewriteIsQueuedAgain() {
+		let article = longEnglishArticle(id: "en", publishedAt: now)
+		let plan = AICatchUpPlanner.plan(
+			articles: [article],
+			now: now,
+			cachedRewrites: ["en": "stale"],
+			cachedTitleHashes: [:],
+			limit: 200
+		)
+
+		#expect(plan.rewriteArticleIDs == ["en"])
 	}
 
 	@Test func englishLongArticleNeedsRewriteAndTitleTranslation() {
@@ -98,7 +141,7 @@ import Testing
 
 	@Test func cachedTitleWithMatchingHashIsSkipped() {
 		let article = englishArticle(id: "en", publishedAt: now)
-		let hash = AIContentHash.titleOrRewrite(for: article)
+		let hash = AIContentHash.title(for: article)
 		let plan = AICatchUpPlanner.plan(
 			articles: [article],
 			now: now,
@@ -125,8 +168,8 @@ import Testing
 		#expect(plan.titleTranslationArticleIDs == ["en0", "en1"])
 	}
 
-	@Test func articlesOlderThanSevenDaysAreIgnored() {
-		let old = now.addingTimeInterval(-8 * 24 * 60 * 60)
+	@Test func articlesOlderThanTheRecencyWindowAreIgnored() {
+		let old = now.addingTimeInterval(-3 * 24 * 60 * 60)
 		let articles = [
 			chineseArticle(id: "old-zh", publishedAt: old),
 			englishArticle(id: "old-en", publishedAt: old)
@@ -136,6 +179,101 @@ import Testing
 			now: now,
 			cachedRewrites: [:],
 			cachedTitleHashes: [:],
+			limit: 200
+		)
+
+		#expect(plan == AICatchUpPlan(rewriteArticleIDs: [], titleTranslationArticleIDs: []))
+	}
+
+	@Test func readArticlesAreNotPlanned() {
+		let article = longEnglishArticle(id: "en-read", publishedAt: now, isRead: true)
+		let plan = AICatchUpPlanner.plan(
+			articles: [article],
+			now: now,
+			cachedRewrites: [:],
+			cachedTitleHashes: [:],
+			limit: 200
+		)
+
+		#expect(plan == AICatchUpPlan(rewriteArticleIDs: [], titleTranslationArticleIDs: []))
+	}
+
+	@Test func excludedRewriteNeverEntersRewriteIDs() {
+		let article = longEnglishArticle(id: "en", publishedAt: now)
+		let plan = AICatchUpPlanner.plan(
+			articles: [article],
+			now: now,
+			cachedRewrites: [:],
+			cachedTitleHashes: [:],
+			rewriteExcludedArticleIDs: ["en"],
+			limit: 200
+		)
+
+		#expect(plan.rewriteArticleIDs.isEmpty)
+		#expect(plan.titleTranslationArticleIDs == ["en"])
+	}
+
+	@Test func excludedRewriteDoesNotConsumeALimitSlot() {
+		let articles = [
+			longEnglishArticle(id: "en0", publishedAt: now),
+			englishArticle(id: "en1", publishedAt: now.addingTimeInterval(-1)),
+			englishArticle(id: "en2", publishedAt: now.addingTimeInterval(-2))
+		]
+		let plan = AICatchUpPlanner.plan(
+			articles: articles,
+			now: now,
+			cachedRewrites: [:],
+			cachedTitleHashes: [:],
+			rewriteExcludedArticleIDs: ["en0"],
+			limit: 2
+		)
+
+		#expect(plan.rewriteArticleIDs.isEmpty)
+		#expect(plan.titleTranslationArticleIDs == ["en0", "en1"])
+	}
+
+	@Test func excludedTranslationNeverEntersTitleIDs() {
+		let article = longEnglishArticle(id: "en", publishedAt: now)
+		let plan = AICatchUpPlanner.plan(
+			articles: [article],
+			now: now,
+			cachedRewrites: [:],
+			cachedTitleHashes: [:],
+			translationExcludedArticleIDs: ["en"],
+			limit: 200
+		)
+
+		#expect(plan.rewriteArticleIDs == ["en"])
+		#expect(plan.titleTranslationArticleIDs.isEmpty)
+	}
+
+	@Test func excludedTranslationDoesNotConsumeALimitSlot() {
+		let articles = [
+			englishArticle(id: "en0", publishedAt: now),
+			englishArticle(id: "en1", publishedAt: now.addingTimeInterval(-1)),
+			englishArticle(id: "en2", publishedAt: now.addingTimeInterval(-2))
+		]
+		let plan = AICatchUpPlanner.plan(
+			articles: articles,
+			now: now,
+			cachedRewrites: [:],
+			cachedTitleHashes: [:],
+			translationExcludedArticleIDs: ["en0"],
+			limit: 2
+		)
+
+		#expect(plan.titleTranslationArticleIDs == ["en1", "en2"])
+	}
+
+	@Test func bothSwitchesOffProduceNoPlanForTheArticle() {
+		let article = longEnglishArticle(id: "en", publishedAt: now)
+		let plan = AICatchUpPlanner.plan(
+			articles: [article],
+			now: now,
+			cachedRewrites: [:],
+			cachedTitleHashes: [:],
+			rewriteExcludedArticleIDs: ["en"],
+			translationExcludedArticleIDs: ["en"],
 			limit: 200
 		)
 

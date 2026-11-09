@@ -23,6 +23,9 @@ final class FeedSettingsDatabase: Sendable {
 		case contentHash
 		case newArticleNotificationsEnabled
 		case readerViewAlwaysEnabled
+		case aiRewriteEnabled
+		case aiTranslationEnabled
+		case aiLanguageOverride
 		case authors
 		case conditionalGetInfoLastModified
 		case conditionalGetInfoEtag
@@ -44,6 +47,9 @@ final class FeedSettingsDatabase: Sendable {
 		let contentHash: String?
 		let newArticleNotificationsEnabled: Bool
 		let readerViewAlwaysEnabled: Bool
+		let aiRewriteEnabled: Bool
+		let aiTranslationEnabled: Bool
+		let aiLanguageOverride: Bool
 		let authors: Set<Author>?
 		let conditionalGetInfo: HTTPConditionalGetInfo?
 		let conditionalGetInfoDate: Date?
@@ -54,7 +60,19 @@ final class FeedSettingsDatabase: Sendable {
 		let lastResponseCode: Int?
 	}
 
+	struct AIState: Equatable {
+		let rewriteEnabled: Bool
+		let translationEnabled: Bool
+		let languageOverride: Bool
+	}
+
 	let databasePath: String
+
+	/// False when the two AI toggle columns could not be added. Row parsing then
+	/// falls back to the legacy `aiTranslationOnly` column, writes are skipped,
+	/// and the next launch retries the migration.
+	private let isAIToggleSchemaAvailable: Bool
+	private let hasLegacyAITranslationColumn: Bool
 
 	nonisolated(unsafe) private let database: FMDatabase // Used on serial dispatch queue only
 	private let serialDispatchQueue: DispatchQueue
@@ -64,12 +82,21 @@ final class FeedSettingsDatabase: Sendable {
 		self.databasePath = databasePath
 		self.serialDispatchQueue = DispatchQueue(label: "FeedSettingsDatabase")
 		self.database = FMDatabase.openAndSetUpDatabase(path: databasePath)
+		var schemaAvailable = true
+		var hasLegacyColumn = false
 		serialDispatchQueue.sync { [database] in
 			database.runCreateStatements(Self.tableCreationStatements)
 			if !database.columnExists("lastResponseCode", inTableWithName: "feedSettings") {
 				database.executeStatements("ALTER TABLE feedSettings ADD COLUMN lastResponseCode INTEGER;")
 			}
+			if !database.columnExists("aiLanguageOverride", inTableWithName: "feedSettings") {
+				database.executeStatements("ALTER TABLE feedSettings ADD COLUMN aiLanguageOverride INTEGER NOT NULL DEFAULT 0;")
+			}
+			schemaAvailable = Self.migrateAIToggleColumns(in: database)
+			hasLegacyColumn = database.columnExists("aiTranslationOnly", inTableWithName: "feedSettings")
 		}
+		self.isAIToggleSchemaAvailable = schemaAvailable
+		self.hasLegacyAITranslationColumn = hasLegacyColumn
 		vacuumIfNeeded()
 	}
 
@@ -159,9 +186,50 @@ final class FeedSettingsDatabase: Sendable {
 	// MARK: - Bool
 
 	func setBool(_ value: Bool, for feedURL: String, column: Column) {
+		guard canWrite(column) else {
+			return
+		}
 		let name = column.rawValue
 		serialDispatchQueue.async {
 			self.database.executeUpdate("UPDATE feedSettings SET \(name) = ? WHERE feedURL = ?;", withArgumentsIn: [value, feedURL])
+		}
+	}
+
+	// MARK: - AI Language Detection
+
+	/// Applies the automatic Chinese-feed result only while the user has not
+	/// overridden the language setting. Returns true when a row matched, which
+	/// means the switches were written to off.
+	@discardableResult
+	func applyAutomaticChineseOff(for feedURL: String) -> Bool {
+		serialDispatchQueue.sync {
+			let updated = self.database.executeUpdate("UPDATE feedSettings SET aiRewriteEnabled = 0, aiTranslationEnabled = 0 WHERE feedURL = ? AND aiLanguageOverride = 0;", withArgumentsIn: [feedURL])
+			return updated && self.database.changes() > 0
+		}
+	}
+
+	/// Writes the user's override and the switches they turned on in one UPDATE.
+	/// A nil switch is left at the value read from the database inside this same
+	/// serial queue, so a value the user did not touch cannot go stale. Returns
+	/// the stored state afterwards.
+	func setAIEnabledByUser(for feedURL: String, rewriteEnabled: Bool?, translationEnabled: Bool?) -> AIState? {
+		serialDispatchQueue.sync {
+			var clauses = ["aiLanguageOverride = 1"]
+			var arguments: [Any] = []
+			if let rewriteEnabled {
+				clauses.append("aiRewriteEnabled = ?")
+				arguments.append(rewriteEnabled)
+			}
+			if let translationEnabled {
+				clauses.append("aiTranslationEnabled = ?")
+				arguments.append(translationEnabled)
+			}
+			arguments.append(feedURL)
+			let sql = "UPDATE feedSettings SET \(clauses.joined(separator: ", ")) WHERE feedURL = ?;"
+			guard self.database.executeUpdate(sql, withArgumentsIn: arguments) else {
+				return nil
+			}
+			return self.readAIState(for: feedURL)
 		}
 	}
 
@@ -272,8 +340,89 @@ final class FeedSettingsDatabase: Sendable {
 private extension FeedSettingsDatabase {
 
 	static let tableCreationStatements = """
-	CREATE TABLE IF NOT EXISTS feedSettings (feedURL TEXT PRIMARY KEY, feedID TEXT NOT NULL DEFAULT '', homePageURL TEXT, iconURL TEXT, faviconURL TEXT, editedName TEXT, contentHash TEXT, newArticleNotificationsEnabled INTEGER NOT NULL DEFAULT 0, readerViewAlwaysEnabled INTEGER NOT NULL DEFAULT 0, authors TEXT, conditionalGetInfoLastModified TEXT, conditionalGetInfoEtag TEXT, conditionalGetInfoDate REAL, cacheControlInfoDateCreated REAL, cacheControlInfoMaxAge REAL, externalID TEXT, folderRelationship TEXT, lastCheckDate REAL, lastResponseCode INTEGER);
+	CREATE TABLE IF NOT EXISTS feedSettings (feedURL TEXT PRIMARY KEY, feedID TEXT NOT NULL DEFAULT '', homePageURL TEXT, iconURL TEXT, faviconURL TEXT, editedName TEXT, contentHash TEXT, newArticleNotificationsEnabled INTEGER NOT NULL DEFAULT 0, readerViewAlwaysEnabled INTEGER NOT NULL DEFAULT 0, aiRewriteEnabled INTEGER NOT NULL DEFAULT 1, aiTranslationEnabled INTEGER NOT NULL DEFAULT 1, aiLanguageOverride INTEGER NOT NULL DEFAULT 0, authors TEXT, conditionalGetInfoLastModified TEXT, conditionalGetInfoEtag TEXT, conditionalGetInfoDate REAL, cacheControlInfoDateCreated REAL, cacheControlInfoMaxAge REAL, externalID TEXT, folderRelationship TEXT, lastCheckDate REAL, lastResponseCode INTEGER);
 	"""
+
+	/// Adds the two AI toggle columns and converts the legacy single flag in one
+	/// transaction. Returns false on failure so the caller can fall back to the
+	/// legacy column and retry on the next launch.
+	static func migrateAIToggleColumns(in database: FMDatabase) -> Bool {
+		let hasRewriteColumn = database.columnExists(Column.aiRewriteEnabled.rawValue, inTableWithName: "feedSettings")
+		let hasTranslationColumn = database.columnExists(Column.aiTranslationEnabled.rawValue, inTableWithName: "feedSettings")
+		guard !hasRewriteColumn || !hasTranslationColumn else {
+			return true
+		}
+		guard database.beginTransaction() else {
+			Self.logger.error("FeedSettingsDatabase: could not start the AI toggle migration transaction")
+			return false
+		}
+
+		var succeeded = true
+		if !hasRewriteColumn {
+			if !database.executeStatements("ALTER TABLE feedSettings ADD COLUMN aiRewriteEnabled INTEGER NOT NULL DEFAULT 1;") {
+				succeeded = false
+			}
+		}
+		if succeeded && !hasTranslationColumn {
+			if !database.executeStatements("ALTER TABLE feedSettings ADD COLUMN aiTranslationEnabled INTEGER NOT NULL DEFAULT 1;") {
+				succeeded = false
+			}
+		}
+		if succeeded && database.columnExists("aiTranslationOnly", inTableWithName: "feedSettings") {
+			let sql = """
+			UPDATE feedSettings SET
+				aiRewriteEnabled = CASE WHEN COALESCE(aiTranslationOnly, 0) = 1 THEN 0 ELSE 1 END,
+				aiTranslationEnabled = 1;
+			"""
+			if !database.executeStatements(sql) {
+				succeeded = false
+			}
+		}
+
+		guard succeeded else {
+			database.rollback()
+			Self.logger.error("FeedSettingsDatabase: AI toggle migration failed; using the legacy column until the next launch")
+			return false
+		}
+		guard database.commit() else {
+			database.rollback()
+			Self.logger.error("FeedSettingsDatabase: could not commit the AI toggle migration")
+			return false
+		}
+		return true
+	}
+
+	/// Must run on the serial dispatch queue.
+	func readAIState(for feedURL: String) -> AIState? {
+		let sql = "SELECT aiRewriteEnabled, aiTranslationEnabled, aiLanguageOverride FROM feedSettings WHERE feedURL = ? LIMIT 1;"
+		guard let resultSet = database.executeQuery(sql, withArgumentsIn: [feedURL]) else {
+			return nil
+		}
+		defer {
+			resultSet.close()
+		}
+		guard resultSet.next() else {
+			return nil
+		}
+		return AIState(
+			rewriteEnabled: resultSet.bool(forColumn: Column.aiRewriteEnabled.rawValue),
+			translationEnabled: resultSet.bool(forColumn: Column.aiTranslationEnabled.rawValue),
+			languageOverride: resultSet.bool(forColumn: Column.aiLanguageOverride.rawValue)
+		)
+	}
+
+	func canWrite(_ column: Column) -> Bool {
+		switch column {
+		case .aiRewriteEnabled, .aiTranslationEnabled:
+			guard isAIToggleSchemaAvailable else {
+				Self.logger.error("FeedSettingsDatabase: AI toggle schema unavailable; skipped \(column.rawValue, privacy: .public) write")
+				return false
+			}
+			return true
+		default:
+			return true
+		}
+	}
 
 	func row(from resultSet: FMResultSet) -> Row {
 		let lastModified = resultSet.swiftString(forColumn: Column.conditionalGetInfoLastModified.rawValue)
@@ -311,6 +460,8 @@ private extension FeedSettingsDatabase {
 			lastResponseCode = Int(resultSet.int(forColumn: Column.lastResponseCode.rawValue))
 		}
 
+		let aiToggles = aiToggleValues(from: resultSet)
+
 		return Row(
 			feedID: resultSet.swiftString(forColumn: Column.feedID.rawValue) ?? "",
 			homePageURL: resultSet.swiftString(forColumn: Column.homePageURL.rawValue),
@@ -320,6 +471,9 @@ private extension FeedSettingsDatabase {
 			contentHash: resultSet.swiftString(forColumn: Column.contentHash.rawValue),
 			newArticleNotificationsEnabled: resultSet.bool(forColumn: Column.newArticleNotificationsEnabled.rawValue),
 			readerViewAlwaysEnabled: resultSet.bool(forColumn: Column.readerViewAlwaysEnabled.rawValue),
+			aiRewriteEnabled: aiToggles.rewrite,
+			aiTranslationEnabled: aiToggles.translation,
+			aiLanguageOverride: resultSet.bool(forColumn: Column.aiLanguageOverride.rawValue),
 			authors: authors,
 			conditionalGetInfo: HTTPConditionalGetInfo(lastModified: lastModified, etag: etag),
 			conditionalGetInfoDate: conditionalGetInfoDate,
@@ -329,5 +483,21 @@ private extension FeedSettingsDatabase {
 			lastCheckDate: lastCheckDate,
 			lastResponseCode: lastResponseCode
 		)
+	}
+
+	/// Reads the two AI toggles from the migrated columns when they exist. If the
+	/// migration failed, the legacy single flag still describes the intent:
+	/// translation-only meant rewrite off and translation on.
+	func aiToggleValues(from resultSet: FMResultSet) -> (rewrite: Bool, translation: Bool) {
+		if isAIToggleSchemaAvailable {
+			return (
+				rewrite: resultSet.bool(forColumn: Column.aiRewriteEnabled.rawValue),
+				translation: resultSet.bool(forColumn: Column.aiTranslationEnabled.rawValue)
+			)
+		}
+		if hasLegacyAITranslationColumn {
+			return (rewrite: !resultSet.bool(forColumn: "aiTranslationOnly"), translation: true)
+		}
+		return (rewrite: true, translation: true)
 	}
 }

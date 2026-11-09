@@ -268,6 +268,8 @@ private extension TimelineTableCellView {
 	}
 
 	func updateUnreadIndicator() {
+		unreadIndicatorView.isRewriteComplete = cellData.hasRewrite
+		unreadIndicatorView.isTranslationComplete = cellData.hasTranslation
 		showOrHideView(unreadIndicatorView, cellData.read || cellData.starred)
 	}
 

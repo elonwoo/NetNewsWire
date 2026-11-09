@@ -3,10 +3,10 @@
 //  AI
 //
 
-import CryptoKit
 import Foundation
+import os
 
-public enum RewriteKind: Sendable {
+public enum RewriteKind: String, Sendable {
 	case article
 	case paper
 	case productHunt
@@ -15,9 +15,8 @@ public enum RewriteKind: Sendable {
 /// Orchestrates prompts, model calls and persistence.
 ///
 /// The engine never truncates article bodies: rewrites and chat send the full
-/// text. Translation is sent as a single request unless the estimated output
-/// would exceed the configured token budget, in which case it is split into
-/// blocks and every block must come back before anything is saved.
+/// source. Translation is sent in groups sized by the prompt budget; every
+/// block must come back before anything is saved.
 public actor AIEngine {
 
 	private let store: AIStore
@@ -25,6 +24,7 @@ public actor AIEngine {
 	private let config: AIConfig
 
 	private static let titleBatchSize = 20
+	private static let logger = Logger(subsystem: "com.ranchero.NetNewsWire", category: "AIEngine")
 
 	public init(store: AIStore, client: AIClient, config: AIConfig) {
 		self.store = store
@@ -59,7 +59,7 @@ public actor AIEngine {
 
 			var hashes: [String: String] = [:]
 			for article in batch {
-				hashes[article.id] = contentHash(for: article)
+				hashes[article.id] = ContentFingerprint.title(for: article)
 			}
 			let now = Date()
 			for translation in response.translations {
@@ -76,62 +76,66 @@ public actor AIEngine {
 	// MARK: - Body translation
 
 	public func translateBody(_ article: AIArticle) async throws -> Translation {
-		let source: SourceContent
-		if let html = article.contentHTML, !html.isEmpty {
-			let blocks = Self.topLevelHTMLBlocks(html)
-			guard !blocks.isEmpty else {
-				throw AIEngineError.emptyContent
-			}
-			source = SourceContent(blocks: blocks, hashSource: html)
-		} else {
-			let text = article.contentText ?? ""
-			guard !text.isEmpty else {
-				throw AIEngineError.emptyContent
-			}
-			source = SourceContent(blocks: Self.textBlocks(from: text, maxTokens: config.maxTokens), hashSource: text)
-		}
-
-		let groups = Self.groupBlocks(source.blocks, maxTokens: config.maxTokens)
+		let prepared = try Self.prepareTranslation(article, maxTokens: config.maxTokens)
 		var responses: [Int: TranslateResponse.Block] = [:]
 		var titleZh: String?
 		var summaryZh: String?
 
-		for group in groups {
-			let payloadBlocks = group.map { TranslateBlock(i: $0.index, text: $0.text, html: $0.html) }
-			let payload = try JSONEncoder().encode(TranslateRequest(title: article.title, summary: "", blocks: payloadBlocks))
-			let raw = try await client.complete(
-				messages: [
-					AIMessage(role: "system", content: AIPrompts.bodyTranslationSystem),
-					AIMessage(role: "user", content: String(decoding: payload, as: UTF8.self))
-				],
-				temperature: nil,
-				maxTokens: nil,
-				thinking: .disabled
-			)
-			let response = try decodeJSON(TranslateResponse.self, from: raw)
-			for block in response.blocks {
-				responses[block.i] = block
-			}
-			if titleZh == nil {
-				titleZh = response.titleZh
-			}
-			if summaryZh == nil {
-				summaryZh = response.summaryZh
-			}
-		}
+		let sendablePlans = prepared.plans.filter(\.isTranslatable)
+		if !sendablePlans.isEmpty {
+			let groups = Self.groupPlans(sendablePlans, maxTokens: config.maxTokens)
+			for group in groups {
+				let payloadBlocks = group.map { plan in
+					TranslateBlock(i: plan.index, tag: plan.tag, text: HTMLSourceBlocks.escapeRequestText(plan.promptText))
+				}
+				let request = TranslateRequest(title: HTMLSourceBlocks.escapeRequestText(article.title), blocks: payloadBlocks)
+				let payload = try JSONEncoder().encode(request)
+				let raw = try await client.complete(
+					messages: [
+						AIMessage(role: "system", content: AIPrompts.bodyTranslationSystem),
+						AIMessage(role: "user", content: String(decoding: payload, as: UTF8.self))
+					],
+					temperature: nil,
+					maxTokens: nil,
+					thinking: .disabled
+				)
+				let response = try decodeJSON(TranslateResponse.self, from: raw)
 
-		let expectedIndices = source.blocks.map(\.index)
-		let missing = expectedIndices.filter { responses[$0] == nil }
-		guard missing.isEmpty else {
-			throw AIEngineError.incompleteTranslation(missing: missing)
+				let expected = Set(group.map(\.index))
+				let received = Set(response.blocks.map(\.i))
+				let missing = expected.subtracting(received)
+				guard missing.isEmpty else {
+					throw AIEngineError.incompleteTranslation(missing: missing.sorted())
+				}
+				for block in response.blocks {
+					guard !block.target.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+						throw AIEngineError.invalidModelResponse("empty translation target")
+					}
+					responses[block.i] = block
+				}
+				if titleZh == nil {
+					titleZh = response.titleZh
+				}
+				if summaryZh == nil {
+					summaryZh = response.summaryZh
+				}
+			}
 		}
 
 		var translatedBlocks: [TranslationBlock] = []
-		for block in source.blocks {
-			guard let response = responses[block.index] else {
-				throw AIEngineError.incompleteTranslation(missing: [block.index])
+		for plan in prepared.plans {
+			if plan.isTranslatable {
+				guard let response = responses[plan.index] else {
+					throw AIEngineError.incompleteTranslation(missing: [plan.index])
+				}
+				let block = try Self.fill(plan: plan, response: response, original: prepared.blocks[plan.index])
+				translatedBlocks.append(block)
+			} else {
+				translatedBlocks.append(Self.autoFill(plan: plan, block: prepared.blocks[plan.index]))
 			}
-			translatedBlocks.append(TranslationBlock(index: block.index, source: block.text, target: response.target, targetHTML: response.targetHtml))
+		}
+		guard !translatedBlocks.isEmpty else {
+			throw AIEngineError.emptyContent
 		}
 
 		let now = Date()
@@ -142,7 +146,7 @@ public actor AIEngine {
 			blocks: translatedBlocks,
 			model: config.model,
 			provider: "magpie",
-			contentHash: Self.sha256Hex(of: source.hashSource),
+			contentHash: ContentFingerprint.body(for: article),
 			createdAt: now,
 			updatedAt: now
 		)
@@ -153,8 +157,8 @@ public actor AIEngine {
 	// MARK: - Rewrite
 
 	public func rewrite(_ article: AIArticle, kind: RewriteKind) async throws -> Rewrite {
-		let source = article.contentText ?? article.contentHTML ?? ""
-		guard !source.isEmpty else {
+		let source = RewriteSourceBuilder.source(for: article)
+		guard !source.promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
 			throw AIEngineError.emptyContent
 		}
 
@@ -168,7 +172,7 @@ public actor AIEngine {
 			system = AIPrompts.rewriteProductHunt
 		}
 
-		let userContent = "标题：\(article.title)\n\n正文：\n\(source)"
+		let userContent = Self.rewriteUserMessage(title: article.title, url: article.url, source: source)
 		let output = try await client.complete(
 			messages: [
 				AIMessage(role: "system", content: system),
@@ -177,7 +181,7 @@ public actor AIEngine {
 			temperature: nil,
 			maxTokens: nil
 		)
-		let body = output.trimmingCharacters(in: .whitespacesAndNewlines)
+		let body = RewriteOutputNormalizer.normalize(output, images: source.images)
 		guard !body.isEmpty else {
 			throw AIEngineError.emptyContent
 		}
@@ -189,7 +193,7 @@ public actor AIEngine {
 			bodyMarkdown: body,
 			bodyHTML: nil,
 			model: config.model,
-			contentHash: contentHash(for: article),
+			contentHash: ContentFingerprint.rewrite(for: article, kind: kind),
 			createdAt: now,
 			updatedAt: now
 		)
@@ -228,75 +232,84 @@ public actor AIEngine {
 	}
 }
 
-// MARK: - Source blocks
+// MARK: - Rewrite input
 
 private extension AIEngine {
 
-	struct SourceContent {
-		let blocks: [SourceBlock]
-		let hashSource: String
+	static func rewriteUserMessage(title: String, url: String?, source: RewriteSource) -> String {
+		var parts = ["标题：\(title)"]
+		if let url, !url.isEmpty {
+			parts.append("链接：\(url)")
+		}
+		if !source.images.isEmpty {
+			var lines = ["图片锚点清单："]
+			for (index, image) in source.images.enumerated() {
+				lines.append("{{img:\(index)}} -> \(markdownImage(image))")
+				if let caption = image.caption, !caption.isEmpty {
+					lines.append("{{caption:\(index)}} -> \(caption)")
+				}
+			}
+			parts.append(lines.joined(separator: "\n"))
+		}
+		parts.append("待处理材料：\n\(source.promptText)")
+		return parts.joined(separator: "\n\n")
 	}
 
-	struct SourceBlock {
-		let index: Int
-		let text: String
-		let html: String?
+	static func markdownImage(_ image: HTMLImageRef) -> String {
+		let alt = image.alt.replacingOccurrences(of: "]", with: "")
+		return "![\(alt)](\(image.url))"
+	}
+}
+
+// MARK: - Translation preparation
+
+private extension AIEngine {
+
+	struct PreparedTranslation {
+		let blocks: [HTMLSourceBlock]
+		let plans: [TranslationBlockPlan]
+	}
+
+	static func prepareTranslation(_ article: AIArticle, maxTokens: Int) throws -> PreparedTranslation {
+		if let html = article.contentHTML, !html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+			let blocks = HTMLSourceBlocks.blocks(html, baseURL: article.url.flatMap { URL(string: $0) })
+			guard !blocks.isEmpty else {
+				throw AIEngineError.emptyContent
+			}
+			return PreparedTranslation(blocks: blocks, plans: TranslationBlockPlanner.plans(from: blocks))
+		}
+		let text = article.contentText ?? ""
+		guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+			throw AIEngineError.emptyContent
+		}
+		let (blocks, plans) = TranslationBlockPlanner.textPlans(from: text, maxTokens: maxTokens)
+		return PreparedTranslation(blocks: blocks, plans: plans)
 	}
 
 	/// Estimate output tokens from the source size. Chinese output is roughly
-	/// one token per two UTF-8 bytes of English source, so this errs on the
-	/// side of splitting a little early.
+	/// one token per two UTF-8 bytes of English source, so this errs on the side
+	/// of splitting a little early.
 	static func estimatedOutputTokens(for text: String) -> Int {
 		max(1, text.utf8.count / 2)
 	}
 
-	static func textBlocks(from text: String, maxTokens: Int) -> [SourceBlock] {
-		let byteBudget = max(1000, maxTokens * 2)
-		var pieces: [String] = []
-		for paragraph in text.components(separatedBy: "\n\n") {
-			pieces.append(contentsOf: splitOversized(paragraph, byteBudget: byteBudget))
-		}
-		let nonEmpty = pieces.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-		let usable = nonEmpty.isEmpty ? [text] : nonEmpty
-		return usable.enumerated().map { SourceBlock(index: $0.offset, text: $0.element, html: nil) }
-	}
-
-	static func splitOversized(_ text: String, byteBudget: Int) -> [String] {
-		guard text.utf8.count > byteBudget else {
-			return [text]
-		}
-		var pieces: [String] = []
-		var current = ""
-		for character in text {
-			current.append(character)
-			if current.utf8.count >= byteBudget {
-				pieces.append(current)
-				current = ""
-			}
-		}
-		if !current.isEmpty {
-			pieces.append(current)
-		}
-		return pieces
-	}
-
-	static func groupBlocks(_ blocks: [SourceBlock], maxTokens: Int) -> [[SourceBlock]] {
-		let total = blocks.reduce(0) { $0 + estimatedOutputTokens(for: $1.text) }
+	static func groupPlans(_ plans: [TranslationBlockPlan], maxTokens: Int) -> [[TranslationBlockPlan]] {
+		let total = plans.reduce(0) { $0 + estimatedOutputTokens(for: $1.promptText) }
 		if total <= maxTokens {
-			return [blocks]
+			return [plans]
 		}
 
-		var groups: [[SourceBlock]] = []
-		var current: [SourceBlock] = []
+		var groups: [[TranslationBlockPlan]] = []
+		var current: [TranslationBlockPlan] = []
 		var currentTokens = 0
-		for block in blocks {
-			let tokens = estimatedOutputTokens(for: block.text)
-			if !current.isEmpty && currentTokens + tokens > maxTokens {
+		for plan in plans {
+			let tokens = estimatedOutputTokens(for: plan.promptText)
+			if !current.isEmpty, currentTokens + tokens > maxTokens {
 				groups.append(current)
-				current = [block]
+				current = [plan]
 				currentTokens = tokens
 			} else {
-				current.append(block)
+				current.append(plan)
 				currentTokens += tokens
 			}
 		}
@@ -305,178 +318,97 @@ private extension AIEngine {
 		}
 		return groups
 	}
-}
 
-// MARK: - HTML splitting
-
-private extension AIEngine {
-
-	struct HTMLTag {
-		let name: String
-		let isClosing: Bool
-		let isSelfClosing: Bool
-		let endIndex: String.Index
+	static func autoFill(plan: TranslationBlockPlan, block: HTMLSourceBlock) -> TranslationBlock {
+		switch plan.kind {
+		case .code:
+			return TranslationBlock(index: plan.index, source: block.text, target: block.text, targetHTML: block.html)
+		case .media:
+			return TranslationBlock(index: plan.index, source: block.images.first?.alt ?? "", target: "", targetHTML: block.html)
+		case .table:
+			return TranslationBlock(index: plan.index, source: block.text, target: "", targetHTML: block.html)
+		case .text:
+			return TranslationBlock(index: plan.index, source: block.images.first?.alt ?? "", target: "", targetHTML: block.html)
+		}
 	}
 
-	static let voidElements: Set<String> = ["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]
-
-	/// Splits HTML into top-level elements. Text between elements becomes its
-	/// own block so that nothing is dropped.
-	static func topLevelHTMLBlocks(_ html: String) -> [SourceBlock] {
-		var blocks: [SourceBlock] = []
-		var pendingText = ""
-		var index = html.startIndex
-
-		func flushPendingText() {
-			let trimmed = pendingText.trimmingCharacters(in: .whitespacesAndNewlines)
-			if !trimmed.isEmpty {
-				let blockIndex = blocks.count
-				blocks.append(SourceBlock(index: blockIndex, text: decodeEntities(trimmed), html: trimmed))
-			}
-			pendingText = ""
+	static func fill(plan: TranslationBlockPlan, response: TranslateResponse.Block, original: HTMLSourceBlock) throws -> TranslationBlock {
+		let raw = response.target.trimmingCharacters(in: .whitespacesAndNewlines)
+		guard !raw.isEmpty else {
+			throw AIEngineError.invalidModelResponse("empty translation target")
+		}
+		let sourceText = plan.slotTexts.joined(separator: " ")
+		if HTMLSourceBlocks.looksEnglish(sourceText), !HTMLSourceBlocks.containsHan(raw) {
+			throw AIEngineError.invalidModelResponse("translation does not contain Chinese")
 		}
 
-		while index < html.endIndex {
-			let character = html[index]
-			if character == "<", let end = elementEnd(html, from: index) {
-				flushPendingText()
-				let element = String(html[index..<end])
-				let blockIndex = blocks.count
-				blocks.append(SourceBlock(index: blockIndex, text: plainText(from: element), html: element))
-				index = end
-			} else {
-				pendingText.append(character)
-				index = html.index(after: index)
-			}
-		}
-		flushPendingText()
-		return blocks
-	}
-
-	static func elementEnd(_ html: String, from start: String.Index) -> String.Index? {
-		if html[start...].hasPrefix("<!--") {
-			guard let range = html.range(of: "-->", range: start..<html.endIndex) else {
-				return html.endIndex
-			}
-			return range.upperBound
-		}
-		if html[start...].hasPrefix("<!") || html[start...].hasPrefix("<?") {
-			guard let gt = html[start...].firstIndex(of: ">") else {
-				return html.endIndex
-			}
-			return html.index(after: gt)
-		}
-		guard let first = scanTag(html, from: start) else {
-			return nil
-		}
-		if first.isClosing || first.isSelfClosing || voidElements.contains(first.name) {
-			return first.endIndex
-		}
-
-		var depth = 1
-		var index = first.endIndex
-		while index < html.endIndex {
-			guard let lt = html[index...].firstIndex(of: "<") else {
-				return html.endIndex
-			}
-			guard let tag = scanTag(html, from: lt) else {
-				index = html.index(after: lt)
-				continue
-			}
-			if tag.name == first.name {
-				if tag.isClosing {
-					depth -= 1
-				} else if !tag.isSelfClosing && !voidElements.contains(tag.name) {
-					depth += 1
-				}
-				if depth == 0 {
-					return tag.endIndex
+		if plan.slotCount <= 1 {
+			let htmlText = HTMLSourceBlocks.escapedHTMLText(raw)
+			var targetHTML: String?
+			if !plan.templateHTML.isEmpty {
+				let marker = "\(plan.markerPrefix)0}}"
+				if plan.templateHTML.contains(marker) {
+					targetHTML = plan.templateHTML.replacingOccurrences(of: marker, with: htmlText)
+				} else {
+					targetHTML = wrap(plan.tag, htmlText)
 				}
 			}
-			index = tag.endIndex
+			let target = stripMarkers(raw, prefix: plan.markerPrefix, count: max(plan.slotCount, 1))
+			return TranslationBlock(index: plan.index, source: plan.displayText, target: target, targetHTML: targetHTML)
 		}
-		return html.endIndex
+
+		let markers = (0..<plan.slotCount).map { "\(plan.markerPrefix)\($0)}}" }
+		var ranges: [Range<String.Index>] = []
+		var searchStart = raw.startIndex
+		for marker in markers {
+			guard let range = raw.range(of: marker, range: searchStart..<raw.endIndex) else {
+				return markerMismatch(plan: plan, raw: raw, original: original)
+			}
+			ranges.append(range)
+			searchStart = range.upperBound
+		}
+
+		var slotTranslations: [String] = []
+		for (index, range) in ranges.enumerated() {
+			let end = index + 1 < ranges.count ? ranges[index + 1].lowerBound : raw.endIndex
+			slotTranslations.append(String(raw[range.upperBound..<end]).trimmingCharacters(in: .whitespacesAndNewlines))
+		}
+
+		var template = plan.templateHTML
+		for (index, marker) in markers.enumerated() {
+			guard template.contains(marker) else {
+				return markerMismatch(plan: plan, raw: raw, original: original)
+			}
+			template = template.replacingOccurrences(of: marker, with: HTMLSourceBlocks.escapedHTMLText(slotTranslations[index]))
+		}
+		let target = stripMarkers(raw, prefix: plan.markerPrefix, count: plan.slotCount)
+		return TranslationBlock(index: plan.index, source: plan.displayText, target: target, targetHTML: template)
 	}
 
-	static func scanTag(_ html: String, from start: String.Index) -> HTMLTag? {
-		guard html[start] == "<" else {
-			return nil
+	static func markerMismatch(plan: TranslationBlockPlan, raw: String, original: HTMLSourceBlock) -> TranslationBlock {
+		logger.error("AI translation markers out of order for block \(plan.index, privacy: .public)")
+		if plan.kind == .table {
+			return TranslationBlock(index: plan.index, source: plan.displayText, target: plan.displayText, targetHTML: original.html)
 		}
-		var index = html.index(after: start)
-		guard index < html.endIndex else {
-			return nil
-		}
-
-		var isClosing = false
-		if html[index] == "/" {
-			isClosing = true
-			index = html.index(after: index)
-		}
-		guard index < html.endIndex, html[index].isLetter else {
-			return nil
-		}
-
-		var name = ""
-		while index < html.endIndex {
-			let character = html[index]
-			guard character.isLetter || character.isNumber || character == "-" || character == ":" else {
-				break
-			}
-			name.append(character)
-			index = html.index(after: index)
-		}
-
-		var quote: Character?
-		var lastNonSpace: Character?
-		while index < html.endIndex {
-			let character = html[index]
-			if let currentQuote = quote {
-				if character == currentQuote {
-					quote = nil
-				}
-			} else if character == "\"" || character == "'" {
-				quote = character
-			} else if character == ">" {
-				let end = html.index(after: index)
-				return HTMLTag(name: name.lowercased(), isClosing: isClosing, isSelfClosing: lastNonSpace == "/", endIndex: end)
-			} else if !character.isWhitespace {
-				lastNonSpace = character
-			}
-			index = html.index(after: index)
-		}
-		return nil
+		let stripped = stripMarkers(raw, prefix: plan.markerPrefix, count: max(plan.slotCount, 1))
+		return TranslationBlock(index: plan.index, source: plan.displayText, target: stripped, targetHTML: wrap(plan.tag, HTMLSourceBlocks.escapedHTMLText(stripped)))
 	}
 
-	static func plainText(from html: String) -> String {
-		var result = ""
-		var inTag = false
-		for character in html {
-			if character == "<" {
-				inTag = true
-			} else if character == ">" {
-				inTag = false
-			} else if !inTag {
-				result.append(character)
-			}
+	static func wrap(_ tag: String, _ html: String) -> String {
+		guard !tag.isEmpty, tag != "#text" else {
+			return html
 		}
-		return decodeEntities(result).trimmingCharacters(in: .whitespacesAndNewlines)
+		return "<\(tag)>\(html)</\(tag)>"
 	}
 
-	static func decodeEntities(_ text: String) -> String {
+	static func stripMarkers(_ text: String, prefix: String, count: Int) -> String {
 		var result = text
-		let replacements: [(String, String)] = [
-			("&nbsp;", " "),
-			("&lt;", "<"),
-			("&gt;", ">"),
-			("&quot;", "\""),
-			("&#39;", "'"),
-			("&apos;", "'"),
-			("&amp;", "&")
-		]
-		for (entity, value) in replacements {
-			result = result.replacingOccurrences(of: entity, with: value)
+		for index in 0..<count {
+			result = result.replacingOccurrences(of: "\(prefix)\(index)}}", with: " ")
 		}
-		return result
+		result = result.replacingOccurrences(of: #"\{\{[A-Za-z_]*\d+\}\}"#, with: " ", options: .regularExpression)
+		result = result.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+		return result.trimmingCharacters(in: .whitespacesAndNewlines)
 	}
 }
 
@@ -505,13 +437,12 @@ private extension AIEngine {
 
 	struct TranslateBlock: Encodable {
 		let i: Int
+		let tag: String
 		let text: String
-		let html: String?
 	}
 
 	struct TranslateRequest: Encodable {
 		let title: String
-		let summary: String
 		let blocks: [TranslateBlock]
 	}
 
@@ -519,7 +450,6 @@ private extension AIEngine {
 		struct Block: Decodable {
 			let i: Int
 			let target: String
-			let targetHtml: String?
 		}
 		let titleZh: String?
 		let summaryZh: String?
@@ -537,16 +467,6 @@ private extension AIEngine {
 			parts.append("正文 HTML：\n\(contentHTML)")
 		}
 		return parts.joined(separator: "\n\n")
-	}
-
-	func contentHash(for article: AIArticle) -> String {
-		let source = article.contentText ?? article.contentHTML ?? article.title
-		return Self.sha256Hex(of: source)
-	}
-
-	static func sha256Hex(of text: String) -> String {
-		let digest = SHA256.hash(data: Data(text.utf8))
-		return digest.map { String(format: "%02x", $0) }.joined()
 	}
 
 	func decodeJSON<T: Decodable>(_ type: T.Type, from raw: String) throws -> T {

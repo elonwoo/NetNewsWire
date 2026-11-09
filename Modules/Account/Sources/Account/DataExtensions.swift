@@ -28,6 +28,8 @@ public extension Feed {
 		case contentHash
 		case newArticleNotificationsEnabled
 		case readerViewAlwaysEnabled
+		case aiRewriteEnabled
+		case aiTranslationEnabled
 		case conditionalGetInfo
 		case conditionalGetInfoDate
 		case cacheControlInfo

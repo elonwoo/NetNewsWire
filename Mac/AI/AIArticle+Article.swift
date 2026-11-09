@@ -17,7 +17,8 @@ extension AIArticle {
 			contentText: article.contentText,
 			url: article.preferredURL?.absoluteString,
 			feedID: article.feedID,
-			publishedAt: article.datePublished
+			publishedAt: article.datePublished,
+			isRead: article.status.read
 		)
 	}
 }

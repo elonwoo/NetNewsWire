@@ -4,6 +4,7 @@
 //
 
 import AI
+import Account
 import AppKit
 import Articles
 
@@ -18,7 +19,14 @@ final class AIDetailPaneViewController: NSViewController {
 
 	var article: Article? {
 		didSet {
-			guard article?.articleID != oldValue?.articleID else {
+			if article?.articleID == oldValue?.articleID {
+				// The body can arrive after the timeline row, and Chinese
+				// detection depends on it. Re-evaluate the language-driven tabs
+				// without changing the reader's chosen tab.
+				updateTabTitles()
+				if !visibleTabs.contains(selectedTab) {
+					fallbackFromHiddenTab()
+				}
 				return
 			}
 			rewriteViewController.article = article
@@ -28,16 +36,29 @@ final class AIDetailPaneViewController: NSViewController {
 		}
 	}
 
-	private enum Tab: Int {
-		case rewrite = 0
-		case original = 1
-		case translation = 2
+	/// False for a Chinese article whose feed lacks the language override. Such
+	/// an article shows only the original tab, even when a rewrite is cached.
+	private var articleAllowsAI: Bool {
+		guard let article else {
+			return true
+		}
+		return AIArticleLanguageGate.allows(article)
+	}
+
+	/// The tabs the current article actually offers, from the feed's two
+	/// independent AI switches and the article-level language rule.
+	private var visibleTabs: [AIPaneTab] {
+		AIPaneTabPolicy.visibleTabs(
+			rewriteEnabled: article?.feed?.aiRewriteEnabled ?? true,
+			translationEnabled: article?.feed?.aiTranslationEnabled ?? true,
+			articleAllowsAI: articleAllowsAI
+		)
 	}
 
 	private let tabBar = NSView()
 	private let tabControl: NSSegmentedControl
 	private let contentView = NSView()
-	private var selectedTab: Tab
+	private var selectedTab: AIPaneTab
 	private var defaultTabToken: UUID?
 
 	init(detailViewController: DetailViewController, rewriteViewController: AIRewriteViewController = AIRewriteViewController(), translationViewController: AITranslationViewController = AITranslationViewController()) {
@@ -45,7 +66,7 @@ final class AIDetailPaneViewController: NSViewController {
 		self.rewriteViewController = rewriteViewController
 		self.translationViewController = translationViewController
 		self.tabControl = NSSegmentedControl(labels: ["改写", "原文", "翻译"], trackingMode: .selectOne, target: nil, action: nil)
-		self.selectedTab = .rewrite
+		self.selectedTab = .original
 		super.init(nibName: nil, bundle: nil)
 	}
 
@@ -64,7 +85,6 @@ final class AIDetailPaneViewController: NSViewController {
 		rootView.addSubview(contentView)
 
 		tabControl.translatesAutoresizingMaskIntoConstraints = false
-		tabControl.selectedSegment = selectedTab.rawValue
 		tabControl.controlSize = .small
 		tabControl.segmentStyle = .rounded
 		tabControl.target = self
@@ -117,8 +137,13 @@ final class AIDetailPaneViewController: NSViewController {
 		}
 
 		NotificationCenter.default.addObserver(self, selector: #selector(rewriteDidBecomeReady(_:)), name: .aiRewriteReady, object: nil)
+		NotificationCenter.default.addObserver(self, selector: #selector(translationDidBecomeReady(_:)), name: .aiTranslationReady, object: nil)
+		NotificationCenter.default.addObserver(self, selector: #selector(feedSettingDidChange(_:)), name: .feedSettingDidChange, object: nil)
 		updateTabTitles()
-		updateVisibleContent()
+		if !visibleTabs.contains(selectedTab) {
+			selectedTab = .original
+		}
+		show(selectedTab)
 	}
 
 	func focus() {
@@ -136,40 +161,91 @@ final class AIDetailPaneViewController: NSViewController {
 private extension AIDetailPaneViewController {
 
 	func updateTabTitles() {
-		tabControl.setLabel(rewriteViewController.tabTitle, forSegment: Tab.rewrite.rawValue)
+		let tabs = visibleTabs
+		if tabControl.segmentCount != tabs.count {
+			tabControl.segmentCount = tabs.count
+		}
+		for (index, tab) in tabs.enumerated() {
+			tabControl.setLabel(title(for: tab), forSegment: index)
+		}
+		tabControl.invalidateIntrinsicContentSize()
 	}
 
-	/// Shows the rewrite when one is cached and the original otherwise. The store
-	/// is read off the main actor, so a token stops a late answer for an article
-	/// the reader has already left — or a tab they already picked — from
-	/// switching the pane.
+	private func title(for tab: AIPaneTab) -> String {
+		switch tab {
+		case .rewrite:
+			return rewriteViewController.tabTitle
+		case .original:
+			return "原文"
+		case .translation:
+			return "翻译"
+		}
+	}
+
+	/// Opens on the cached rewrite, else on the cached body translation, else on
+	/// the original. Only enabled tabs are considered, and the choice itself is
+	/// `AIPaneTabPolicy.defaultTab`. The store is read off the main actor, so a
+	/// token stops a late answer for an article the reader has already left, or
+	/// a tab they already picked, from switching the pane.
 	func updateDefaultTab() {
 		guard let article else {
+			defaultTabToken = UUID()
+			show(.original)
 			return
 		}
 		let articleID = article.articleID
+		let rewriteEnabled = article.feed?.aiRewriteEnabled ?? true
+		let translationEnabled = article.feed?.aiTranslationEnabled ?? true
+		let articleAllowsAI = self.articleAllowsAI
 		let token = UUID()
 		defaultTabToken = token
-		show(.original)
+		show(AIPaneTabPolicy.defaultTab(rewriteEnabled: rewriteEnabled, hasRewrite: false, translationEnabled: translationEnabled, hasBodyTranslation: false, articleAllowsAI: articleAllowsAI))
 
+		guard articleAllowsAI, rewriteEnabled || translationEnabled else {
+			return
+		}
 		Task { @MainActor in
-			let rewrite = try? await AIEnvironment.shared.store.rewrite(for: articleID)
-			guard self.defaultTabToken == token, rewrite != nil else {
+			let hasRewrite = await self.hasCachedRewrite(articleID: articleID)
+			guard self.defaultTabToken == token, self.article?.articleID == articleID else {
 				return
 			}
-			self.show(.rewrite)
+			var hasBodyTranslation = false
+			if translationEnabled {
+				hasBodyTranslation = await self.hasBodyTranslation(articleID: articleID)
+			}
+			guard self.defaultTabToken == token, self.article?.articleID == articleID else {
+				return
+			}
+			self.show(AIPaneTabPolicy.defaultTab(rewriteEnabled: rewriteEnabled, hasRewrite: hasRewrite, translationEnabled: translationEnabled, hasBodyTranslation: hasBodyTranslation, articleAllowsAI: articleAllowsAI))
 		}
 	}
 
-	private func show(_ tab: Tab) {
+	private func hasCachedRewrite(articleID: String) async -> Bool {
+		guard let rewrite = try? await AIEnvironment.shared.store.rewrite(for: articleID) else {
+			return false
+		}
+		return !rewrite.bodyMarkdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+	}
+
+	private func hasBodyTranslation(articleID: String) async -> Bool {
+		guard let translation = try? await AIEnvironment.shared.store.translation(for: articleID) else {
+			return false
+		}
+		return !translation.blocks.isEmpty
+	}
+
+	private func show(_ tab: AIPaneTab) {
 		selectedTab = tab
-		tabControl.selectedSegment = tab.rawValue
+		if let index = visibleTabs.firstIndex(of: tab) {
+			tabControl.selectedSegment = index
+		}
 		updateVisibleContent()
 	}
 
 	func updateVisibleContent() {
+		let showsRewrite = selectedTab == .rewrite && visibleTabs.contains(.rewrite)
 		detailViewController.view.isHidden = selectedTab != .original
-		rewriteViewController.view.isHidden = selectedTab != .rewrite
+		rewriteViewController.view.isHidden = !showsRewrite
 		translationViewController.view.isHidden = selectedTab != .translation
 		translationViewController.setPaneVisible(selectedTab == .translation)
 	}
@@ -179,6 +255,8 @@ private extension AIDetailPaneViewController {
 	@objc func rewriteDidBecomeReady(_ notification: Notification) {
 		guard let articleID = notification.userInfo?[AIUserInfoKey.articleID] as? String,
 		      articleID == article?.articleID,
+		      article?.feed?.aiRewriteEnabled == true,
+		      articleAllowsAI,
 		      selectedTab == .original else {
 			return
 		}
@@ -186,9 +264,49 @@ private extension AIDetailPaneViewController {
 		show(.rewrite)
 	}
 
+	/// A finished body translation opens the translation tab only when the
+	/// reader is still on the original, the feed still allows translation and
+	/// `AIPaneTabPolicy.defaultTab` does not prefer a cached rewrite.
+	@objc func translationDidBecomeReady(_ notification: Notification) {
+		guard let articleID = notification.userInfo?[AIUserInfoKey.articleID] as? String,
+		      articleID == article?.articleID,
+		      article?.feed?.aiTranslationEnabled == true,
+		      articleAllowsAI,
+		      visibleTabs.contains(.translation),
+		      selectedTab == .original else {
+			return
+		}
+		let rewriteEnabled = article?.feed?.aiRewriteEnabled ?? true
+		let translationEnabled = article?.feed?.aiTranslationEnabled ?? true
+		let allowsAI = articleAllowsAI
+		let token = UUID()
+		defaultTabToken = token
+		Task { @MainActor in
+			guard await self.hasBodyTranslation(articleID: articleID),
+			      self.defaultTabToken == token,
+			      self.article?.articleID == articleID,
+			      self.selectedTab == .original else {
+				return
+			}
+			let hasRewrite = rewriteEnabled ? await self.hasCachedRewrite(articleID: articleID) : false
+			guard self.defaultTabToken == token, self.article?.articleID == articleID else {
+				return
+			}
+			let tab = AIPaneTabPolicy.defaultTab(rewriteEnabled: rewriteEnabled, hasRewrite: hasRewrite, translationEnabled: translationEnabled, hasBodyTranslation: true, articleAllowsAI: allowsAI)
+			guard tab == .translation else {
+				return
+			}
+			self.show(tab)
+		}
+	}
+
 	@objc func tabChanged(_ sender: NSSegmentedControl) {
 		defaultTabToken = nil
-		selectedTab = Tab(rawValue: sender.selectedSegment) ?? .rewrite
+		let tabs = visibleTabs
+		guard tabs.indices.contains(sender.selectedSegment) else {
+			return
+		}
+		selectedTab = tabs[sender.selectedSegment]
 		updateVisibleContent()
 		if selectedTab == .rewrite {
 			rewriteViewController.refreshIfNeeded()
@@ -196,5 +314,52 @@ private extension AIDetailPaneViewController {
 		// The tab control keeps focus after a click, and it does not route the
 		// reading shortcuts, so hand focus to the pane the reader just picked.
 		focus()
+	}
+
+	/// The feed inspector can turn either AI switch off while its article is on
+	/// screen. Tabs disappear immediately; a hidden current tab falls back to a
+	/// cached rewrite when rewrites are still on, else to the original. It never
+	/// opens translation on its own.
+	@objc func feedSettingDidChange(_ notification: Notification) {
+		guard let key = notification.userInfo?[Feed.SettingUserInfoKey] as? Feed.SettingKey,
+		      key == .aiRewriteEnabled || key == .aiTranslationEnabled,
+		      let feed = notification.object as? Feed,
+		      article?.feed == feed else {
+			return
+		}
+		// An in-flight default-tab lookup must not override the switch change.
+		defaultTabToken = UUID()
+		updateTabTitles()
+		if visibleTabs.contains(selectedTab) {
+			show(selectedTab)
+		} else {
+			fallbackFromHiddenTab()
+		}
+		focus()
+	}
+
+	private func fallbackFromHiddenTab() {
+		guard let articleID = article?.articleID else {
+			defaultTabToken = UUID()
+			show(.original)
+			return
+		}
+		let rewriteEnabled = article?.feed?.aiRewriteEnabled ?? true
+		let allowsAI = articleAllowsAI
+		let token = UUID()
+		defaultTabToken = token
+		show(AIPaneTabPolicy.fallbackTab(rewriteEnabled: rewriteEnabled, hasRewrite: false, articleAllowsAI: allowsAI))
+		guard allowsAI, rewriteEnabled else {
+			return
+		}
+		Task { @MainActor in
+			let hasRewrite = await self.hasCachedRewrite(articleID: articleID)
+			guard self.defaultTabToken == token,
+			      self.article?.articleID == articleID,
+			      self.selectedTab == .original else {
+				return
+			}
+			self.show(AIPaneTabPolicy.fallbackTab(rewriteEnabled: rewriteEnabled, hasRewrite: hasRewrite, articleAllowsAI: allowsAI))
+		}
 	}
 }

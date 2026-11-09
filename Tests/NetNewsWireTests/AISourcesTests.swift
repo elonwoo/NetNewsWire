@@ -5,6 +5,7 @@
 
 import Foundation
 import XCTest
+import RSWeb
 
 @testable import NetNewsWire
 

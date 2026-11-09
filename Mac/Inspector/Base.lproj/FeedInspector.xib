@@ -12,6 +12,8 @@
                 <outlet property="nameTextField" destination="IWu-80-XC5" id="zg4-5h-hoP"/>
                 <outlet property="newArticleNotificationsEnabledCheckBox" destination="ZBX-E8-k9c" id="FWc-Ds-LUy"/>
                 <outlet property="readerViewAlwaysEnabledCheckBox" destination="nH2-ab-KJ5" id="xPg-P5-3cr"/>
+                <outlet property="aiRewriteEnabledCheckBox" destination="aRW-Bt-001" id="aIO-uT-001"/>
+                <outlet property="aiTranslationEnabledCheckBox" destination="aTR-Bt-001" id="aIO-uT-002"/>
                 <outlet property="urlTextField" destination="Vvk-KG-JlG" id="bcl-fq-3nQ"/>
                 <outlet property="view" destination="ecA-UY-KEd" id="Hm8-2b-Vt1"/>
             </connections>
@@ -19,11 +21,11 @@
         <customObject id="-1" userLabel="First Responder" customClass="FirstResponder"/>
         <customObject id="-3" userLabel="Application" customClass="NSObject"/>
         <view id="ecA-UY-KEd">
-            <rect key="frame" x="0.0" y="0.0" width="271" height="322"/>
+            <rect key="frame" x="0.0" y="0.0" width="271" height="366"/>
             <autoresizingMask key="autoresizingMask"/>
             <subviews>
                 <textField verticalHuggingPriority="750" horizontalCompressionResistancePriority="250" translatesAutoresizingMaskIntoConstraints="NO" id="IWu-80-XC5">
-                    <rect key="frame" x="20" y="190" width="231" height="56"/>
+                    <rect key="frame" x="20" y="234" width="231" height="56"/>
                     <constraints>
                         <constraint firstAttribute="height" relation="greaterThanOrEqual" constant="56" id="zV3-AX-gyC"/>
                     </constraints>
@@ -69,7 +71,7 @@
                     </textFieldCell>
                 </textField>
                 <button horizontalHuggingPriority="1000" verticalHuggingPriority="750" horizontalCompressionResistancePriority="1000" translatesAutoresizingMaskIntoConstraints="NO" id="ZBX-E8-k9c">
-                    <rect key="frame" x="20" y="154" width="231" height="16"/>
+                    <rect key="frame" x="20" y="198" width="231" height="16"/>
                     <buttonCell key="cell" type="check" title="Show notifications for new articles" bezelStyle="regularSquare" imagePosition="left" state="on" inset="2" id="Bw5-c7-yDX">
                         <behavior key="behavior" changeContents="YES" doesNotDimImage="YES" lightByContents="YES"/>
                         <font key="font" metaFont="system"/>
@@ -79,7 +81,7 @@
                     </connections>
                 </button>
                 <button verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="nH2-ab-KJ5">
-                    <rect key="frame" x="20" y="132" width="167" height="16"/>
+                    <rect key="frame" x="20" y="176" width="167" height="16"/>
                     <buttonCell key="cell" type="check" title="Always use Reader view" bezelStyle="regularSquare" imagePosition="left" state="on" inset="2" id="aRe-yV-R0h">
                         <behavior key="behavior" changeContents="YES" doesNotDimImage="YES" lightByContents="YES"/>
                         <font key="font" metaFont="system"/>
@@ -88,8 +90,28 @@
                         <action selector="readerViewAlwaysEnabledChanged:" target="-2" id="rsD-0e-ksP"/>
                     </connections>
                 </button>
+                <button verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="aRW-Bt-001">
+                    <rect key="frame" x="20" y="154" width="85" height="16"/>
+                    <buttonCell key="cell" type="check" title="改写" bezelStyle="regularSquare" imagePosition="left" state="on" inset="2" id="aRC-eL-001">
+                        <behavior key="behavior" changeContents="YES" doesNotDimImage="YES" lightByContents="YES"/>
+                        <font key="font" metaFont="system"/>
+                    </buttonCell>
+                    <connections>
+                        <action selector="aiRewriteEnabledChanged:" target="-2" id="aRA-cT-001"/>
+                    </connections>
+                </button>
+                <button verticalHuggingPriority="750" translatesAutoresizingMaskIntoConstraints="NO" id="aTR-Bt-001">
+                    <rect key="frame" x="20" y="132" width="85" height="16"/>
+                    <buttonCell key="cell" type="check" title="翻译" bezelStyle="regularSquare" imagePosition="left" state="on" inset="2" id="aTC-eL-001">
+                        <behavior key="behavior" changeContents="YES" doesNotDimImage="YES" lightByContents="YES"/>
+                        <font key="font" metaFont="system"/>
+                    </buttonCell>
+                    <connections>
+                        <action selector="aiTranslationEnabledChanged:" target="-2" id="aTA-cT-001"/>
+                    </connections>
+                </button>
                 <customView translatesAutoresizingMaskIntoConstraints="NO" id="I6k-QR-VmV" customClass="IconView" customModule="NetNewsWire" customModuleProvider="target">
-                    <rect key="frame" x="111" y="254" width="48" height="48"/>
+                    <rect key="frame" x="111" y="298" width="48" height="48"/>
                     <constraints>
                         <constraint firstAttribute="height" constant="48" id="Faa-nE-lkA"/>
                         <constraint firstAttribute="width" constant="48" id="esD-dT-oWU"/>
@@ -118,7 +140,13 @@
                 <constraint firstAttribute="trailing" secondItem="ZBX-E8-k9c" secondAttribute="trailing" constant="20" symbolic="YES" id="nOw-cs-o8e"/>
                 <constraint firstAttribute="trailing" relation="greaterThanOrEqual" secondItem="nH2-ab-KJ5" secondAttribute="trailing" constant="20" symbolic="YES" id="nRv-tr-KJ5"/>
                 <constraint firstItem="IWu-80-XC5" firstAttribute="leading" secondItem="ecA-UY-KEd" secondAttribute="leading" constant="20" symbolic="YES" id="r6h-Z0-g7b"/>
-                <constraint firstItem="2WO-Iu-p5e" firstAttribute="top" secondItem="nH2-ab-KJ5" secondAttribute="bottom" constant="20" id="rRv-qO-dPa"/>
+                <constraint firstItem="2WO-Iu-p5e" firstAttribute="top" secondItem="aTR-Bt-001" secondAttribute="bottom" constant="20" id="rRv-qO-dPa"/>
+                <constraint firstItem="aRW-Bt-001" firstAttribute="leading" secondItem="ecA-UY-KEd" secondAttribute="leading" constant="20" symbolic="YES" id="aRW-lC-001"/>
+                <constraint firstItem="aRW-Bt-001" firstAttribute="top" secondItem="nH2-ab-KJ5" secondAttribute="bottom" constant="6" symbolic="YES" id="aRW-oC-001"/>
+                <constraint firstAttribute="trailing" relation="greaterThanOrEqual" secondItem="aRW-Bt-001" secondAttribute="trailing" constant="20" symbolic="YES" id="aRW-rC-001"/>
+                <constraint firstItem="aTR-Bt-001" firstAttribute="leading" secondItem="ecA-UY-KEd" secondAttribute="leading" constant="20" symbolic="YES" id="aTR-lC-001"/>
+                <constraint firstItem="aTR-Bt-001" firstAttribute="top" secondItem="aRW-Bt-001" secondAttribute="bottom" constant="6" symbolic="YES" id="aTR-oC-001"/>
+                <constraint firstAttribute="trailing" relation="greaterThanOrEqual" secondItem="aTR-Bt-001" secondAttribute="trailing" constant="20" symbolic="YES" id="aTR-rC-001"/>
                 <constraint firstItem="Vvk-KG-JlG" firstAttribute="top" secondItem="ju6-Zo-8X4" secondAttribute="bottom" constant="4" id="sAt-dN-Taz"/>
                 <constraint firstItem="Vvk-KG-JlG" firstAttribute="leading" secondItem="ecA-UY-KEd" secondAttribute="leading" constant="20" symbolic="YES" id="uS2-JS-PPg"/>
             </constraints>

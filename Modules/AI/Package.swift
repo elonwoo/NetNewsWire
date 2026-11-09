@@ -29,6 +29,9 @@ let package = Package(
 			dependencies: [
 				"AI"
 			],
+			resources: [
+				.copy("Fixtures/HTMLSourceBlocks")
+			],
 			swiftSettings: [
 				.enableUpcomingFeature("NonisolatedNonsendingByDefault"),
 				.enableUpcomingFeature("InferIsolatedConformances")

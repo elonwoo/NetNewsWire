@@ -10,6 +10,7 @@ import Foundation
 import RSCore
 import Articles
 import Account
+import AI
 import os
 import Images
 import RSWeb
@@ -135,6 +136,7 @@ final class TimelineViewController: NSViewController, UndoableCommandRunner, Unr
 				articleRowMap = [String: [Int]]()
 				remeasureRowHeights(rowsWithChangedArticles(comparedWith: oldValue))
 				reloadVisibleCells()
+				scheduleRewriteIndicatorRefresh()
 				return
 			}
 
@@ -151,6 +153,7 @@ final class TimelineViewController: NSViewController, UndoableCommandRunner, Unr
 			if showIcons {
 				IconImageCache.shared.prefetchImagesForArticles(articles)
 			}
+			scheduleRewriteIndicatorRefresh()
 		}
 	}
 
@@ -211,7 +214,17 @@ final class TimelineViewController: NSViewController, UndoableCommandRunner, Unr
 	}
 
 	private var didRegisterForNotifications = false
+	private var didRegisterForScrollNotifications = false
 	static let fetchAndMergeArticlesQueue = CoalescingQueue(name: "Fetch and Merge Articles", interval: 0.5, maxInterval: 2.0)
+
+	/// Article IDs known to have a saved rewrite. Read by the column layout extension.
+	var rewrittenArticleIDs = Set<String>()
+	/// Article IDs already sent to the store, so each visible batch is queried once.
+	var checkedRewriteArticleIDs = Set<String>()
+	/// Article IDs known to have a saved translation, including title-only rows.
+	var translatedArticleIDs = Set<String>()
+	/// Translation counterpart of `checkedRewriteArticleIDs`.
+	var checkedTranslationArticleIDs = Set<String>()
 
 	// Owned by the window’s TimelineContainerViewController.
 	// Before the view loads there is nothing to re-sort — the first fetch uses the current value.
@@ -299,6 +312,10 @@ final class TimelineViewController: NSViewController, UndoableCommandRunner, Unr
 		self.delegate = delegate
 	}
 
+	deinit {
+		NotificationCenter.default.removeObserver(self)
+	}
+
 	override func viewDidLoad() {
 		// The search timeline can be created long before its view loads, and defaults are observed only from here on.
 		textSize = AppDefaults.timelineTextSize
@@ -346,14 +363,22 @@ final class TimelineViewController: NSViewController, UndoableCommandRunner, Unr
 			NotificationCenter.default.addObserver(self, selector: #selector(handleTimelineShowFullTitlesDidChange(_:)), name: .timelineShowFullTitlesDidChange, object: nil)
 			NotificationCenter.default.addObserver(self, selector: #selector(handleTimelineFeedNameAndDateAboveTitleDidChange(_:)), name: .timelineFeedNameAndDateAboveTitleDidChange, object: nil)
 			NotificationCenter.default.addObserver(self, selector: #selector(handleTimelineFadeReadArticlesDidChange(_:)), name: .timelineFadeReadArticlesDidChange, object: nil)
+			NotificationCenter.default.addObserver(self, selector: #selector(handleAIRewriteReady(_:)), name: .aiRewriteReady, object: nil)
+			NotificationCenter.default.addObserver(self, selector: #selector(handleAIRewriteReady(_:)), name: .aiRewriteStored, object: nil)
+			NotificationCenter.default.addObserver(self, selector: #selector(handleAITranslationReady(_:)), name: .aiTranslationReady, object: nil)
+			NotificationCenter.default.addObserver(self, selector: #selector(handleFeedSettingDidChange(_:)), name: .feedSettingDidChange, object: nil)
 			didRegisterForNotifications = true
 		}
 
+		registerForScrollNotificationsIfNeeded()
 		sharingServicePickerDelegate = SharingServicePickerDelegate(self.view.window)
+		scheduleRewriteIndicatorRefresh()
 	}
 
 	override func viewDidAppear() {
 		sharingServiceDelegate = SharingServiceDelegate(self.view.window)
+		registerForScrollNotificationsIfNeeded()
+		scheduleRewriteIndicatorRefresh()
 	}
 
 	override func viewDidLayout() {
@@ -980,6 +1005,157 @@ final class TimelineViewController: NSViewController, UndoableCommandRunner, Unr
 		tableView.reloadData(forRowIndexes: indexes, columnIndexes: IndexSet(integersIn: 0..<tableView.numberOfColumns))
 	}
 
+	// MARK: - Rewrite Indicators
+
+	/// The dot a row would show: green for a completed rewrite, yellow for a
+	/// completed translation, blue when unread. A completed AI row only counts
+	/// while its feed switch is still on. Read and starred rows show no dot.
+	func timelineDot(for article: Article) -> TimelineDot {
+		TimelineDotPolicy.dot(
+			isUnread: !article.status.read,
+			isStarred: article.status.starred,
+			rewriteEnabled: article.feed?.aiRewriteEnabled ?? true,
+			hasRewrite: rewrittenArticleIDs.contains(article.articleID),
+			translationEnabled: article.feed?.aiTranslationEnabled ?? true,
+			hasTranslation: translatedArticleIDs.contains(article.articleID)
+		)
+	}
+
+	/// A feed whose rewrite switch is off never shows the green dot, even when a
+	/// historical rewrite row exists.
+	func showsRewriteIndicator(for article: Article) -> Bool {
+		timelineDot(for: article) == .green
+	}
+
+	/// A feed whose translation switch is off never shows the yellow dot. A
+	/// completed rewrite keeps priority, so this is false when the row is green.
+	func showsTranslationIndicator(for article: Article) -> Bool {
+		timelineDot(for: article) == .yellow
+	}
+
+	/// Coalesces the triggers into one query per batch of newly visible rows.
+	/// IDs are marked as checked before dispatch, so scrolling cannot queue the
+	/// same query again while the first one is in flight.
+	private func scheduleRewriteIndicatorRefresh() {
+		guard isViewLoaded else {
+			return
+		}
+		let visibleRows = tableView.rows(in: tableView.visibleRect)
+		guard visibleRows.length > 0 else {
+			return
+		}
+		var articleIDs = Set<String>()
+		for row in visibleRows.location..<NSMaxRange(visibleRows) {
+			guard let article = articles.articleAtRow(row) else {
+				continue
+			}
+			articleIDs.insert(article.articleID)
+		}
+		let needRewrite = articleIDs.subtracting(checkedRewriteArticleIDs)
+		let needTranslation = articleIDs.subtracting(checkedTranslationArticleIDs)
+		guard !needRewrite.isEmpty || !needTranslation.isEmpty else {
+			return
+		}
+
+		if !needRewrite.isEmpty {
+			checkedRewriteArticleIDs.formUnion(needRewrite)
+			Task { @MainActor [weak self] in
+				guard let self else {
+					return
+				}
+				do {
+					let completed = try await AIEnvironment.shared.store.completedRewriteArticleIDs(for: needRewrite)
+					let newlyCompleted = completed.subtracting(self.rewrittenArticleIDs)
+					guard !newlyCompleted.isEmpty else {
+						return
+					}
+					self.rewrittenArticleIDs.formUnion(completed)
+					self.reloadVisibleCells(for: self.visibleArticleIDs().intersection(newlyCompleted))
+				} catch {
+					// Leave only these IDs unchecked so the next trigger retries them.
+					self.checkedRewriteArticleIDs.subtract(needRewrite)
+					Self.logger.debug("TimelineViewController: rewrite indicator query failed: \(error.localizedDescription, privacy: .public)")
+				}
+			}
+		}
+
+		if !needTranslation.isEmpty {
+			checkedTranslationArticleIDs.formUnion(needTranslation)
+			Task { @MainActor [weak self] in
+				guard let self else {
+					return
+				}
+				do {
+					let completed = try await AIEnvironment.shared.store.completedTranslationArticleIDs(for: needTranslation)
+					let newlyCompleted = completed.subtracting(self.translatedArticleIDs)
+					guard !newlyCompleted.isEmpty else {
+						return
+					}
+					self.translatedArticleIDs.formUnion(completed)
+					self.reloadVisibleCells(for: self.visibleArticleIDs().intersection(newlyCompleted))
+				} catch {
+					// Leave only these IDs unchecked so the next trigger retries them.
+					self.checkedTranslationArticleIDs.subtract(needTranslation)
+					Self.logger.debug("TimelineViewController: translation indicator query failed: \(error.localizedDescription, privacy: .public)")
+				}
+			}
+		}
+	}
+
+	private func visibleArticleIDs() -> Set<String> {
+		let visibleRows = tableView.rows(in: tableView.visibleRect)
+		guard visibleRows.length > 0 else {
+			return []
+		}
+		var articleIDs = Set<String>()
+		for row in visibleRows.location..<NSMaxRange(visibleRows) {
+			if let article = articles.articleAtRow(row) {
+				articleIDs.insert(article.articleID)
+			}
+		}
+		return articleIDs
+	}
+
+	private func registerForScrollNotificationsIfNeeded() {
+		guard !didRegisterForScrollNotifications, let contentView = tableView.enclosingScrollView?.contentView else {
+			return
+		}
+		contentView.postsBoundsChangedNotifications = true
+		NotificationCenter.default.addObserver(self, selector: #selector(handleTimelineScroll(_:)), name: NSView.boundsDidChangeNotification, object: contentView)
+		didRegisterForScrollNotifications = true
+	}
+
+	@objc private func handleTimelineScroll(_ notification: Notification) {
+		scheduleRewriteIndicatorRefresh()
+	}
+
+	@objc private func handleAIRewriteReady(_ notification: Notification) {
+		guard let articleID = notification.userInfo?[AIUserInfoKey.articleID] as? String else {
+			return
+		}
+		rewrittenArticleIDs.insert(articleID)
+		checkedRewriteArticleIDs.insert(articleID)
+		reloadVisibleCells(for: [articleID])
+	}
+
+	@objc private func handleAITranslationReady(_ notification: Notification) {
+		guard let articleID = notification.userInfo?[AIUserInfoKey.articleID] as? String else {
+			return
+		}
+		// The row is re-queried through the unified path, so the dot turns yellow
+		// as soon as the store has the row.
+		checkedTranslationArticleIDs.remove(articleID)
+		scheduleRewriteIndicatorRefresh()
+	}
+
+	@objc private func handleFeedSettingDidChange(_ notification: Notification) {
+		guard let key = notification.userInfo?[Feed.SettingUserInfoKey] as? Feed.SettingKey,
+		      key == .aiRewriteEnabled || key == .aiTranslationEnabled else {
+			return
+		}
+		reloadVisibleCells()
+	}
+
 	// MARK: - Cell Configuring
 
 	/// The full number of lines, with no icon or thumbnail.
@@ -1388,7 +1564,7 @@ extension TimelineViewController: NSTableViewDelegate {
 			showThumbnail = true
 			thumbnail = ThumbnailDownloader.shared.thumbnail(url: thumbnailURL, mode: thumbnailMode, articleTitle: article.title)
 		}
-		cell.cellData = TimelineCellData(article: article, showFeedName: showFeedNames, feedName: article.feed?.nameForDisplay, byline: article.byline(), iconImage: iconImage, showIcon: showIcons, thumbnail: thumbnail, showThumbnail: showThumbnail)
+		cell.cellData = TimelineCellData(article: article, showFeedName: showFeedNames, feedName: article.feed?.nameForDisplay, byline: article.byline(), iconImage: iconImage, showIcon: showIcons, thumbnail: thumbnail, showThumbnail: showThumbnail, hasRewrite: showsRewriteIndicator(for: article), hasTranslation: showsTranslationIndicator(for: article))
 	}
 
 	/// Fades the cell views, not the row view, so the selection highlight and separators stay full strength.
@@ -1537,6 +1713,7 @@ private extension TimelineViewController {
 		if tableView.selectedRow != -1 {
 			tableView.scrollRowToVisible(tableView.selectedRow)
 		}
+		scheduleRewriteIndicatorRefresh()
 	}
 
 	func updateShowIcons() {

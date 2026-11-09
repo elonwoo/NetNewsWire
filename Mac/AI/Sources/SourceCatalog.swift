@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import RSWeb
 
 enum SourceEndpoint: Sendable, Equatable {
 

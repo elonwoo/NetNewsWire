@@ -138,6 +138,13 @@ struct HTTP4xxResponse {
 		urlsInSession = filteredURLs
 		updateProgress()
 	}
+
+	/// Clears the cached 4xx response for `url` so the next refresh requests it
+	/// again, and drops any redirect recorded from `url`.
+	@MainActor public func clearHTTP4xxResponse(for url: URL) {
+		http4xxResponses[url] = nil
+		redirectCache[url] = nil
+	}
 }
 
 // MARK: - URLSessionTaskDelegate

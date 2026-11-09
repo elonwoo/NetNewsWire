@@ -7,6 +7,7 @@
 //
 
 import AppKit
+import Account
 import Articles
 
 // The table view is shared by both layouts. These reconfigure it for the current one
@@ -54,6 +55,9 @@ extension TimelineViewController {
 		case .unread:
 			let cell = dequeueCell(TimelineUnreadColumnCellView.self, identifier: identifier)
 			cell.isUnread = isUnread
+			cell.isStarred = article?.status.starred ?? false
+			cell.isRewriteComplete = article.map { showsRewriteIndicator(for: $0) } ?? false
+			cell.isTranslationComplete = article.map { showsTranslationIndicator(for: $0) } ?? false
 			return cell
 
 		case .starred:

@@ -1,0 +1,9 @@
+<p onclick="alert(1)" style="color:red" class="x">Safe text</p>
+<script>alert('x')</script>
+<style>p{color:red}</style>
+<a href="javascript:alert(1)" title="ok">bad link</a>
+<a href="https://example.com/safe" onclick="x">safe link</a>
+<img src="javascript:alert(1)" alt="x">
+<img src="data:image/png;base64,AAAA" alt="y">
+<noscript>no script</noscript>
+<iframe src="https://evil.example">frame</iframe>

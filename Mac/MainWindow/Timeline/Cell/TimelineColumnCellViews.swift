@@ -21,11 +21,34 @@ final class TimelineUnreadColumnCellView: NSTableCellView {
 
 	var isUnread = false {
 		didSet {
-			unreadIndicatorView.isHidden = !isUnread
-			// The dot is the only cue, so VoiceOver gets the word instead. Read rows say nothing.
-			setAccessibilityElement(isUnread)
-			setAccessibilityLabel(isUnread ? NSLocalizedString("Unread", comment: "Unread") : nil)
+			updateIndicator()
 		}
+	}
+
+	var isStarred = false {
+		didSet {
+			updateIndicator()
+		}
+	}
+
+	var isRewriteComplete = false {
+		didSet {
+			unreadIndicatorView.isRewriteComplete = isRewriteComplete
+		}
+	}
+
+	var isTranslationComplete = false {
+		didSet {
+			unreadIndicatorView.isTranslationComplete = isTranslationComplete
+		}
+	}
+
+	private func updateIndicator() {
+		let showsDot = isUnread && !isStarred
+		unreadIndicatorView.isHidden = !showsDot
+		// The dot is the only cue, so VoiceOver gets the word instead. Read and starred rows say nothing.
+		setAccessibilityElement(showsDot)
+		setAccessibilityLabel(showsDot ? NSLocalizedString("Unread", comment: "Unread") : nil)
 	}
 
 	override var backgroundStyle: NSView.BackgroundStyle {

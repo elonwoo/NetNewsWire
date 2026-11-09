@@ -29,7 +29,9 @@ enum AIBodySegmenter {
 		if units.isEmpty {
 			units = [source]
 		}
-		if forceSplit, units.count == 1 {
+		if forceSplit, units.count == 1, !isHTML {
+			// A single HTML block must stay whole: splitting inside a tag would
+			// corrupt the fragment. The engine sends it as one oversized request.
 			units = splitInHalf(units[0])
 		}
 
@@ -53,7 +55,7 @@ enum AIBodySegmenter {
 
 	static func makeSegment(index: Int, content: String, isHTML: Bool) -> AIBodySegment {
 		let digest = AIContentHash.sha256Hex(content).prefix(16)
-		return AIBodySegment(key: "\(index)-\(digest)-\(content.utf8.count)", content: content, isHTML: isHTML)
+		return AIBodySegment(key: "\(index)-b2-\(digest)-\(content.utf8.count)", content: content, isHTML: isHTML)
 	}
 }
 
@@ -69,14 +71,8 @@ private extension AIBodySegmenter {
 			} else {
 				current += unit
 			}
-			while current.utf8.count > budget {
-				let halves = splitInHalf(current)
-				guard halves.count == 2 else {
-					break
-				}
-				groups.append(halves[0])
-				current = halves[1]
-			}
+			// An oversized unit is kept whole: splitting it could cut a tag in
+			// half. The engine's caller treats truncation as recoverable.
 		}
 		if !current.isEmpty {
 			groups.append(current)
@@ -87,7 +83,9 @@ private extension AIBodySegmenter {
 	static func splitUnits(_ source: String, isHTML: Bool) -> [String] {
 		let boundaries = isHTML ? htmlBoundaries(source) : paragraphBoundaries(source)
 		guard !boundaries.isEmpty else {
-			return [source]
+			// No safe boundary: keep the whole source as one unit rather than
+			// cutting inside a tag.
+			return isHTML ? [] : [source]
 		}
 
 		var units: [String] = []
@@ -113,9 +111,9 @@ private extension AIBodySegmenter {
 	}
 
 	static func htmlBoundaries(_ source: String) -> [String.Index] {
-		let pattern = #"</(?:p|h[1-6]|li|blockquote|pre|figure|table|tr)>"#
+		let pattern = #"</(?:p|h[1-6]|li|blockquote|pre|figure|table)>"#
 		guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
-			return paragraphBoundaries(source)
+			return []
 		}
 		let fullRange = NSRange(source.startIndex..<source.endIndex, in: source)
 		var boundaries: [String.Index] = []
@@ -125,7 +123,7 @@ private extension AIBodySegmenter {
 			}
 			boundaries.append(boundary)
 		}
-		return boundaries.isEmpty ? paragraphBoundaries(source) : boundaries
+		return boundaries
 	}
 
 	static func splitInHalf(_ content: String) -> [String] {

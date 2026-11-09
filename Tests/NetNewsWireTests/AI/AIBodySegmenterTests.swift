@@ -61,4 +61,37 @@ import Testing
 		#expect(first.map(\.key) == second.map(\.key))
 		#expect(Set(first.map(\.key)).count == first.count)
 	}
+
+	@Test func segmentKeysCarryTheBodyVersion() {
+		let source = "<p>Paragraph</p>"
+		let segments = AIBodySegmenter.segments(source: source, isHTML: true, maxBytes: 100_000, forceSplit: false)
+
+		#expect(segments.first?.key.contains("b2") == true)
+	}
+
+	@Test func oversizedSingleHTMLBlockStaysWhole() {
+		let source = "<p>" + String(repeating: "word ", count: 2_000) + "</p>"
+		let segments = AIBodySegmenter.segments(source: source, isHTML: true, maxBytes: 1_000, forceSplit: true)
+
+		#expect(segments.count == 1)
+		#expect(segments.first?.content == source)
+	}
+
+	@Test func doesNotSplitAtTableRows() {
+		let cell = String(repeating: "x", count: 400)
+		let table = "<table><tr><td>\(cell)</td></tr><tr><td>\(cell)</td></tr><tr><td>\(cell)</td></tr></table>"
+		let source = table + "<p>after</p>"
+		let segments = AIBodySegmenter.segments(source: source, isHTML: true, maxBytes: 1_000, forceSplit: false)
+
+		#expect(segments.count == 2)
+		#expect(segments.first?.content == table)
+		#expect(segments.map(\.content).joined() == source)
+	}
+
+	@Test func joiningSegmentsLosesNoContent() {
+		let source = (1...6).map { "<p>Paragraph \($0) " + String(repeating: "x", count: 700) + "</p>" }.joined(separator: "\n")
+		let segments = AIBodySegmenter.segments(source: source, isHTML: true, maxBytes: 1_000, forceSplit: true)
+
+		#expect(segments.map(\.content).joined() == source)
+	}
 }
