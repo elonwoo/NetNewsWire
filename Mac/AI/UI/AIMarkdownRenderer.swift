@@ -57,6 +57,10 @@ enum AIMarkdownRenderer {
 		hr { border: none; border-top: 1px solid var(--line); margin: 20px 0; }
 		pre, code { font-family: "SF Mono", Menlo, monospace; font-size: 13px; }
 		pre { overflow-x: auto; padding: 10px; background: rgba(127, 127, 127, 0.12); border-radius: 6px; }
+		.table-wrap { overflow-x: auto; margin: 12px 0; }
+		table { border-collapse: collapse; width: 100%; }
+		th, td { border: 1px solid var(--line); padding: 6px 10px; vertical-align: top; }
+		th { background: rgba(127,127,127,0.08); font-weight: 600; }
 		.empty { color: var(--muted); }
 		</style>
 		</head>
@@ -149,10 +153,18 @@ enum AIMarkdownRenderer {
 				continue
 			}
 
+			// After quotes and lists so `> a | b` and `- a | b` stay quotes and lists
+			// even when a `| --- | --- |` delimiter line follows.
+			if let table = table(in: lines, at: index) {
+				blocks.append(tableHTML(table))
+				index += table.consumedLines
+				continue
+			}
+
 			var paragraphLines: [String] = []
 			while index < lines.count {
 				let candidate = lines[index].trimmingCharacters(in: .whitespaces)
-				if candidate.isEmpty || startsBlock(candidate) {
+				if candidate.isEmpty || startsBlock(in: lines, at: index) {
 					break
 				}
 				paragraphLines.append(candidate)
@@ -201,8 +213,185 @@ private extension AIMarkdownRenderer {
 		return replacingMatches(pattern: pattern, in: line, with: "")
 	}
 
-	static func startsBlock(_ line: String) -> Bool {
-		line.hasPrefix("```")
+	struct MarkdownTable {
+		let header: [String]
+		let alignments: [TableAlignment?]
+		let rows: [[String]]
+		let consumedLines: Int
+	}
+
+	enum TableAlignment: String {
+		case left
+		case center
+		case right
+
+		var style: String {
+			" style=\"text-align:\(rawValue)\""
+		}
+	}
+
+	static func table(in lines: [String], at index: Int) -> MarkdownTable? {
+		guard index + 1 < lines.count else {
+			return nil
+		}
+		let headerLine = lines[index].trimmingCharacters(in: .whitespaces)
+		guard hasUnescapedPipe(headerLine) else {
+			return nil
+		}
+		let header = tableCells(headerLine)
+		guard !header.isEmpty, header.contains(where: { !$0.isEmpty }) else {
+			return nil
+		}
+
+		let delimiterLine = lines[index + 1].trimmingCharacters(in: .whitespaces)
+		let delimiterCells = tableCells(delimiterLine)
+		guard delimiterCells.count == header.count else {
+			return nil
+		}
+
+		var alignments: [TableAlignment?] = []
+		for cell in delimiterCells {
+			guard isDelimiterCell(cell) else {
+				return nil
+			}
+			alignments.append(alignment(for: cell))
+		}
+
+		var rows: [[String]] = []
+		var cursor = index + 2
+		while cursor < lines.count {
+			let candidate = lines[cursor].trimmingCharacters(in: .whitespaces)
+			guard !candidate.isEmpty, hasUnescapedPipe(candidate), !startsBlockLine(candidate) else {
+				break
+			}
+			rows.append(tableCells(candidate))
+			cursor += 1
+		}
+
+		return MarkdownTable(header: header, alignments: alignments, rows: rows, consumedLines: cursor - index)
+	}
+
+	static func tableHTML(_ table: MarkdownTable) -> String {
+		var html = "<div class=\"table-wrap\"><table><thead><tr>"
+		for (column, cell) in table.header.enumerated() {
+			html += "<th\(table.alignments[column]?.style ?? "")>\(inline(cell))</th>"
+		}
+		html += "</tr></thead><tbody>"
+		for row in table.rows {
+			html += "<tr>"
+			for column in table.header.indices {
+				let cell = column < row.count ? row[column] : ""
+				html += "<td\(table.alignments[column]?.style ?? "")>\(inline(cell))</td>"
+			}
+			html += "</tr>"
+		}
+		html += "</tbody></table></div>"
+		return html
+	}
+
+	static func isDelimiterCell(_ cell: String) -> Bool {
+		let trimmed = cell.trimmingCharacters(in: .whitespaces)
+		return firstMatch(pattern: "^:?-{3,}:?$", in: trimmed) != nil
+	}
+
+	static func alignment(for cell: String) -> TableAlignment? {
+		let trimmed = cell.trimmingCharacters(in: .whitespaces)
+		switch (trimmed.hasPrefix(":"), trimmed.hasSuffix(":")) {
+		case (true, true):
+			return .center
+		case (true, false):
+			return .left
+		case (false, true):
+			return .right
+		case (false, false):
+			return nil
+		}
+	}
+
+	/// Splits a table row on unescaped pipes, ignoring pipes inside inline code.
+	static func tableCells(_ line: String) -> [String] {
+		var cells: [String] = []
+		var current = ""
+		var inCode = false
+		var escaped = false
+
+		for character in line {
+			if escaped {
+				if character == "|" {
+					current.append("|")
+				} else {
+					current.append("\\")
+					current.append(character)
+				}
+				escaped = false
+				continue
+			}
+			switch character {
+			case "\\":
+				escaped = true
+			case "`":
+				inCode.toggle()
+				current.append(character)
+			case "|":
+				if inCode {
+					current.append(character)
+				} else {
+					cells.append(current)
+					current = ""
+				}
+			default:
+				current.append(character)
+			}
+		}
+		if escaped {
+			current.append("\\")
+		}
+		cells.append(current)
+
+		if cells.count > 1, cells[0].trimmingCharacters(in: .whitespaces).isEmpty {
+			cells.removeFirst()
+		}
+		if cells.count > 1, cells[cells.count - 1].trimmingCharacters(in: .whitespaces).isEmpty {
+			cells.removeLast()
+		}
+		return cells.map { $0.trimmingCharacters(in: .whitespaces) }
+	}
+
+	static func hasUnescapedPipe(_ line: String) -> Bool {
+		var inCode = false
+		var escaped = false
+
+		for character in line {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch character {
+			case "\\":
+				escaped = true
+			case "`":
+				inCode.toggle()
+			case "|":
+				if !inCode {
+					return true
+				}
+			default:
+				break
+			}
+		}
+		return false
+	}
+
+	static func startsBlock(in lines: [String], at index: Int) -> Bool {
+		let line = lines[index].trimmingCharacters(in: .whitespaces)
+		return startsBlockLine(line) || table(in: lines, at: index) != nil
+	}
+
+	/// Block-level line starts that end a paragraph or a table body row.
+	/// Table rows never begin with these markers, so a delimiter row such as
+	/// `|---|---|` is not mistaken for a horizontal rule.
+	static func startsBlockLine(_ line: String) -> Bool {
+		return line.hasPrefix("```")
 			|| heading(in: line) != nil
 			|| isHorizontalRule(line)
 			|| line.hasPrefix(">")
