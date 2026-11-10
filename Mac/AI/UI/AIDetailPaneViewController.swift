@@ -19,6 +19,7 @@ final class AIDetailPaneViewController: NSViewController {
 
 	var article: Article? {
 		didSet {
+			updateTabBarVisibility()
 			if article?.articleID == oldValue?.articleID {
 				// The body can arrive after the timeline row, and Chinese
 				// detection depends on it. Re-evaluate the language-driven tabs
@@ -58,6 +59,7 @@ final class AIDetailPaneViewController: NSViewController {
 	private let tabBar = NSView()
 	private let tabControl: NSSegmentedControl
 	private let contentView = NSView()
+	private var tabBarHeightConstraint: NSLayoutConstraint!
 	private var selectedTab: AIPaneTab
 	private var defaultTabToken: UUID?
 
@@ -96,11 +98,13 @@ final class AIDetailPaneViewController: NSViewController {
 		separator.translatesAutoresizingMaskIntoConstraints = false
 		tabBar.addSubview(separator)
 
+		tabBarHeightConstraint = tabBar.heightAnchor.constraint(equalToConstant: 34)
+
 		NSLayoutConstraint.activate([
 			tabBar.topAnchor.constraint(equalTo: rootView.safeAreaLayoutGuide.topAnchor),
 			tabBar.leadingAnchor.constraint(equalTo: rootView.leadingAnchor),
 			tabBar.trailingAnchor.constraint(equalTo: rootView.trailingAnchor),
-			tabBar.heightAnchor.constraint(equalToConstant: 34),
+			tabBarHeightConstraint,
 			tabControl.centerXAnchor.constraint(equalTo: tabBar.centerXAnchor),
 			tabControl.centerYAnchor.constraint(equalTo: tabBar.centerYAnchor),
 			separator.leadingAnchor.constraint(equalTo: tabBar.leadingAnchor),
@@ -144,6 +148,7 @@ final class AIDetailPaneViewController: NSViewController {
 			selectedTab = .original
 		}
 		show(selectedTab)
+		updateTabBarVisibility()
 	}
 
 	func focus() {
@@ -159,6 +164,18 @@ final class AIDetailPaneViewController: NSViewController {
 }
 
 private extension AIDetailPaneViewController {
+
+	/// The tab bar belongs to the selected article: without one there is nothing
+	/// to switch between, so hide the bar and let the content view take its full
+	/// height instead of keeping an empty strip above "No selection".
+	private func updateTabBarVisibility() {
+		guard isViewLoaded else {
+			return
+		}
+		let hidesTabBar = article == nil
+		tabBar.isHidden = hidesTabBar
+		tabBarHeightConstraint.constant = hidesTabBar ? 0 : 34
+	}
 
 	func updateTabTitles() {
 		let tabs = visibleTabs

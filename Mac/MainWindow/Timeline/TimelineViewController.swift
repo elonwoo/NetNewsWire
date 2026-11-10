@@ -221,7 +221,8 @@ final class TimelineViewController: NSViewController, UndoableCommandRunner, Unr
 	var rewrittenArticleIDs = Set<String>()
 	/// Article IDs already sent to the store, so each visible batch is queried once.
 	var checkedRewriteArticleIDs = Set<String>()
-	/// Article IDs known to have a saved translation, including title-only rows.
+	/// Article IDs known to have a completed body translation. Title-only rows are
+	/// excluded, so a yellow dot always means the article body is translated.
 	var translatedArticleIDs = Set<String>()
 	/// Translation counterpart of `checkedRewriteArticleIDs`.
 	var checkedTranslationArticleIDs = Set<String>()
