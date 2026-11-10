@@ -18,13 +18,23 @@ public protocol AIStore: Sendable {
 	func chatMessages(for articleID: String) async throws -> [ChatMessage]
 	func appendChatMessage(_ message: ChatMessage) async throws
 	func enqueue(_ job: AIJob) async throws
-	func claimNextJob(now: Date) async throws -> AIJob?
+	func claimNextJob(now: Date, allowedKinds: [AIJobKind]?) async throws -> AIJob?
+	func renewLease(id: String, now: Date) async throws
 	func completeJob(id: String) async throws
 	func failJob(id: String, error: String, retryAt: Date?) async throws
 	func failJobPermanently(id: String, error: String) async throws
 	func deleteJobs(kinds: [AIJobKind], statuses: [AIJobStatus]) async throws
 	func activeJobArticleIDs(kinds: [AIJobKind]) async throws -> Set<String>
 	func deleteAIArtifacts(articleIDs: Set<String>) async throws
+}
+
+public extension AIStore {
+
+	/// Claims the next available job of any kind. Existing callers keep the
+	/// unfiltered behaviour; the executor's lanes pass an explicit kind list.
+	func claimNextJob(now: Date) async throws -> AIJob? {
+		try await claimNextJob(now: now, allowedKinds: nil)
+	}
 }
 
 /// SQLite-backed store for translations, rewrites, chat messages and jobs.
@@ -288,16 +298,29 @@ public final class SQLiteAIStore: AIStore, Sendable {
 		}
 	}
 
-	public func claimNextJob(now: Date) async throws -> AIJob? {
-		try await writeInTransaction { database in
-			let selectSQL = """
+	public func claimNextJob(now: Date, allowedKinds: [AIJobKind]?) async throws -> AIJob? {
+		// An explicit empty filter can never match; return before building `in ()`.
+		if let allowedKinds, allowedKinds.isEmpty {
+			return nil
+		}
+		return try await writeInTransaction { database in
+			var selectSQL = """
 			select * from ai_jobs
-			where (status in ('pending', 'retry') and availableAt <= ?)
-			   or (status = 'running' and leaseUntil is not null and leaseUntil <= ?)
+			where ((status in ('pending', 'retry') and availableAt <= ?)
+			   or (status = 'running' and leaseUntil is not null and leaseUntil <= ?))
+			"""
+			var arguments: [Any] = [now.timeIntervalSince1970, now.timeIntervalSince1970]
+			if let allowedKinds {
+				let placeholders = Array(repeating: "?", count: allowedKinds.count).joined(separator: ", ")
+				selectSQL += " and kind in (\(placeholders))"
+				arguments.append(contentsOf: allowedKinds.map(\.rawValue))
+			}
+			selectSQL += """
+
 			order by priority desc, availableAt asc, createdAt asc
 			limit 1;
 			"""
-			guard let resultSet = database.executeQuery(selectSQL, withArgumentsIn: [now.timeIntervalSince1970, now.timeIntervalSince1970]) else {
+			guard let resultSet = database.executeQuery(selectSQL, withArgumentsIn: arguments) else {
 				return nil
 			}
 			defer {
@@ -318,6 +341,19 @@ public final class SQLiteAIStore: AIStore, Sendable {
 			claimed.attempts += 1
 			claimed.leaseUntil = leaseUntil
 			return claimed
+		}
+	}
+
+	/// Extends the lease on a running job. Long generations call this before the
+	/// original five minute lease expires; a job that already finished is left
+	/// untouched.
+	public func renewLease(id: String, now: Date) async throws {
+		try await write { database in
+			let sql = "update ai_jobs set leaseUntil = ? where id = ? and status = 'running';"
+			let leaseUntil = now.addingTimeInterval(AIQueuePolicy.leaseDuration)
+			guard database.executeUpdate(sql, withArgumentsIn: [leaseUntil.timeIntervalSince1970, id]) else {
+				throw AIStoreError.writeFailed(database.lastErrorMessage())
+			}
 		}
 	}
 

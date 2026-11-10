@@ -98,6 +98,35 @@ import Testing
 		#expect(object.index(forKey: "thinking") == nil)
 	}
 
+	@Test func rewriteRequestOmitsThinkingKey() async throws {
+		MockURLProtocol.handler = { request in
+			MockURLProtocol.lastBody = MockURLProtocol.bodyData(from: request)
+			let json = ##"{"choices":[{"message":{"role":"assistant","content":"# 标题\n\n改写后的正文段落。"}}]}"##
+			return (200, Data(json.utf8))
+		}
+
+		let baseURL = try #require(URL(string: "http://example.com/v1"))
+		let config = AIConfig(baseURL: baseURL, model: "test-model")
+		let client = OpenAIChatClient(config: config, session: MockURLProtocol.makeSession())
+		let databasePath = FileManager.default.temporaryDirectory
+			.appendingPathComponent("OpenAIChatClientTests-\(UUID().uuidString).sqlite")
+			.path
+		defer {
+			removeDatabase(at: databasePath)
+		}
+		let store = SQLiteAIStore(databasePath: databasePath)
+		let engine = AIEngine(store: store, client: client, config: config)
+		let article = AIArticle(id: "rewrite-without-thinking", title: "Title", contentText: "First paragraph. Second paragraph.")
+
+		_ = try await engine.rewrite(article, kind: .article)
+
+		let body = try #require(MockURLProtocol.lastBody)
+		let object = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+		#expect(object.index(forKey: "thinking") == nil)
+		#expect(object["max_tokens"] as? Int == config.maxTokens)
+		#expect(object["temperature"] as? Double == config.temperature)
+	}
+
 	@Test func perCallOverridesTakePrecedence() async throws {
 		MockURLProtocol.handler = { request in
 			MockURLProtocol.lastBody = MockURLProtocol.bodyData(from: request)
@@ -249,6 +278,13 @@ import Testing
 			}
 		}
 	}
+}
+
+private func removeDatabase(at path: String) {
+	let fileManager = FileManager.default
+	try? fileManager.removeItem(atPath: path)
+	try? fileManager.removeItem(atPath: path + "-wal")
+	try? fileManager.removeItem(atPath: path + "-shm")
 }
 
 private final class MockURLProtocol: URLProtocol {

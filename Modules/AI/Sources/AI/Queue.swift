@@ -47,11 +47,11 @@ public actor AIQueue {
 		try await store.enqueue(job)
 	}
 
-	public func runOnce(now: Date = Date()) async throws -> AIJob? {
+	public func runOnce(now: Date = Date(), allowedKinds: [AIJobKind]? = nil) async throws -> AIJob? {
 		guard !isPaused else {
 			return nil
 		}
-		return try await store.claimNextJob(now: now)
+		return try await store.claimNextJob(now: now, allowedKinds: allowedKinds)
 	}
 
 	public func pause() {

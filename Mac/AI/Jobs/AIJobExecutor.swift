@@ -52,6 +52,13 @@ final class AIJobExecutor {
 	private static let pausedPollInterval: Duration = .seconds(1)
 	private static let catchUpDelay: Duration = .seconds(5)
 	private static let catchUpLimit = 200
+	private static let leaseRenewInterval: Duration = .seconds(60)
+	/// User-visible translation work gets its own lane so it never waits behind
+	/// a long rewrite.
+	private static let interactiveKinds: [AIJobKind] = [.bodyTranslation, .titleTranslation]
+	private static let backgroundKinds: [AIJobKind] = [.rewrite]
+	/// Rollback switch: false puts every kind back on a single lane.
+	private static let backgroundLaneEnabled = true
 	private static let didPruneRewriteBacklogKey = "AI.DidPruneRewriteBacklog"
 	private static let logger = Logger(subsystem: Logger.nnwSubsystem, category: "AIJobs")
 
@@ -68,11 +75,15 @@ final class AIJobExecutor {
 	/// so every automatic paid path keeps its regular behaviour.
 	private let autoWorkDisabled: Bool
 
-	private var loopTask: Task<Void, Never>?
+	private var interactiveLoopTask: Task<Void, Never>?
+	private var backgroundLoopTask: Task<Void, Never>?
 	private var catchUpTask: Task<Void, Never>?
 	private var observerToken: NSObjectProtocol?
 	private var feedRemovalObserverToken: NSObjectProtocol?
 	private var isPaused = false
+	/// Title translations are claimed only by the interactive lane, so this map
+	/// keeps a single writer. Moving title jobs to the background lane would let
+	/// two lanes mutate it concurrently.
 	private var pendingTitleArticles: [String: AIArticle] = [:]
 	private var reservations = AIEnqueueReservations()
 
@@ -126,12 +137,21 @@ final class AIJobExecutor {
 
 	func start() {
 		installObserverIfNeeded()
-		guard loopTask == nil else {
+		guard interactiveLoopTask == nil, backgroundLoopTask == nil else {
 			return
 		}
 		pruneRewriteBacklogIfNeeded()
-		loopTask = Task { @MainActor [weak self] in
-			await self?.runLoop()
+		if Self.backgroundLaneEnabled {
+			interactiveLoopTask = Task { @MainActor [weak self] in
+				await self?.runLoop(allowedKinds: Self.interactiveKinds)
+			}
+			backgroundLoopTask = Task { @MainActor [weak self] in
+				await self?.runLoop(allowedKinds: Self.backgroundKinds)
+			}
+		} else {
+			interactiveLoopTask = Task { @MainActor [weak self] in
+				await self?.runLoop(allowedKinds: nil)
+			}
 		}
 		catchUpTask = Task { @MainActor [weak self] in
 			do {
@@ -144,8 +164,10 @@ final class AIJobExecutor {
 	}
 
 	func stop() {
-		loopTask?.cancel()
-		loopTask = nil
+		interactiveLoopTask?.cancel()
+		interactiveLoopTask = nil
+		backgroundLoopTask?.cancel()
+		backgroundLoopTask = nil
 		catchUpTask?.cancel()
 		catchUpTask = nil
 		if let observerToken {
@@ -179,13 +201,20 @@ final class AIJobExecutor {
 		autoWorkDisabled
 	}
 
-	/// The loop's claim step, isolated so the acceptance gate can be tested
-	/// without waiting on the polling loop.
-	func claimNextJob() async throws -> AIJob? {
+	/// The lane's claim step, isolated so the acceptance gate can be tested
+	/// without waiting on the polling loop. Both lanes enter through here, so the
+	/// gate cannot be bypassed.
+	func claimNextJob(allowedKinds: [AIJobKind]?) async throws -> AIJob? {
 		guard !autoWorkDisabled else {
 			return nil
 		}
-		return try await queue.runOnce()
+		return try await queue.runOnce(allowedKinds: allowedKinds)
+	}
+
+	/// Unfiltered claim kept for the existing tests. Callers that run a lane use
+	/// the gated `allowedKinds` variant instead.
+	func claimNextJob() async throws -> AIJob? {
+		try await claimNextJob(allowedKinds: nil)
 	}
 
 	/// Runs a claimed job through the same path as the loop. Exposed for tests so
@@ -469,7 +498,7 @@ private extension AIJobExecutor {
 		}
 	}
 
-	func runLoop() async {
+	func runLoop(allowedKinds: [AIJobKind]?) async {
 		while !Task.isCancelled {
 			if isPaused {
 				try? await Task.sleep(for: Self.pausedPollInterval)
@@ -477,7 +506,7 @@ private extension AIJobExecutor {
 			}
 
 			do {
-				guard let job = try await claimNextJob() else {
+				guard let job = try await claimNextJob(allowedKinds: allowedKinds) else {
 					try? await Task.sleep(for: Self.idlePollInterval)
 					continue
 				}
@@ -490,7 +519,24 @@ private extension AIJobExecutor {
 	}
 
 	func execute(_ job: AIJob) async {
+		// Generations can outlive the initial five minute lease. Renew it while
+		// this job runs so the other lane cannot reclaim it; the heartbeat is only
+		// a hint and never changes the job's outcome.
+		let heartbeat = Task { [store] in
+			while !Task.isCancelled {
+				do {
+					try await Task.sleep(for: Self.leaseRenewInterval)
+				} catch {
+					return
+				}
+				guard !Task.isCancelled else {
+					return
+				}
+				try? await store.renewLease(id: job.id, now: Date())
+			}
+		}
 		defer {
+			heartbeat.cancel()
 			reservations.release(Self.key(kind: job.kind, articleID: job.articleID))
 		}
 

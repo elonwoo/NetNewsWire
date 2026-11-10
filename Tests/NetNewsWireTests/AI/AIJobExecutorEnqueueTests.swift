@@ -344,6 +344,52 @@ final class AIJobExecutorEnqueueTests {
 		let claimed = try #require(try await executor.claimNextJob())
 		#expect(claimed.articleID == article.id)
 	}
+
+	// MARK: - Lanes
+
+	@Test func laneClaimsOnlySeeTheirOwnKinds() async throws {
+		let article = englishArticle(id: "lane-claim")
+		let executor = makeExecutor(source: AICatchUpSource())
+		let now = Date()
+		try await store.enqueue(AIJob(id: "rewrite:lane", articleID: article.id, kind: .rewrite, priority: 100, availableAt: now, createdAt: now))
+		try await store.enqueue(AIJob(id: "title:lane", articleID: article.id, kind: .titleTranslation, priority: 0, availableAt: now, createdAt: now))
+
+		let title = try #require(try await executor.claimNextJob(allowedKinds: [.bodyTranslation, .titleTranslation]))
+		#expect(title.id == "title:lane")
+		let rewrite = try #require(try await executor.claimNextJob(allowedKinds: [.rewrite]))
+		#expect(rewrite.id == "rewrite:lane")
+	}
+
+	@Test func autoWorkGateAlsoBlocksLaneClaims() async throws {
+		let executor = makeExecutor(source: AICatchUpSource(), autoWorkDisabled: true)
+		let now = Date()
+		try await store.enqueue(AIJob(id: "rewrite:gated-lane", articleID: "gated-lane", kind: .rewrite, priority: 100, availableAt: now, createdAt: now))
+
+		#expect(try await executor.claimNextJob(allowedKinds: [.rewrite]) == nil)
+	}
+
+	@Test func stopDoesNotLeaveAClaimedJobRunning() async throws {
+		let article = AIArticle(id: "stop-running", title: "English title", contentText: "Body")
+		let client = BlockingClient(articleID: article.id)
+		let executor = makeExecutor(
+			source: AICatchUpSource(),
+			resolver: FixedResolver(article: article),
+			client: client
+		)
+		let now = Date()
+		try await store.enqueue(AIJob(id: "title:\(article.id)", articleID: article.id, kind: .titleTranslation, priority: 100, availableAt: now, createdAt: now))
+
+		executor.start()
+		await client.waitUntilStarted()
+		executor.stop()
+		client.release()
+
+		let completed = await waitFor {
+			(try? await self.store.inventory().completedJobArticleIDs.contains(article.id)) ?? false
+		}
+		#expect(completed)
+		#expect(try await store.activeJobArticleIDs(kinds: [.titleTranslation]).isEmpty)
+	}
 }
 
 // MARK: - Helpers
@@ -380,6 +426,19 @@ private extension AIJobExecutorEnqueueTests {
 			createdAt: Date(),
 			updatedAt: Date()
 		)
+	}
+
+	/// Polls until `condition` is true or the timeout elapses. The lanes run on
+	/// the main actor, so the test yields between checks.
+	func waitFor(timeout: Duration = .seconds(3), _ condition: @MainActor () async -> Bool) async -> Bool {
+		let deadline = ContinuousClock.now + timeout
+		while ContinuousClock.now < deadline {
+			if await condition() {
+				return true
+			}
+			try? await Task.sleep(for: .milliseconds(20))
+		}
+		return await condition()
 	}
 
 	func makeExecutor(
@@ -456,6 +515,62 @@ private final class FailureCounter: @unchecked Sendable {
 		lock.lock()
 		count += 1
 		lock.unlock()
+	}
+}
+
+/// Holds the first model call open until the test releases it, so stopping the
+/// executor can be timed while a job is being executed.
+private final class BlockingClient: AIClient, @unchecked Sendable {
+
+	private let articleID: String
+	private let lock = NSLock()
+	private var started = false
+	private var released = false
+	private var startWaiter: CheckedContinuation<Void, Never>?
+	private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+	init(articleID: String) {
+		self.articleID = articleID
+	}
+
+	func waitUntilStarted() async {
+		await withCheckedContinuation { continuation in
+			lock.lock()
+			if started {
+				lock.unlock()
+				continuation.resume()
+				return
+			}
+			startWaiter = continuation
+			lock.unlock()
+		}
+	}
+
+	func release() {
+		lock.lock()
+		released = true
+		let waiter = releaseWaiter
+		releaseWaiter = nil
+		lock.unlock()
+		waiter?.resume()
+	}
+
+	func complete(messages: [AIMessage], temperature: Double?, maxTokens: Int?, thinking: AIThinkingMode?) async throws -> String {
+		await withCheckedContinuation { continuation in
+			lock.lock()
+			started = true
+			let waiter = startWaiter
+			startWaiter = nil
+			if released {
+				lock.unlock()
+				continuation.resume()
+			} else {
+				releaseWaiter = continuation
+				lock.unlock()
+			}
+			waiter?.resume()
+		}
+		return #"{"translations":[{"id":"\#(articleID)","titleZh":"中文标题"}]}"#
 	}
 }
 

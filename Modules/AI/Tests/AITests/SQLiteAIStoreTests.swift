@@ -118,6 +118,72 @@ import Testing
 		#expect(bodyIDs.isEmpty)
 	}
 
+	// MARK: - Job kind filtering
+
+	@Test func claimFiltersPendingJobsByKind() async throws {
+		let date = Date(timeIntervalSince1970: 1_700_002_000)
+		// The rewrite has the higher priority, so an unfiltered (or incorrectly
+		// parenthesised) query would hand it to the translation lane first.
+		try await store.enqueue(AIJob(id: "rewrite-pending", articleID: "article-rewrite", kind: .rewrite, priority: 10, availableAt: date, createdAt: date))
+		try await store.enqueue(AIJob(id: "title-pending", articleID: "article-title", kind: .titleTranslation, priority: 0, availableAt: date, createdAt: date))
+
+		let titleJob = try #require(try await store.claimNextJob(now: date, allowedKinds: [.titleTranslation]))
+		#expect(titleJob.id == "title-pending")
+		#expect(try await store.claimNextJob(now: date, allowedKinds: [.titleTranslation]) == nil)
+
+		let rewriteJob = try #require(try await store.claimNextJob(now: date, allowedKinds: [.rewrite]))
+		#expect(rewriteJob.id == "rewrite-pending")
+	}
+
+	@Test func claimFiltersRetryJobsByKind() async throws {
+		let date = Date(timeIntervalSince1970: 1_700_002_100)
+		try await store.enqueue(AIJob(id: "rewrite-retry", articleID: "article-retry", kind: .rewrite, priority: 10, status: .retry, availableAt: date, createdAt: date))
+
+		#expect(try await store.claimNextJob(now: date, allowedKinds: [.bodyTranslation, .titleTranslation]) == nil)
+
+		let reclaimed = try #require(try await store.claimNextJob(now: date, allowedKinds: [.rewrite]))
+		#expect(reclaimed.id == "rewrite-retry")
+		#expect(reclaimed.status == .running)
+	}
+
+	@Test func claimWithEmptyAllowedKindsReturnsNil() async throws {
+		let date = Date(timeIntervalSince1970: 1_700_002_200)
+		try await store.enqueue(AIJob(id: "job-any-kind", articleID: "article", kind: .rewrite, priority: 1, availableAt: date, createdAt: date))
+
+		#expect(try await store.claimNextJob(now: date, allowedKinds: []) == nil)
+	}
+
+	@Test func concurrentClaimsWithDifferentKindsReturnDifferentJobs() async throws {
+		let date = Date(timeIntervalSince1970: 1_700_002_300)
+		try await store.enqueue(AIJob(id: "rewrite-lane", articleID: "article-rewrite", kind: .rewrite, priority: 0, availableAt: date, createdAt: date))
+		try await store.enqueue(AIJob(id: "title-lane", articleID: "article-title", kind: .titleTranslation, priority: 0, availableAt: date, createdAt: date))
+
+		let store = self.store
+		async let interactive = store.claimNextJob(now: date, allowedKinds: [.bodyTranslation, .titleTranslation])
+		async let background = store.claimNextJob(now: date, allowedKinds: [.rewrite])
+		let (interactiveJob, backgroundJob) = try await (interactive, background)
+
+		#expect(interactiveJob?.id == "title-lane")
+		#expect(backgroundJob?.id == "rewrite-lane")
+	}
+
+	@Test func renewLeaseKeepsRunningJobClaimed() async throws {
+		let date = Date(timeIntervalSince1970: 1_700_002_400)
+		try await store.enqueue(AIJob(id: "lease-job", articleID: "article-lease", kind: .bodyTranslation, priority: 0, availableAt: date, createdAt: date))
+		let claimed = try #require(try await store.claimNextJob(now: date, allowedKinds: [.bodyTranslation]))
+		#expect(claimed.leaseUntil == date.addingTimeInterval(AIQueuePolicy.leaseDuration))
+
+		let renewedAt = date.addingTimeInterval(2 * 60)
+		try await store.renewLease(id: "lease-job", now: renewedAt)
+
+		// The original expiry no longer ends the lease.
+		#expect(try await store.claimNextJob(now: date.addingTimeInterval(AIQueuePolicy.leaseDuration)) == nil)
+
+		let reclaimed = try #require(try await store.claimNextJob(now: renewedAt.addingTimeInterval(AIQueuePolicy.leaseDuration)))
+		#expect(reclaimed.id == "lease-job")
+		#expect(reclaimed.attempts == 2)
+	}
+
 	@Test func savingTranslationReplacesExistingRow() async throws {
 		let createdAt = Date(timeIntervalSince1970: 1_700_000_400)
 		let first = Translation(articleID: "article-6", titleZh: "旧", blocks: [], model: "m", provider: "p", contentHash: "h1", createdAt: createdAt, updatedAt: createdAt)
