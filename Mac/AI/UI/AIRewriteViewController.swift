@@ -56,6 +56,8 @@ final class AIRewriteViewController: NSViewController {
 	private var currentRewrite: AI.Rewrite?
 	private var headerHeightConstraint: NSLayoutConstraint?
 	private var pollTask: Task<Void, Never>?
+	/// True once generation has run longer than the quick-feedback window.
+	private var isSlowGeneration = false
 
 	init() {
 		let configuration = WKWebViewConfiguration()
@@ -122,6 +124,7 @@ final class AIRewriteViewController: NSViewController {
 
 	func reload() {
 		pollTask?.cancel()
+		isSlowGeneration = false
 		guard let articleID = article?.articleID else {
 			currentRewrite = nil
 			state = .noArticle
@@ -278,7 +281,11 @@ private extension AIRewriteViewController {
 			generateButton.isHidden = false
 			emptyView.isHidden = false
 		case .generating:
-			loadingLabel.stringValue = isPaper ? "解读任务已提交，完成后会自动刷新" : "改写任务已提交，完成后会自动刷新"
+			if isSlowGeneration {
+				loadingLabel.stringValue = "仍在生成，可离开此页"
+			} else {
+				loadingLabel.stringValue = isPaper ? "解读任务已提交，完成后会自动刷新" : "改写任务已提交，完成后会自动刷新"
+			}
 			loadingIndicator.startAnimation(nil)
 			loadingView.isHidden = false
 		case .rewrite(let rewrite):
@@ -345,6 +352,7 @@ private extension AIRewriteViewController {
 		)
 
 		state = .generating
+		isSlowGeneration = false
 		updateContent()
 
 		Task { @MainActor in
@@ -364,7 +372,9 @@ private extension AIRewriteViewController {
 	func startPolling(for articleID: String) {
 		pollTask?.cancel()
 		pollTask = Task { @MainActor [weak self] in
-			let deadline = Date().addingTimeInterval(90)
+			let startedAt = Date()
+			let slowThreshold = startedAt.addingTimeInterval(90)
+			let deadline = startedAt.addingTimeInterval(10 * 60)
 			while !Task.isCancelled, Date() < deadline {
 				try? await Task.sleep(for: .seconds(3))
 				guard !Task.isCancelled, let self else {
@@ -372,6 +382,10 @@ private extension AIRewriteViewController {
 				}
 				guard self.article?.articleID == articleID, case .generating = self.state else {
 					return
+				}
+				if !self.isSlowGeneration, Date() >= slowThreshold {
+					self.isSlowGeneration = true
+					self.updateContent()
 				}
 				guard let rewrite = try? await AIEnvironment.shared.store.rewrite(for: articleID) else {
 					continue
