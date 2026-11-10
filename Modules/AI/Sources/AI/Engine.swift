@@ -156,7 +156,8 @@ public actor AIEngine {
 
 	// MARK: - Rewrite
 
-	public func rewrite(_ article: AIArticle, kind: RewriteKind) async throws -> Rewrite {
+	public func rewrite(_ article: AIArticle, kind: RewriteKind, fingerprintArticle: AIArticle? = nil, fullText: Bool = false) async throws -> Rewrite {
+		let fingerprint = fingerprintArticle ?? article
 		let source = RewriteSourceBuilder.source(for: article)
 		guard !source.promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
 			throw AIEngineError.emptyContent
@@ -187,13 +188,14 @@ public actor AIEngine {
 		}
 
 		let now = Date()
+		let baseHash = ContentFingerprint.rewrite(for: fingerprint, kind: kind)
 		let rewrite = Rewrite(
 			articleID: article.id,
 			title: article.title,
 			bodyMarkdown: body,
 			bodyHTML: nil,
 			model: config.model,
-			contentHash: ContentFingerprint.rewrite(for: article, kind: kind),
+			contentHash: fullText ? "ft:" + baseHash : baseHash,
 			createdAt: now,
 			updatedAt: now
 		)

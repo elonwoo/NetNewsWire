@@ -4,8 +4,16 @@
 //
 
 import Foundation
+import os
 import RSDatabase
 import RSDatabaseObjC
+
+public extension Notification.Name {
+
+	/// Posted after any write that changes the persisted AI job set. Carries no
+	/// payload; observers re-read the store for the current state.
+	static let aiJobsDidChange = Notification.Name("AIJobsDidChange")
+}
 
 public protocol AIStore: Sendable {
 	func translation(for articleID: String) async throws -> Translation?
@@ -14,7 +22,9 @@ public protocol AIStore: Sendable {
 	func rewrite(for articleID: String) async throws -> Rewrite?
 	func completedRewriteArticleIDs(for articleIDs: Set<String>) async throws -> Set<String>
 	func completedTranslationArticleIDs(for articleIDs: Set<String>) async throws -> Set<String>
+	func translatedTitles(for articleIDs: Set<String>) async throws -> [String: String]
 	func saveRewrite(_ rewrite: Rewrite) async throws
+	func deleteRewrite(articleID: String) async throws
 	func chatMessages(for articleID: String) async throws -> [ChatMessage]
 	func appendChatMessage(_ message: ChatMessage) async throws
 	func enqueue(_ job: AIJob) async throws
@@ -26,6 +36,10 @@ public protocol AIStore: Sendable {
 	func deleteJobs(kinds: [AIJobKind], statuses: [AIJobStatus]) async throws
 	func activeJobArticleIDs(kinds: [AIJobKind]) async throws -> Set<String>
 	func deleteAIArtifacts(articleIDs: Set<String>) async throws
+	func activeJobs() async throws -> [AIJob]
+	func recentJobs(status: AIJobStatus, since: Date, limit: Int) async throws -> [AIJob]
+	func foldedFailures(since: Date) async throws -> [AIJob]
+	@discardableResult func deleteTerminalJobs(olderThan cutoff: Date) async throws -> Int
 }
 
 public extension AIStore {
@@ -45,12 +59,24 @@ public extension AIStore {
 public final class SQLiteAIStore: AIStore, Sendable {
 
 	private let queue: DatabaseQueue
+	private let notificationCenter: NotificationCenter
+	private static let logger = Logger(subsystem: "com.ranchero.NetNewsWire", category: "AIStore")
 
-	public init(databasePath: String) {
+	public init(databasePath: String, notificationCenter: NotificationCenter = .default) {
 		self.queue = DatabaseQueue(databasePath: databasePath)
+		self.notificationCenter = notificationCenter
 		queue.runCreateStatements(Self.tableCreationStatements)
 		queue.runInDatabaseSync { database in
 			Self.migrate(database)
+			// Created after the migration: the table creation script runs first
+			// and ignores failures, so an index declared there would be silently
+			// lost on a database that predates the finishedAt column.
+			if !database.executeStatements(Self.statusFinishedAtIndexStatement) {
+				Self.logger.error("Unable to create ai_jobs_status_finishedAt index: \(database.lastErrorMessage(), privacy: .public)")
+			}
+			if !database.executeStatements(Self.articleKindStatusFinishedAtIndexStatement) {
+				Self.logger.error("Unable to create ai_jobs_article_kind_status_finishedAt index: \(database.lastErrorMessage(), privacy: .public)")
+			}
 		}
 	}
 
@@ -208,6 +234,47 @@ public final class SQLiteAIStore: AIStore, Sendable {
 		return completed
 	}
 
+	/// Returns the stored Chinese titles for the subset of `articleIDs` that have
+	/// a non-blank title. A title-only translation row is included. The IDs are
+	/// queried in batches to keep the SQL parameter count bounded.
+	public func translatedTitles(for articleIDs: Set<String>) async throws -> [String: String] {
+		guard !articleIDs.isEmpty else {
+			return [:]
+		}
+		let ids = Array(articleIDs)
+		var titles: [String: String] = [:]
+		var start = 0
+		while start < ids.count {
+			let end = min(start + 500, ids.count)
+			let batch = Array(ids[start..<end])
+			let placeholders = Array(repeating: "?", count: batch.count).joined(separator: ", ")
+			let sql = "select articleID, titleZh from translations where articleID in (\(placeholders)) and titleZh is not null;"
+			let found = try await read { database -> [String: String] in
+				guard let resultSet = database.executeQuery(sql, withArgumentsIn: batch) else {
+					return [:]
+				}
+				defer {
+					resultSet.close()
+				}
+				var batchTitles: [String: String] = [:]
+				while resultSet.next() {
+					guard let articleID = resultSet.swiftString(forColumn: "articleID"),
+						  let titleZh = resultSet.swiftString(forColumn: "titleZh") else {
+						continue
+					}
+					let trimmedTitleZh = titleZh.trimmingCharacters(in: .whitespacesAndNewlines)
+					if !trimmedTitleZh.isEmpty {
+						batchTitles[articleID] = trimmedTitleZh
+					}
+				}
+				return batchTitles
+			}
+			titles.merge(found) { _, new in new }
+			start = end
+		}
+		return titles
+	}
+
 	public func saveRewrite(_ rewrite: Rewrite) async throws {
 		try await write { database in
 			let sql = """
@@ -225,6 +292,15 @@ public final class SQLiteAIStore: AIStore, Sendable {
 				rewrite.updatedAt.timeIntervalSince1970
 			]
 			guard database.executeUpdate(sql, withArgumentsIn: arguments) else {
+				throw AIStoreError.writeFailed(database.lastErrorMessage())
+			}
+		}
+	}
+
+	public func deleteRewrite(articleID: String) async throws {
+		try await write { database in
+			let sql = "delete from rewrites where articleID = ?;"
+			guard database.executeUpdate(sql, withArgumentsIn: [articleID]) else {
 				throw AIStoreError.writeFailed(database.lastErrorMessage())
 			}
 		}
@@ -275,10 +351,10 @@ public final class SQLiteAIStore: AIStore, Sendable {
 	// MARK: - Jobs
 
 	public func enqueue(_ job: AIJob) async throws {
-		try await write { database in
+		let changed = try await writeReturning { database -> Int in
 			let sql = """
-			insert or replace into ai_jobs (id, articleID, kind, priority, status, attempts, availableAt, leaseUntil, lastError, createdAt)
-			values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+			insert or replace into ai_jobs (id, articleID, kind, priority, status, attempts, availableAt, leaseUntil, lastError, startedAt, finishedAt, createdAt)
+			values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 			"""
 			let arguments: [Any] = [
 				job.id,
@@ -290,11 +366,17 @@ public final class SQLiteAIStore: AIStore, Sendable {
 				job.availableAt.timeIntervalSince1970,
 				job.leaseUntil.map { $0.timeIntervalSince1970 } ?? NSNull(),
 				job.lastError ?? NSNull(),
+				job.startedAt.map { $0.timeIntervalSince1970 } ?? NSNull(),
+				job.finishedAt.map { $0.timeIntervalSince1970 } ?? NSNull(),
 				job.createdAt.timeIntervalSince1970
 			]
 			guard database.executeUpdate(sql, withArgumentsIn: arguments) else {
 				throw AIStoreError.writeFailed(database.lastErrorMessage())
 			}
+			return Int(database.changes())
+		}
+		if changed > 0 {
+			postJobsDidChange()
 		}
 	}
 
@@ -303,7 +385,7 @@ public final class SQLiteAIStore: AIStore, Sendable {
 		if let allowedKinds, allowedKinds.isEmpty {
 			return nil
 		}
-		return try await writeInTransaction { database in
+		let claimed = try await writeInTransaction { database -> AIJob? in
 			var selectSQL = """
 			select * from ai_jobs
 			where ((status in ('pending', 'retry') and availableAt <= ?)
@@ -331,8 +413,10 @@ public final class SQLiteAIStore: AIStore, Sendable {
 			}
 
 			let leaseUntil = now.addingTimeInterval(AIQueuePolicy.leaseDuration)
-			let updateSQL = "update ai_jobs set status = 'running', attempts = attempts + 1, leaseUntil = ? where id = ?;"
-			guard database.executeUpdate(updateSQL, withArgumentsIn: [leaseUntil.timeIntervalSince1970, job.id]) else {
+			// Every claim is a fresh run: an expired lease that gets reclaimed
+			// also gets a new startedAt.
+			let updateSQL = "update ai_jobs set status = 'running', attempts = attempts + 1, leaseUntil = ?, startedAt = ? where id = ?;"
+			guard database.executeUpdate(updateSQL, withArgumentsIn: [leaseUntil.timeIntervalSince1970, now.timeIntervalSince1970, job.id]) else {
 				throw AIStoreError.writeFailed(database.lastErrorMessage())
 			}
 
@@ -340,8 +424,13 @@ public final class SQLiteAIStore: AIStore, Sendable {
 			claimed.status = .running
 			claimed.attempts += 1
 			claimed.leaseUntil = leaseUntil
+			claimed.startedAt = now
 			return claimed
 		}
+		if claimed != nil {
+			postJobsDidChange()
+		}
+		return claimed
 	}
 
 	/// Extends the lease on a running job. Long generations call this before the
@@ -358,19 +447,25 @@ public final class SQLiteAIStore: AIStore, Sendable {
 	}
 
 	public func completeJob(id: String) async throws {
-		try await write { database in
-			let sql = "update ai_jobs set status = 'completed', leaseUntil = null, lastError = null where id = ?;"
-			guard database.executeUpdate(sql, withArgumentsIn: [id]) else {
+		let finishedAt = Date()
+		let changed = try await writeReturning { database -> Int in
+			let sql = "update ai_jobs set status = 'completed', leaseUntil = null, lastError = null, finishedAt = ? where id = ?;"
+			guard database.executeUpdate(sql, withArgumentsIn: [finishedAt.timeIntervalSince1970, id]) else {
 				throw AIStoreError.writeFailed(database.lastErrorMessage())
 			}
+			return Int(database.changes())
+		}
+		if changed > 0 {
+			postJobsDidChange()
 		}
 	}
 
 	public func failJob(id: String, error: String, retryAt: Date?) async throws {
-		try await write { database in
+		let finishedAt = Date()
+		let changed = try await writeReturning { database -> Int in
 			let attemptsSQL = "select attempts from ai_jobs where id = ? limit 1;"
 			guard let resultSet = database.executeQuery(attemptsSQL, withArgumentsIn: [id]) else {
-				return
+				return 0
 			}
 			let attempts: Int
 			if resultSet.next() {
@@ -384,26 +479,37 @@ public final class SQLiteAIStore: AIStore, Sendable {
 			let sql: String
 			let arguments: [Any]
 			if let nextRetryAt {
-				sql = "update ai_jobs set status = 'retry', availableAt = ?, leaseUntil = null, lastError = ? where id = ?;"
+				// A retry has not finished: clear both ends so the next claim
+				// starts a fresh run.
+				sql = "update ai_jobs set status = 'retry', availableAt = ?, leaseUntil = null, lastError = ?, startedAt = null, finishedAt = null where id = ?;"
 				arguments = [nextRetryAt.timeIntervalSince1970, error, id]
 			} else {
-				sql = "update ai_jobs set status = 'failed', leaseUntil = null, lastError = ? where id = ?;"
-				arguments = [error, id]
+				sql = "update ai_jobs set status = 'failed', leaseUntil = null, lastError = ?, finishedAt = ? where id = ?;"
+				arguments = [error, finishedAt.timeIntervalSince1970, id]
 			}
 			guard database.executeUpdate(sql, withArgumentsIn: arguments) else {
 				throw AIStoreError.writeFailed(database.lastErrorMessage())
 			}
+			return Int(database.changes())
+		}
+		if changed > 0 {
+			postJobsDidChange()
 		}
 	}
 
 	/// Marks a job failed without scheduling a retry. Used for terminal errors
 	/// such as a missing article or an unconfigured API key.
 	public func failJobPermanently(id: String, error: String) async throws {
-		try await write { database in
-			let sql = "update ai_jobs set status = 'failed', leaseUntil = null, lastError = ? where id = ?;"
-			guard database.executeUpdate(sql, withArgumentsIn: [error, id]) else {
+		let finishedAt = Date()
+		let changed = try await writeReturning { database -> Int in
+			let sql = "update ai_jobs set status = 'failed', leaseUntil = null, lastError = ?, finishedAt = ? where id = ?;"
+			guard database.executeUpdate(sql, withArgumentsIn: [error, finishedAt.timeIntervalSince1970, id]) else {
 				throw AIStoreError.writeFailed(database.lastErrorMessage())
 			}
+			return Int(database.changes())
+		}
+		if changed > 0 {
+			postJobsDidChange()
 		}
 	}
 
@@ -418,12 +524,134 @@ public final class SQLiteAIStore: AIStore, Sendable {
 		let sql = "delete from ai_jobs where kind in (\(kindPlaceholders)) and status in (\(statusPlaceholders));"
 		let kindValues = kinds.map(\.rawValue)
 		let statusValues = statuses.map(\.rawValue)
-		try await write { database in
+		let changed = try await writeReturning { database -> Int in
 			let arguments: [Any] = kindValues + statusValues
 			guard database.executeUpdate(sql, withArgumentsIn: arguments) else {
 				throw AIStoreError.writeFailed(database.lastErrorMessage())
 			}
+			return Int(database.changes())
 		}
+		if changed > 0 {
+			postJobsDidChange()
+		}
+	}
+
+	// MARK: - Job queries
+
+	/// Returns every unfinished job, most urgent first. The panel uses this to
+	/// show the queue for the article it is presenting.
+	public func activeJobs() async throws -> [AIJob] {
+		let sql = """
+		select * from ai_jobs
+		where status in ('pending', 'running', 'retry')
+		order by priority desc, availableAt asc, createdAt asc;
+		"""
+		return try await read { database in
+			guard let resultSet = database.executeQuery(sql, withArgumentsIn: nil) else {
+				return []
+			}
+			defer {
+				resultSet.close()
+			}
+			var jobs: [AIJob] = []
+			while resultSet.next() {
+				guard let job = Self.job(from: resultSet) else {
+					continue
+				}
+				jobs.append(job)
+			}
+			return jobs
+		}
+	}
+
+	/// Returns terminal jobs of `status` finished at or after `since`, newest
+	/// first. Completed and failed rows are the only ones with a finishedAt, so
+	/// a different status yields an empty result.
+	public func recentJobs(status: AIJobStatus, since: Date, limit: Int) async throws -> [AIJob] {
+		guard limit > 0 else {
+			return []
+		}
+		let sql = """
+		select * from ai_jobs
+		where status = ? and finishedAt is not null and finishedAt >= ?
+		order by finishedAt desc, rowid desc
+		limit ?;
+		"""
+		return try await read { database in
+			let arguments: [Any] = [status.rawValue, since.timeIntervalSince1970, limit]
+			guard let resultSet = database.executeQuery(sql, withArgumentsIn: arguments) else {
+				return []
+			}
+			defer {
+				resultSet.close()
+			}
+			var jobs: [AIJob] = []
+			while resultSet.next() {
+				guard let job = Self.job(from: resultSet) else {
+					continue
+				}
+				jobs.append(job)
+			}
+			return jobs
+		}
+	}
+
+	/// Returns failed jobs finished at or after `since`, newest first, minus any
+	/// failure that the same article and kind later completed. A completion with
+	/// no `finishedAt` cannot prove it is newer, so it folds nothing.
+	public func foldedFailures(since: Date) async throws -> [AIJob] {
+		let sql = """
+		select * from ai_jobs as failed
+		where failed.status = 'failed'
+			and failed.finishedAt is not null
+			and failed.finishedAt >= ?
+			and not exists (
+				select 1 from ai_jobs as completed
+				where completed.articleID = failed.articleID
+					and completed.kind = failed.kind
+					and completed.status = 'completed'
+					and completed.finishedAt is not null
+					and completed.finishedAt > failed.finishedAt
+			)
+		order by failed.finishedAt desc, failed.rowid desc;
+		"""
+		return try await read { database in
+			guard let resultSet = database.executeQuery(sql, withArgumentsIn: [since.timeIntervalSince1970]) else {
+				return []
+			}
+			defer {
+				resultSet.close()
+			}
+			var jobs: [AIJob] = []
+			while resultSet.next() {
+				guard let job = Self.job(from: resultSet) else {
+					continue
+				}
+				jobs.append(job)
+			}
+			return jobs
+		}
+	}
+
+	/// Deletes completed and failed rows finished before `cutoff`. Unfinished
+	/// work is never touched. Returns the number of rows removed.
+	@discardableResult
+	public func deleteTerminalJobs(olderThan cutoff: Date) async throws -> Int {
+		let sql = """
+		delete from ai_jobs
+		where status in ('completed', 'failed')
+			and finishedAt is not null and finishedAt < ?;
+		"""
+		let deleted = try await writeInTransaction { database -> Int in
+			guard database.executeUpdate(sql, withArgumentsIn: [cutoff.timeIntervalSince1970]) else {
+				throw AIStoreError.writeFailed(database.lastErrorMessage())
+			}
+			return Int(database.changes())
+		}
+		if deleted > 0 {
+			postJobsDidChange()
+		}
+		return deleted
 	}
 
 	/// Returns the article IDs that still have unfinished jobs of the given
@@ -459,13 +687,19 @@ public final class SQLiteAIStore: AIStore, Sendable {
 		}
 		let ids = Array(articleIDs)
 		let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ", ")
-		try await writeInTransaction { database -> Void in
+		let deleted = try await writeInTransaction { database -> Int in
+			var total = 0
 			for table in ["ai_jobs", "translations", "rewrites"] {
 				let sql = "delete from \(table) where articleID in (\(placeholders));"
 				guard database.executeUpdate(sql, withArgumentsIn: ids) else {
 					throw AIStoreError.writeFailed(database.lastErrorMessage())
 				}
+				total += Int(database.changes())
 			}
+			return total
+		}
+		if deleted > 0 {
+			postJobsDidChange()
 		}
 	}
 
@@ -505,7 +739,7 @@ public final class SQLiteAIStore: AIStore, Sendable {
 		}
 		let ids = Array(articleIDs)
 		let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ", ")
-		return try await writeInTransaction { database -> AIArtifactDeletion in
+		let deletion = try await writeInTransaction { database -> AIArtifactDeletion in
 			let statements = [
 				"delete from rewrites where articleID in (\(placeholders));",
 				"delete from translations where articleID in (\(placeholders));",
@@ -520,6 +754,10 @@ public final class SQLiteAIStore: AIStore, Sendable {
 			}
 			return AIArtifactDeletion(rewriteCount: counts[0], translationCount: counts[1], jobCount: counts[2])
 		}
+		if deletion.rewriteCount + deletion.translationCount + deletion.jobCount > 0 {
+			postJobsDidChange()
+		}
+		return deletion
 	}
 }
 
@@ -566,11 +804,21 @@ private extension SQLiteAIStore {
 
 	CREATE TABLE if not EXISTS chat_messages (id TEXT NOT NULL PRIMARY KEY, articleID TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, model TEXT, createdAt REAL NOT NULL);
 
-	CREATE TABLE if not EXISTS ai_jobs (id TEXT NOT NULL PRIMARY KEY, articleID TEXT NOT NULL, kind TEXT NOT NULL, priority INTEGER NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL, availableAt REAL NOT NULL, leaseUntil REAL, lastError TEXT, createdAt REAL NOT NULL);
+	CREATE TABLE if not EXISTS ai_jobs (id TEXT NOT NULL PRIMARY KEY, articleID TEXT NOT NULL, kind TEXT NOT NULL, priority INTEGER NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL, availableAt REAL NOT NULL, leaseUntil REAL, lastError TEXT, startedAt REAL, finishedAt REAL, createdAt REAL NOT NULL);
 
 	CREATE INDEX if not EXISTS chat_messages_articleID_createdAt on chat_messages (articleID, createdAt);
 
 	CREATE INDEX if not EXISTS ai_jobs_status_availableAt on ai_jobs (status, availableAt);
+	"""
+
+	/// Kept separate from `tableCreationStatements` and applied after the
+	/// migration, because the create statements run first and ignore failures.
+	static let statusFinishedAtIndexStatement = """
+	CREATE INDEX if not EXISTS ai_jobs_status_finishedAt on ai_jobs (status, finishedAt);
+	"""
+
+	static let articleKindStatusFinishedAtIndexStatement = """
+	CREATE INDEX if not EXISTS ai_jobs_article_kind_status_finishedAt on ai_jobs (articleID, kind, status, finishedAt);
 	"""
 
 	static let migrations: [(table: String, column: String, definition: String)] = [
@@ -579,13 +827,19 @@ private extension SQLiteAIStore {
 		("rewrites", "bodyHTML", "TEXT"),
 		("chat_messages", "model", "TEXT"),
 		("ai_jobs", "leaseUntil", "REAL"),
-		("ai_jobs", "lastError", "TEXT")
+		("ai_jobs", "lastError", "TEXT"),
+		("ai_jobs", "startedAt", "REAL"),
+		("ai_jobs", "finishedAt", "REAL")
 	]
 
 	static func migrate(_ database: FMDatabase) {
 		for migration in migrations where !columnExists(migration.column, in: migration.table, database: database) {
 			database.executeStatements("ALTER TABLE \(migration.table) add column \(migration.column) \(migration.definition);")
 		}
+		// Terminal rows written before finishedAt existed have no completion
+		// time, so cleanup could never expire them. createdAt is the closest
+		// safe value; the statement is idempotent and only touches NULL rows.
+		database.executeStatements("update ai_jobs set finishedAt = createdAt where status in ('completed', 'failed') and finishedAt is null;")
 	}
 
 	static func columnExists(_ column: String, in table: String, database: FMDatabase) -> Bool {
@@ -689,18 +943,19 @@ private extension SQLiteAIStore {
 		)
 	}
 
+	static func date(column: String, from resultSet: FMResultSet) -> Date? {
+		guard let value = resultSet.object(forColumnName: column), !(value is NSNull) else {
+			return nil
+		}
+		return Date(timeIntervalSince1970: resultSet.double(forColumn: column))
+	}
+
 	static func job(from resultSet: FMResultSet) -> AIJob? {
 		guard
 			let kind = resultSet.swiftString(forColumn: "kind").flatMap(AIJobKind.init(rawValue:)),
 			let status = resultSet.swiftString(forColumn: "status").flatMap(AIJobStatus.init(rawValue:))
 		else {
 			return nil
-		}
-		let leaseUntil: Date?
-		if resultSet.object(forColumnName: "leaseUntil") != nil {
-			leaseUntil = Date(timeIntervalSince1970: resultSet.double(forColumn: "leaseUntil"))
-		} else {
-			leaseUntil = nil
 		}
 		return AIJob(
 			id: resultSet.swiftString(forColumn: "id") ?? "",
@@ -710,8 +965,10 @@ private extension SQLiteAIStore {
 			status: status,
 			attempts: Int(resultSet.int(forColumn: "attempts")),
 			availableAt: Date(timeIntervalSince1970: resultSet.double(forColumn: "availableAt")),
-			leaseUntil: leaseUntil,
+			leaseUntil: date(column: "leaseUntil", from: resultSet),
 			lastError: resultSet.swiftString(forColumn: "lastError"),
+			startedAt: date(column: "startedAt", from: resultSet),
+			finishedAt: date(column: "finishedAt", from: resultSet),
 			createdAt: Date(timeIntervalSince1970: resultSet.double(forColumn: "createdAt"))
 		)
 	}
@@ -720,6 +977,25 @@ private extension SQLiteAIStore {
 // MARK: - Async database access
 
 private extension SQLiteAIStore {
+
+	/// Posted from the caller's context, after the database queue has finished.
+	func postJobsDidChange() {
+		notificationCenter.post(name: .aiJobsDidChange, object: nil, userInfo: nil)
+	}
+
+	/// Runs a write and returns a value derived from the connection, typically
+	/// `database.changes()`, so callers can tell whether anything was written.
+	func writeReturning<T: Sendable>(_ block: @escaping @Sendable (FMDatabase) throws -> T) async throws -> T {
+		try await withCheckedThrowingContinuation { continuation in
+			queue.runInDatabase { database in
+				do {
+					continuation.resume(returning: try block(database))
+				} catch {
+					continuation.resume(throwing: error)
+				}
+			}
+		}
+	}
 
 	func read<T: Sendable>(_ block: @escaping @Sendable (FMDatabase) throws -> T) async throws -> T {
 		try await withCheckedThrowingContinuation { continuation in

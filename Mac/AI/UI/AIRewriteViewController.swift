@@ -28,6 +28,24 @@ final class AIRewriteViewController: NSViewController {
 		isPaper ? "论文解读" : "改写"
 	}
 
+	static func isStale(rewrite: AI.Rewrite, article: AIArticle) -> Bool {
+		switch AIContentHash.rewriteState(stored: rewrite.contentHash, article: article) {
+		case .pipelineOutdated, .contentChanged:
+			return true
+		case .missing, .current:
+			return false
+		}
+	}
+
+	/// A removed rewrite refreshes the pane only when it is already showing that
+	/// article's rewrite. It must never pull the reader onto another tab.
+	static func shouldRefreshAfterRewriteRemoval(eventArticleID: String?, paneArticleID: String?, isShowingRewrite: Bool) -> Bool {
+		guard isShowingRewrite, let eventArticleID, let paneArticleID else {
+			return false
+		}
+		return eventArticleID == paneArticleID
+	}
+
 	private enum ContentState {
 		case noArticle
 		case reading
@@ -61,10 +79,12 @@ final class AIRewriteViewController: NSViewController {
 
 	init() {
 		let configuration = WKWebViewConfiguration()
-		configuration.defaultWebpagePreferences.allowsContentJavaScript = false
+		configuration.defaultWebpagePreferences.allowsContentJavaScript = true
 		self.webView = AIReaderWebView(frame: .zero, configuration: configuration)
 		super.init(nibName: nil, bundle: nil)
 		NotificationCenter.default.addObserver(self, selector: #selector(handleRewriteReady(_:)), name: .aiRewriteReady, object: nil)
+		NotificationCenter.default.addObserver(self, selector: #selector(handleRewriteReady(_:)), name: .aiRewriteStored, object: nil)
+		NotificationCenter.default.addObserver(self, selector: #selector(handleRewriteRemoved(_:)), name: .aiRewriteRemoved, object: nil)
 		NotificationCenter.default.addObserver(self, selector: #selector(handleJobFailed(_:)), name: .aiJobFailed, object: nil)
 	}
 
@@ -302,7 +322,9 @@ private extension AIRewriteViewController {
 	}
 
 	func render(_ rewrite: AI.Rewrite) {
-		webView.loadHTMLString(AIMarkdownRenderer.document(from: rewrite.bodyMarkdown), baseURL: nil)
+		// A null-origin document makes YouTube reject the embed with error 153.
+		let baseURL = AIReaderWebBaseURL.baseURL(articleURL: article?.url, externalURL: article?.externalURL)
+		webView.loadHTMLString(AIMarkdownRenderer.document(from: rewrite.bodyMarkdown), baseURL: baseURL)
 	}
 
 	var isPaper: Bool {
@@ -316,12 +338,7 @@ private extension AIRewriteViewController {
 		guard let article else {
 			return false
 		}
-		switch AIContentHash.rewriteState(stored: rewrite.contentHash, article: AIArticle(article: article)) {
-		case .pipelineOutdated, .contentChanged:
-			return true
-		case .missing, .current:
-			return false
-		}
+		return Self.isStale(rewrite: rewrite, article: AIArticle(article: article))
 	}
 }
 
@@ -340,27 +357,21 @@ private extension AIRewriteViewController {
 			return
 		}
 		let articleID = article.articleID
-
-		let now = Date()
-		let job = AIJob(
-			id: "rewrite:\(articleID)",
-			articleID: articleID,
-			kind: .rewrite,
-			priority: 100,
-			availableAt: now,
-			createdAt: now
-		)
+		let aiArticle = AIArticle(article: article)
 
 		state = .generating
 		isSlowGeneration = false
 		updateContent()
 
 		Task { @MainActor in
-			do {
-				try await AIEnvironment.shared.queue.enqueue(job)
+			let result = await AIJobExecutor.shared.enqueueRewrite(for: aiArticle, origin: .manual)
+			switch result {
+			case .enqueued, .alreadyInFlight:
 				self.startPolling(for: articleID)
-			} catch {
-				self.state = .error("提交改写任务失败：\(error.localizedDescription)")
+			case .alreadyUpToDate, .blocked:
+				self.reload()
+			case .failed:
+				self.state = .error("提交改写任务失败")
 				self.updateContent()
 			}
 		}
@@ -414,6 +425,26 @@ private extension AIRewriteViewController {
 		let articleID = note.userInfo?[AIUserInfoKey.articleID] as? String
 		Task { @MainActor in
 			guard let articleID, articleID == self.article?.articleID else {
+				return
+			}
+			self.reload()
+		}
+	}
+
+	@objc nonisolated func handleRewriteRemoved(_ note: Notification) {
+		let articleID = note.userInfo?[AIUserInfoKey.articleID] as? String
+		Task { @MainActor in
+			let isShowingRewrite: Bool
+			if case .rewrite = self.state {
+				isShowingRewrite = true
+			} else {
+				isShowingRewrite = false
+			}
+			guard Self.shouldRefreshAfterRewriteRemoval(
+				eventArticleID: articleID,
+				paneArticleID: self.article?.articleID,
+				isShowingRewrite: isShowingRewrite
+			) else {
 				return
 			}
 			self.reload()

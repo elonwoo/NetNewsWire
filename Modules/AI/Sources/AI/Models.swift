@@ -146,9 +146,15 @@ public struct AIJob: Codable, Sendable, Equatable {
 	public var availableAt: Date
 	public var leaseUntil: Date?
 	public var lastError: String?
+	/// When a worker last claimed this job. Cleared when the job is scheduled
+	/// for a retry, so the next claim starts a fresh run.
+	public var startedAt: Date?
+	/// When the job reached `completed` or `failed`. `nil` while it is still
+	/// pending, running or waiting to retry.
+	public var finishedAt: Date?
 	public let createdAt: Date
 
-	public init(id: String, articleID: String, kind: AIJobKind, priority: Int, status: AIJobStatus = .pending, attempts: Int = 0, availableAt: Date, leaseUntil: Date? = nil, lastError: String? = nil, createdAt: Date) {
+	public init(id: String, articleID: String, kind: AIJobKind, priority: Int, status: AIJobStatus = .pending, attempts: Int = 0, availableAt: Date, leaseUntil: Date? = nil, lastError: String? = nil, startedAt: Date? = nil, finishedAt: Date? = nil, createdAt: Date) {
 		self.id = id
 		self.articleID = articleID
 		self.kind = kind
@@ -158,6 +164,8 @@ public struct AIJob: Codable, Sendable, Equatable {
 		self.availableAt = availableAt
 		self.leaseUntil = leaseUntil
 		self.lastError = lastError
+		self.startedAt = startedAt
+		self.finishedAt = finishedAt
 		self.createdAt = createdAt
 	}
 }

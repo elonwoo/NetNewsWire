@@ -12,6 +12,7 @@ import RSCore
 final class TimelineTableCellView: NSTableCellView {
 
 	private let titleView = TimelineTableCellView.multiLineTextField()
+	private let subtitleView = TimelineTableCellView.singleLineTextField()
 	private let summaryView = TimelineTableCellView.multiLineTextField()
 	private let textView = TimelineTableCellView.multiLineTextField()
 	private let unreadIndicatorView = UnreadIndicatorView(frame: NSRect.zero)
@@ -111,6 +112,7 @@ final class TimelineTableCellView: NSTableCellView {
 		let layoutRects = updatedLayoutRects()
 
 		setFrame(for: titleView, rect: layoutRects.titleRect)
+		setFrame(for: subtitleView, rect: layoutRects.subtitleRect)
 		setFrame(for: summaryView, rect: layoutRects.summaryRect)
 		setFrame(for: textView, rect: layoutRects.textRect)
 
@@ -171,6 +173,7 @@ private extension TimelineTableCellView {
 
 	func makeTextFieldColorsNormal() {
 		titleView.textColor = NSColor.labelColor
+		subtitleView.textColor = NSColor.secondaryLabelColor
 		feedNameView.textColor = NSColor.secondaryLabelColor
 		dateView.textColor = NSColor.secondaryLabelColor
 		summaryView.textColor = NSColor.secondaryLabelColor
@@ -182,6 +185,7 @@ private extension TimelineTableCellView {
 		feedNameView.font = cellAppearance.feedNameFont
 		dateView.font = cellAppearance.dateFont
 		titleView.font = cellAppearance.titleFont
+		subtitleView.font = cellAppearance.subtitleFont
 		summaryView.font = cellAppearance.textFont
 		textView.font = cellAppearance.textOnlyFont
 	}
@@ -195,6 +199,7 @@ private extension TimelineTableCellView {
 
 	func commonInit() {
 		addSubviewAtInit(titleView, hidden: false)
+		addSubviewAtInit(subtitleView, hidden: true)
 		addSubviewAtInit(summaryView, hidden: true)
 		addSubviewAtInit(textView, hidden: true)
 		addSubviewAtInit(unreadIndicatorView, hidden: true)
@@ -216,6 +221,11 @@ private extension TimelineTableCellView {
 
 		updateTextFieldText(titleView, cellData?.title)
 		updateTextFieldAttributedText(titleView, cellData?.attributedTitle)
+	}
+
+	func updateSubtitleView() {
+
+		updateTextFieldText(subtitleView, cellData?.titleZh)
 	}
 
 	func updateSummaryView() {
@@ -350,6 +360,7 @@ private extension TimelineTableCellView {
 
 	func updateSubviews() {
 		updateTitleView()
+		updateSubtitleView()
 		updateSummaryView()
 		updateTextView()
 		updateDateView()

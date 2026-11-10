@@ -10,6 +10,11 @@ enum AIRewriteError: Error, Sendable {
 	case qualityRejected(String)
 }
 
+struct AIRewriteResult: Sendable {
+	let generated: Bool
+	let inputCharacters: Int?
+}
+
 /// Generates a Chinese rewrite for an article and validates it before the job
 /// is reported as complete.
 ///
@@ -27,14 +32,16 @@ final class AIRewriteService {
 		self.engine = engine
 	}
 
-	/// Returns true when a new rewrite was generated.
+	/// Returns whether a new rewrite was generated.
 	@discardableResult
-	func rewrite(_ article: AIArticle) async throws -> Bool {
-		let kind = AIRewriteKindSelector.kind(for: article).engineKind
-		let expectedHash = ContentFingerprint.rewrite(for: article, kind: kind)
+	func rewrite(_ article: AIArticle, fingerprintArticle: AIArticle? = nil, fullText: Bool = false, force: Bool = false) async throws -> AIRewriteResult {
+		let fingerprint = fingerprintArticle ?? article
+		let kind = AIRewriteKindSelector.kind(for: fingerprint).engineKind
+		let baseHash = ContentFingerprint.rewrite(for: fingerprint, kind: kind)
+		let expectedHash = fullText ? "ft:" + baseHash : baseHash
 		let previous = try await store.rewrite(for: article.id)
-		if let previous, previous.contentHash == expectedHash, !previous.bodyMarkdown.isEmpty {
-			return false
+		if !force, let previous, previous.contentHash == expectedHash, !previous.bodyMarkdown.isEmpty {
+			return AIRewriteResult(generated: false, inputCharacters: nil)
 		}
 
 		let source = RewriteSourceBuilder.source(for: article)
@@ -42,9 +49,10 @@ final class AIRewriteService {
 			throw AIEngineError.emptyContent
 		}
 
-		let result = try await engine.rewrite(article, kind: kind)
-		// The engine has already stored this rewrite, so the rewrite view can display
-		// it even if quality validation rejects it below. The timeline should turn
+		let result = try await engine.rewrite(article, kind: kind, fingerprintArticle: fingerprintArticle, fullText: fullText)
+		// The engine has already stored this rewrite, so the rewrite view can
+		// display it while quality validation runs. A rejected result with no
+		// previous rewrite to restore is deleted below. The timeline should turn
 		// green now rather than wait for the job to finish or the app to restart.
 		NotificationCenter.default.post(
 			name: .aiRewriteStored,
@@ -55,9 +63,26 @@ final class AIRewriteService {
 		guard quality.ok else {
 			if let previous, !previous.bodyMarkdown.isEmpty {
 				try? await store.saveRewrite(previous)
+				// The pane may have polled the rejected output, so tell it the
+				// restored rewrite is what should be shown now.
+				NotificationCenter.default.post(
+					name: .aiRewriteStored,
+					object: nil,
+					userInfo: [AIUserInfoKey.articleID: article.id]
+				)
+			} else {
+				// The engine persisted this output before validation. With no
+				// previous rewrite to restore, remove it so a rejected result is
+				// not stored as current or rendered in the pane.
+				try? await store.deleteRewrite(articleID: article.id)
+				NotificationCenter.default.post(
+					name: .aiRewriteRemoved,
+					object: nil,
+					userInfo: [AIUserInfoKey.articleID: article.id]
+				)
 			}
 			throw AIRewriteError.qualityRejected(quality.reason)
 		}
-		return true
+		return AIRewriteResult(generated: true, inputCharacters: source.promptText.count)
 	}
 }

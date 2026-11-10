@@ -18,6 +18,8 @@ private struct PreferencesToolbarItemSpec {
 
 final class PreferencesWindowController: NSWindowController, NSToolbarDelegate {
 
+	static let aiToolbarItemIdentifier = NSToolbarItem.Identifier("AI")
+
 	private let minimumWindowWidth = CGFloat(512.0) // Panes that need more room widen the window
 	private var viewControllers = [NSToolbarItem.Identifier: NSViewController]()
 	private let toolbarItemSpecs = [
@@ -33,7 +35,7 @@ final class PreferencesWindowController: NSWindowController, NSToolbarDelegate {
 								   name: NSLocalizedString("Timeline", comment: "Timeline"),
 								   image: Assets.Images.preferencesToolbarTimeline,
 								   makeViewController: { TimelinePreferencesViewController() }),
-		PreferencesToolbarItemSpec(identifier: NSToolbarItem.Identifier("AI"),
+		PreferencesToolbarItemSpec(identifier: PreferencesWindowController.aiToolbarItemIdentifier,
 								   name: NSLocalizedString("AI", comment: "Preferences"),
 								   image: NSImage(systemSymbolName: "sparkles", accessibilityDescription: NSLocalizedString("AI", comment: "Preferences")),
 								   makeViewController: { AIPreferencesViewController() }),
@@ -72,6 +74,15 @@ final class PreferencesWindowController: NSWindowController, NSToolbarDelegate {
 	}
 
 	// MARK: Actions
+
+	func showWindow(_ sender: Any?, selecting identifier: NSToolbarItem.Identifier) {
+		showWindow(sender)
+		guard let toolbarItemSpec = toolbarItemSpec(for: identifier) else {
+			return
+		}
+		window?.toolbar?.selectedItemIdentifier = identifier
+		switchToView(for: toolbarItemSpec)
+	}
 
 	@objc func toolbarItemClicked(_ sender: Any?) {
 		guard let toolbarItem = sender as? NSToolbarItem, let toolbarItemSpec = toolbarItemSpec(for: toolbarItem.itemIdentifier) else {

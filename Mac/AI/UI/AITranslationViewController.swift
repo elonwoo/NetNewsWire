@@ -26,7 +26,7 @@ final class AITranslationViewController: NSViewController {
 	private enum ContentState {
 		case noArticle
 		case reading
-		case empty(titleTranslated: Bool)
+		case empty(AI.Translation?)
 		case noBody(AI.Translation?)
 		case translating
 		case translation(AI.Translation)
@@ -36,6 +36,7 @@ final class AITranslationViewController: NSViewController {
 	private let headerBar = NSView()
 	private let contentView = NSView()
 	private let emptyView = NSStackView()
+	private let emptyTitleLabel = NSTextField(wrappingLabelWithString: "")
 	private let emptyLabel = NSTextField(wrappingLabelWithString: "还没有中文译文")
 	private let translateButton = NSButton()
 	private let loadingView = NSStackView()
@@ -53,7 +54,7 @@ final class AITranslationViewController: NSViewController {
 
 	init() {
 		let configuration = WKWebViewConfiguration()
-		configuration.defaultWebpagePreferences.allowsContentJavaScript = false
+		configuration.defaultWebpagePreferences.allowsContentJavaScript = true
 		self.webView = AIReaderWebView(frame: .zero, configuration: configuration)
 		super.init(nibName: nil, bundle: nil)
 		NotificationCenter.default.addObserver(self, selector: #selector(handleTranslationReady(_:)), name: .aiTranslationReady, object: nil)
@@ -154,7 +155,7 @@ final class AITranslationViewController: NSViewController {
 				} else if let translation, !translation.blocks.isEmpty {
 					self.state = .translation(translation)
 				} else {
-					self.state = .empty(titleTranslated: translation?.titleZh?.isEmpty == false)
+					self.state = .empty(translation)
 				}
 				self.updateContent()
 				self.enqueueTranslationIfNeeded()
@@ -190,6 +191,10 @@ private extension AITranslationViewController {
 	}
 
 	func makeStateViews() {
+		emptyTitleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
+		emptyTitleLabel.textColor = .labelColor
+		emptyTitleLabel.alignment = .center
+
 		emptyLabel.font = .systemFont(ofSize: 13)
 		emptyLabel.textColor = .secondaryLabelColor
 		emptyLabel.alignment = .center
@@ -202,6 +207,7 @@ private extension AITranslationViewController {
 		emptyView.orientation = .vertical
 		emptyView.alignment = .centerX
 		emptyView.spacing = 12
+		emptyView.addArrangedSubview(emptyTitleLabel)
 		emptyView.addArrangedSubview(emptyLabel)
 		emptyView.addArrangedSubview(translateButton)
 
@@ -262,6 +268,7 @@ private extension AITranslationViewController {
 		errorView.isHidden = true
 		webView.isHidden = true
 		headerBar.isHidden = true
+		emptyTitleLabel.isHidden = true
 
 		switch state {
 		case .noArticle:
@@ -272,8 +279,15 @@ private extension AITranslationViewController {
 			loadingLabel.stringValue = "正在读取译文"
 			loadingIndicator.startAnimation(nil)
 			loadingView.isHidden = false
-		case .empty(let titleTranslated):
-			emptyLabel.stringValue = titleTranslated ? "标题已翻译，正文未翻译" : "还没有中文译文"
+		case .empty(let translation):
+			let titleZh = translation?.titleZh?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+			if titleZh.isEmpty {
+				emptyLabel.stringValue = "还没有中文译文"
+			} else {
+				emptyTitleLabel.stringValue = titleZh
+				emptyTitleLabel.isHidden = false
+				emptyLabel.stringValue = "标题已翻译，正文未翻译"
+			}
 			translateButton.isHidden = false
 			emptyView.isHidden = false
 		case .noBody(let translation):
@@ -303,7 +317,9 @@ private extension AITranslationViewController {
 	}
 
 	func render(_ translation: AI.Translation) {
-		webView.loadHTMLString(Self.html(for: translation), baseURL: nil)
+		// A null-origin document makes YouTube reject the embed with error 153.
+		let baseURL = AIReaderWebBaseURL.baseURL(articleURL: article?.url, externalURL: article?.externalURL)
+		webView.loadHTMLString(Self.html(for: translation), baseURL: baseURL)
 	}
 }
 
@@ -352,9 +368,9 @@ private extension AITranslationViewController {
 
 // MARK: - HTML
 
-private extension AITranslationViewController {
+extension AITranslationViewController {
 
-	private static func html(for translation: AI.Translation) -> String {
+	static func html(for translation: AI.Translation) -> String {
 		let title = translation.titleZh.map(escapeHTML) ?? ""
 		let summary = translation.summaryZh.map(escapeHTML) ?? ""
 
@@ -362,10 +378,13 @@ private extension AITranslationViewController {
 		for block in translation.blocks {
 			let target: String
 			if let targetHTML = block.targetHTML, !targetHTML.isEmpty {
-				target = targetHTML
+				// Rows written before the sanitizer learned to drop self-closing
+				// script tags can still hold active content, so stored HTML is
+				// cleaned again here instead of being trusted.
+				target = HTMLSourceBlocks.sanitizedHTML(targetHTML)
 			} else {
 				let escapedTarget = escapeHTML(block.target).replacingOccurrences(of: "\n", with: "<br>")
-				target = "<p>\(escapedTarget)</p>"
+				target = "<p>\(HTMLSourceBlocks.sanitizedHTML(escapedTarget))</p>"
 			}
 
 			blocks += """
@@ -381,6 +400,12 @@ private extension AITranslationViewController {
 
 		let titleHTML = title.isEmpty ? "" : "<h1>\(title)</h1>"
 		let summaryHTML = summary.isEmpty ? "" : "<p class=\"summary\">\(summary)</p>"
+
+		// Rewrite only the body: YouTube links become playable embeds, while the
+		// document head and CSS above stay untouched.
+		let bodyHTML = YouTubeEmbedRewriter.rewriteHTML(
+			[titleHTML, summaryHTML, blocks].joined(separator: "\n")
+		)
 
 		return """
 		<!doctype html>
@@ -410,7 +435,7 @@ private extension AITranslationViewController {
 		body { font-family: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif; font-size: 15px; line-height: 1.75; padding: 20px 24px 48px; }
 		h1 { font-size: 21px; line-height: 1.4; margin: 0 0 10px; }
 		.summary { color: var(--muted); font-size: 14px; margin-bottom: 20px; }
-		.block { padding: 14px 0; border-top: 1px solid var(--line); }
+		.block { padding: 14px 0; }
 		.target { min-width: 0; }
 		.target p:first-child { margin-top: 0; }
 		.target p:last-child { margin-bottom: 0; }
@@ -423,9 +448,7 @@ private extension AITranslationViewController {
 		</style>
 		</head>
 		<body>
-		\(titleHTML)
-		\(summaryHTML)
-		\(blocks)
+		\(bodyHTML)
 		</body>
 		</html>
 		"""

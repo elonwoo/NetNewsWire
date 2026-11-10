@@ -17,6 +17,7 @@ import RSCore
 	let dateRect: NSRect
 	let titleRect: NSRect
 	let numberOfLinesForTitle: Int
+	let subtitleRect: NSRect
 	let summaryRect: NSRect
 	let textRect: NSRect
 	let unreadIndicatorRect: NSRect
@@ -26,13 +27,14 @@ import RSCore
 	let separatorRect: NSRect
 	let paddingBottom: CGFloat
 
-	init(width: CGFloat, height: CGFloat, feedNameRect: NSRect, dateRect: NSRect, titleRect: NSRect, numberOfLinesForTitle: Int, summaryRect: NSRect, textRect: NSRect, unreadIndicatorRect: NSRect, starRect: NSRect, iconImageRect: NSRect, thumbnailRect: NSRect, separatorRect: NSRect, paddingBottom: CGFloat) {
+	init(width: CGFloat, height: CGFloat, feedNameRect: NSRect, dateRect: NSRect, titleRect: NSRect, numberOfLinesForTitle: Int, subtitleRect: NSRect, summaryRect: NSRect, textRect: NSRect, unreadIndicatorRect: NSRect, starRect: NSRect, iconImageRect: NSRect, thumbnailRect: NSRect, separatorRect: NSRect, paddingBottom: CGFloat) {
 
 		self.width = width
 		self.feedNameRect = feedNameRect
 		self.dateRect = dateRect
 		self.titleRect = titleRect
 		self.numberOfLinesForTitle = numberOfLinesForTitle
+		self.subtitleRect = subtitleRect
 		self.summaryRect = summaryRect
 		self.textRect = textRect
 		self.unreadIndicatorRect = unreadIndicatorRect
@@ -45,7 +47,7 @@ import RSCore
 		if height > 0.1 {
 			self.height = height
 		} else {
-			self.height = [feedNameRect, dateRect, titleRect, summaryRect, textRect, unreadIndicatorRect, iconImageRect, thumbnailRect].maxY() + paddingBottom
+			self.height = [feedNameRect, dateRect, titleRect, subtitleRect, summaryRect, textRect, unreadIndicatorRect, iconImageRect, thumbnailRect].maxY() + paddingBottom
 		}
 	}
 
@@ -65,23 +67,25 @@ import RSCore
 		}
 
 		let (titleRect, numberOfLinesForTitle) = TimelineCellLayout.rectForTitle(bodyRect, appearance, cellData)
-		let summaryRect = numberOfLinesForTitle > 0 ? TimelineCellLayout.rectForSummary(bodyRect, titleRect, numberOfLinesForTitle, appearance, cellData) : NSRect.zero
+		let subtitleRect = TimelineCellLayout.rectForSubtitle(bodyRect, titleRect, numberOfLinesForTitle, appearance, cellData)
+		let titleContentMaxY = subtitleRect.height > 0.1 ? subtitleRect.maxY : titleRect.maxY
+		let summaryRect = numberOfLinesForTitle > 0 ? TimelineCellLayout.rectForSummary(bodyRect, titleContentMaxY, numberOfLinesForTitle, appearance, cellData) : NSRect.zero
 		let textRect = numberOfLinesForTitle > 0 ? NSRect.zero : TimelineCellLayout.rectForText(bodyRect, appearance, cellData)
 
 		if !appearance.feedNameAndDateAboveTitle {
 			var lastTextRect = titleRect
 			if numberOfLinesForTitle == 0 {
 				lastTextRect = textRect
-			} else if numberOfLinesForTitle < appearance.numberOfLines {
-				if summaryRect.height > 0.1 {
-					lastTextRect = summaryRect
-				}
+			} else if numberOfLinesForTitle < appearance.numberOfLines, summaryRect.height > 0.1 {
+				lastTextRect = summaryRect
+			} else if subtitleRect.height > 0.1 {
+				lastTextRect = subtitleRect
 			}
 			dateRect = TimelineCellLayout.rectForDate(textBoxRect, lastTextRect.maxY + appearance.titleBottomMargin, appearance, cellData)
 		}
 		let feedNameRect = TimelineCellLayout.rectForFeedName(textBoxRect, dateRect, appearance, cellData)
 
-		textBoxRect.size.height = ceil([titleRect, summaryRect, textRect, dateRect, feedNameRect].maxY() - textBoxRect.origin.y)
+		textBoxRect.size.height = ceil([titleRect, subtitleRect, summaryRect, textRect, dateRect, feedNameRect].maxY() - textBoxRect.origin.y)
 		let iconImageRect = TimelineCellLayout.rectForIcon(cellData, appearance, showIcon, textBoxRect, width, height)
 		let thumbnailRect = appearance.showsLargeThumbnails ? TimelineCellLayout.rectForLargeThumbnail(cellData, appearance, textBoxRect, iconImageRect, width, height) : TimelineCellLayout.rectForThumbnail(appearance, thumbnailDimension, width)
 		let unreadIndicatorRect = TimelineCellLayout.rectForUnreadIndicator(appearance, textBoxRect, appearance.feedNameAndDateAboveTitle ? dateRect : nil)
@@ -90,7 +94,7 @@ import RSCore
 
 		let paddingBottom = appearance.cellPadding.bottom
 
-		self.init(width: width, height: height, feedNameRect: feedNameRect, dateRect: dateRect, titleRect: titleRect, numberOfLinesForTitle: numberOfLinesForTitle, summaryRect: summaryRect, textRect: textRect, unreadIndicatorRect: unreadIndicatorRect, starRect: starRect, iconImageRect: iconImageRect, thumbnailRect: thumbnailRect, separatorRect: separatorRect, paddingBottom: paddingBottom)
+		self.init(width: width, height: height, feedNameRect: feedNameRect, dateRect: dateRect, titleRect: titleRect, numberOfLinesForTitle: numberOfLinesForTitle, subtitleRect: subtitleRect, summaryRect: summaryRect, textRect: textRect, unreadIndicatorRect: unreadIndicatorRect, starRect: starRect, iconImageRect: iconImageRect, thumbnailRect: thumbnailRect, separatorRect: separatorRect, paddingBottom: paddingBottom)
 	}
 
 	static func height(for width: CGFloat, cellData: TimelineCellData, appearance: TimelineCellAppearance) -> CGFloat {
@@ -150,13 +154,29 @@ import RSCore
 		return (r, sizeInfo.numberOfLinesUsed)
 	}
 
-	static func rectForSummary(_ textBoxRect: NSRect, _ titleRect: NSRect, _ titleNumberOfLines: Int, _ appearance: TimelineCellAppearance, _ cellData: TimelineCellData) -> NSRect {
+	static func rectForSubtitle(_ textBoxRect: NSRect, _ titleRect: NSRect, _ titleNumberOfLines: Int, _ appearance: TimelineCellAppearance, _ cellData: TimelineCellData) -> NSRect {
+
+		guard titleNumberOfLines > 0, let titleZh = cellData.titleZh else {
+			return NSRect.zero
+		}
+
+		var r = textBoxRect
+		r.origin.y = titleRect.maxY + appearance.subtitleSpacing
+		let sizeInfo = SingleLineTextFieldSizer.size(for: titleZh, font: appearance.subtitleFont)
+		r.size.height = sizeInfo.height
+		if r.size.height < 0.1 {
+			r.size.height = 0
+		}
+		return r
+	}
+
+	static func rectForSummary(_ textBoxRect: NSRect, _ originY: CGFloat, _ titleNumberOfLines: Int, _ appearance: TimelineCellAppearance, _ cellData: TimelineCellData) -> NSRect {
 		if !appearance.showsSummary || titleNumberOfLines >= appearance.numberOfLines || cellData.text.isEmpty {
 			return NSRect.zero
 		}
 
 		var r = textBoxRect
-		r.origin.y = titleRect.maxY
+		r.origin.y = originY
 		let summaryNumberOfLines = appearance.numberOfLines - titleNumberOfLines
 
 		let sizeInfo = MultilineTextFieldSizer.size(for: cellData.text, font: appearance.textOnlyFont, numberOfLines: summaryNumberOfLines, width: Int(textBoxRect.width))

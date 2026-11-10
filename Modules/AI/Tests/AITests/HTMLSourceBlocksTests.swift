@@ -208,6 +208,35 @@ import Testing
 		#expect(block.html.contains("&amp;"))
 	}
 
+	@Test func sanitizerDropsSelfClosingScriptAndEscapesAttributes() {
+		let html = #"<pre><script/>window.__pwned=1;//<a title="</script>">x</a></pre>"#
+		let joined = HTMLSourceBlocks.blocks(html).map(\.html).joined()
+
+		#expect(joined == "<pre></pre>")
+		#expect(!joined.lowercased().contains("<script"))
+		#expect(!joined.lowercased().contains("</script"))
+		#expect(!joined.contains("window.__pwned"))
+	}
+
+	@Test func sanitizerDropsSelfClosingStyle() {
+		let html = "<style/>@import url(https://evil.example/x.css);</style><p>ok</p>"
+		let joined = HTMLSourceBlocks.blocks(html).map(\.html).joined()
+
+		#expect(!joined.lowercased().contains("<style"))
+		#expect(!joined.contains("@import"))
+		#expect(joined.contains("ok"))
+	}
+
+	@Test func sanitizerEscapesAttributeValues() {
+		let html = #"<p><a href="https://example.com/?a=1&b=2" title="a<b>c&d">x</a><img src="https://example.com/x.png" alt="1<2>3&4"></p>"#
+		let joined = HTMLSourceBlocks.blocks(html).map(\.html).joined()
+
+		#expect(joined.contains("title=\"a&lt;b&gt;c&amp;d\""))
+		#expect(joined.contains("href=\"https://example.com/?a=1&amp;b=2\""))
+		#expect(joined.contains("alt=\"1&lt;2&gt;3&amp;4\""))
+		#expect(!joined.contains("a<b>c"))
+	}
+
 	@Test func cleaningRemovesActiveContent() {
 		let html = """
 		<p onclick="alert(1)" style="color:red" class="x">Safe text</p>
@@ -231,5 +260,128 @@ import Testing
 		}
 		#expect(joinedText.contains("Safe text"))
 		#expect(joinedText.contains("safe link"))
+	}
+
+	@Test func cleaningRejectsObfuscatedJavascriptSchemes() {
+		let html = """
+		<a href="javascript&colon;alert(1)">one</a>
+		<a href="java&#9;script:alert(1)">two</a>
+		<a href="javascript&#58alert(1)">three</a>
+		<a href="javascript&#0000058alert(1)">four</a>
+		<a href="&#106avascript&#58alert(1)">five</a>
+		<a href="vbscript&#58msgbox(1)">six</a>
+		<a href="data&#58text/html;base64,AAAA">seven</a>
+		<a href="java&#9script:alert(1)">eight</a>
+		<a href="java&#9script&#58;alert(1)">nine</a>
+		<img src="javascript&#58alert(1)" alt="x">
+		"""
+		let blocks = HTMLSourceBlocks.blocks(html)
+		let joinedHTML = blocks.map(\.html).joined().lowercased()
+		let joinedText = blocks.map(\.text).joined(separator: "\n")
+
+		#expect(!joinedHTML.contains("javascript"))
+		#expect(!joinedHTML.contains("vbscript"))
+		#expect(!joinedHTML.contains("data:"))
+		#expect(!joinedHTML.contains("&colon;"))
+		#expect(!joinedHTML.contains("href="))
+		#expect(!joinedHTML.contains("src="))
+		#expect(joinedText.contains("one"))
+		#expect(joinedText.contains("nine"))
+	}
+
+	@Test func youTubeIframeBecomesNoCookieEmbed() {
+		let html = """
+		<p>Before</p><iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ" width="560" height="315" title="Video" frameborder="0" allowfullscreen></iframe><p>After</p>
+		"""
+		let blocks = HTMLSourceBlocks.blocks(html)
+		let joinedHTML = blocks.map(\.html).joined()
+
+		#expect(joinedHTML.contains("https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"))
+		#expect(!joinedHTML.contains("www.youtube.com/embed"))
+		#expect(joinedHTML.contains("width=\"560\""))
+		#expect(joinedHTML.contains("height=\"315\""))
+		#expect(joinedHTML.contains("allowfullscreen"))
+		#expect(joinedHTML.contains("</iframe>"))
+		#expect(blocks.map(\.text).joined(separator: "\n").contains("Before"))
+		#expect(blocks.map(\.text).joined(separator: "\n").contains("After"))
+	}
+
+	@Test func nonYouTubeIframesAreDropped() {
+		let html = """
+		<p>Before</p><iframe src="https://player.vimeo.com/video/123"></iframe><iframe src="https://example.com/frame"></iframe><iframe src="javascript:alert(1)"></iframe><iframe src="javascript&#58alert(1)"></iframe><p>After</p>
+		"""
+		let joinedHTML = HTMLSourceBlocks.blocks(html).map(\.html).joined().lowercased()
+
+		#expect(!joinedHTML.contains("<iframe"))
+		#expect(!joinedHTML.contains("vimeo"))
+		#expect(!joinedHTML.contains("javascript"))
+		#expect(!joinedHTML.contains("example.com/frame"))
+		#expect(joinedHTML.contains("before"))
+		#expect(joinedHTML.contains("after"))
+	}
+
+	@Test func wrappedYouTubeIframesSurviveBlocks() {
+		let wrappers = [
+			"<p><iframe src=\"https://www.youtube.com/embed/VIDEOTEST01\"></iframe></p>",
+			"<h2><iframe src=\"https://www.youtube.com/embed/VIDEOTEST01\"></iframe></h2>",
+			"<blockquote><iframe src=\"https://www.youtube.com/embed/VIDEOTEST01\"></iframe></blockquote>",
+			"<figure><iframe src=\"https://www.youtube.com/embed/VIDEOTEST01\"></iframe><figcaption>Video</figcaption></figure>",
+			"<ul><li><iframe src=\"https://www.youtube.com/embed/VIDEOTEST01\"></iframe></li></ul>"
+		]
+
+		for html in wrappers {
+			let blocks = HTMLSourceBlocks.blocks(html)
+			#expect(!blocks.isEmpty)
+			#expect(blocks.map(\.html).joined().contains("youtube-nocookie.com/embed/VIDEOTEST01"))
+		}
+	}
+
+	@Test func duplicateYouTubeIframesKeepOneEmbed() {
+		let html = """
+		<p>Before</p><iframe src="https://www.youtube.com/embed/VIDEOTEST01" width="560"></iframe><iframe src="https://www.youtube.com/embed/VIDEOTEST01"></iframe><p>After</p>
+		"""
+		let joined = HTMLSourceBlocks.blocks(html).map(\.html).joined()
+
+		#expect(joined.components(separatedBy: "<iframe").count - 1 == 1)
+		#expect(joined.components(separatedBy: "</iframe>").count - 1 == 1)
+		#expect(!joined.contains("www.youtube.com/embed"))
+		#expect(joined.contains("Before"))
+		#expect(joined.contains("After"))
+	}
+
+	@Test func sanitizedHTMLDropsActiveContentAndKeepsVideo() {
+		let html = #"<p onerror="window.__pwned=1">Hello <a href="javascript:alert(1)">link</a><script>window.__pwned=1</script><iframe src="https://www.youtube.com/embed/VIDEOTEST01" width="560"></iframe></p>"#
+		let sanitized = HTMLSourceBlocks.sanitizedHTML(html)
+
+		#expect(!sanitized.lowercased().contains("<script"))
+		#expect(!sanitized.lowercased().contains("onerror"))
+		#expect(!sanitized.lowercased().contains("javascript:"))
+		#expect(!sanitized.contains("window.__pwned"))
+		#expect(sanitized.contains("Hello"))
+		#expect(sanitized.contains("link"))
+		#expect(sanitized.contains("<iframe src=\"https://www.youtube-nocookie.com/embed/VIDEOTEST01\""))
+		#expect(sanitized.contains("width=\"560\""))
+		#expect(sanitized.hasSuffix("</iframe></p>"))
+	}
+
+	@Test func sanitizedHTMLPreservesWrapperStructure() {
+		let html = #"<div class="x" style="color:red"><p>One</p><p>Two</p></div>"#
+		let sanitized = HTMLSourceBlocks.sanitizedHTML(html)
+
+		#expect(sanitized == "<div><p>One</p><p>Two</p></div>")
+	}
+
+	@Test func cleaningKeepsSafeSchemesAndRelativeLinks() {
+		let html = """
+		<p><a href="https://example.com/a">https</a> <a href="http://example.com/b">http</a> <a href="mailto:x@example.com">mail</a> <a href="#section">fragment</a> <a href="/relative/path">relative</a> <a href="//example.com/host">protocol relative</a></p>
+		"""
+		let joinedHTML = HTMLSourceBlocks.blocks(html).map(\.html).joined()
+
+		#expect(joinedHTML.contains("href=\"https://example.com/a\""))
+		#expect(joinedHTML.contains("href=\"http://example.com/b\""))
+		#expect(joinedHTML.contains("href=\"mailto:x@example.com\""))
+		#expect(joinedHTML.contains("href=\"#section\""))
+		#expect(joinedHTML.contains("href=\"/relative/path\""))
+		#expect(joinedHTML.contains("href=\"//example.com/host\""))
 	}
 }

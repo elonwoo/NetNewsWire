@@ -17,6 +17,15 @@ final class AIDetailPaneViewController: NSViewController {
 	let rewriteViewController: AIRewriteViewController
 	let translationViewController: AITranslationViewController
 
+	/// Supplied by the main window. It returns nil in search mode, with no
+	/// selection, with multiple selection, or with an unsupported sidebar row;
+	/// the panel then stays hidden and the existing “No selection” view shows.
+	var jobPanelContextProvider: (() -> AIJobPanelContext?)? {
+		didSet {
+			updateJobPanel()
+		}
+	}
+
 	var article: Article? {
 		didSet {
 			updateTabBarVisibility()
@@ -59,9 +68,36 @@ final class AIDetailPaneViewController: NSViewController {
 	private let tabBar = NSView()
 	private let tabControl: NSSegmentedControl
 	private let contentView = NSView()
+	private let jobStatusView = AIJobStatusView()
 	private var tabBarHeightConstraint: NSLayoutConstraint!
 	private var selectedTab: AIPaneTab
 	private var defaultTabToken: UUID?
+
+	private var jobPanelVisible = false
+	private var jobPanelScope: AIJobScope?
+	private var jobSnapshot: JobSnapshot?
+	private var jobRefreshTask: Task<Void, Never>?
+	private var jobRefreshGeneration = UUID()
+	private var jobDebounceWorkItem: DispatchWorkItem?
+	private var jobPollTimer: Timer?
+	private var jobObserverTokens: [NSObjectProtocol] = []
+	private var expandedFailureGroups: Set<AIJobFailureGroupKey> = []
+	private var retryingFailureGroups: Set<AIJobFailureGroupKey> = []
+	private var failureRetryNotices: [AIJobFailureGroupKey: String] = [:]
+	private lazy var retryRunner = AIJobFailureRetryRunner(
+		enqueuer: AIJobExecutorRetryEnqueuer(executor: AIJobExecutor.shared, store: AIEnvironment.shared.store)
+	)
+
+	private struct JobSnapshot {
+		let context: AIJobPanelContext
+		let activeJobs: [AIJob]
+		let foldedFailures: [AIJob]
+		let completedTodayJobs: [AIJob]
+		let articlesByID: [String: AIJobArticleInfo]
+		let coverage: AIJobCoverage?
+		let coverageQueryFailed: Bool
+		let now: Date
+	}
 
 	init(detailViewController: DetailViewController, rewriteViewController: AIRewriteViewController = AIRewriteViewController(), translationViewController: AITranslationViewController = AITranslationViewController()) {
 		self.detailViewController = detailViewController
@@ -131,7 +167,20 @@ final class AIDetailPaneViewController: NSViewController {
 		translationView.translatesAutoresizingMaskIntoConstraints = false
 		contentView.addSubview(translationView)
 
-		for childView in [detailView, rewriteView, translationView] {
+		jobStatusView.translatesAutoresizingMaskIntoConstraints = false
+		jobStatusView.isHidden = true
+		contentView.addSubview(jobStatusView)
+		jobStatusView.onOpenSettings = { [weak self] in
+			self?.openAISettings()
+		}
+		jobStatusView.onToggleFailureGroup = { [weak self] key in
+			self?.toggleFailureGroup(key)
+		}
+		jobStatusView.onRetryFailureGroup = { [weak self] key, requests in
+			self?.retryFailureGroup(key, requests: requests)
+		}
+
+		for childView in [detailView, rewriteView, translationView, jobStatusView] {
 			NSLayoutConstraint.activate([
 				childView.topAnchor.constraint(equalTo: contentView.topAnchor),
 				childView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
@@ -143,12 +192,20 @@ final class AIDetailPaneViewController: NSViewController {
 		NotificationCenter.default.addObserver(self, selector: #selector(rewriteDidBecomeReady(_:)), name: .aiRewriteReady, object: nil)
 		NotificationCenter.default.addObserver(self, selector: #selector(translationDidBecomeReady(_:)), name: .aiTranslationReady, object: nil)
 		NotificationCenter.default.addObserver(self, selector: #selector(feedSettingDidChange(_:)), name: .feedSettingDidChange, object: nil)
+		installJobPanelObservers()
 		updateTabTitles()
 		if !visibleTabs.contains(selectedTab) {
 			selectedTab = .original
 		}
 		show(selectedTab)
 		updateTabBarVisibility()
+	}
+
+	isolated deinit {
+		jobPollTimer?.invalidate()
+		for token in jobObserverTokens {
+			NotificationCenter.default.removeObserver(token)
+		}
 	}
 
 	func focus() {
@@ -175,6 +232,7 @@ private extension AIDetailPaneViewController {
 		let hidesTabBar = article == nil
 		tabBar.isHidden = hidesTabBar
 		tabBarHeightConstraint.constant = hidesTabBar ? 0 : 34
+		updateJobPanel()
 	}
 
 	func updateTabTitles() {
@@ -378,5 +436,271 @@ private extension AIDetailPaneViewController {
 			}
 			self.show(AIPaneTabPolicy.fallbackTab(rewriteEnabled: rewriteEnabled, hasRewrite: hasRewrite, articleAllowsAI: allowsAI))
 		}
+	}
+}
+
+// MARK: - Job panel
+
+extension AIDetailPaneViewController {
+
+	/// Shows the right-pane task panel only when no article is selected and the
+	/// window supplied a supported sidebar scope. Search mode, multiple
+	/// selection, account rows and the Smart Feeds group return no context, so
+	/// the existing “No selection” view stays in place.
+	func updateJobPanel() {
+		guard isViewLoaded else {
+			return
+		}
+		guard article == nil, let context = jobPanelContextProvider?() else {
+			hideJobPanel()
+			return
+		}
+		let wasVisible = jobPanelVisible
+		let scopeChanged = jobPanelScope != context.scope
+		if scopeChanged || !wasVisible {
+			jobSnapshot = nil
+			jobStatusView.clear()
+		}
+		jobPanelScope = context.scope
+		jobPanelVisible = true
+		jobStatusView.isHidden = false
+		startJobPanelTimers()
+		scheduleJobPanelRefresh(immediate: true)
+	}
+
+	/// Called by the main window after the timeline finishes a fetch, so a read
+	/// filter change is reflected without waiting for the five-second poll.
+	func refreshJobPanelFromTimelineChange() {
+		updateJobPanel()
+	}
+}
+
+private extension AIDetailPaneViewController {
+
+	func hideJobPanel() {
+		guard jobPanelVisible || !jobStatusView.isHidden else {
+			return
+		}
+		jobPanelVisible = false
+		jobPanelScope = nil
+		jobSnapshot = nil
+		jobRefreshGeneration = UUID()
+		jobRefreshTask?.cancel()
+		jobRefreshTask = nil
+		jobDebounceWorkItem?.cancel()
+		jobDebounceWorkItem = nil
+		stopJobPanelTimers()
+		jobStatusView.isHidden = true
+		jobStatusView.clear()
+	}
+
+	func startJobPanelTimers() {
+		if jobPollTimer == nil {
+			let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
+				Task { @MainActor [weak self] in
+					self?.refreshJobPanel()
+				}
+			}
+			RunLoop.main.add(timer, forMode: .common)
+			jobPollTimer = timer
+		}
+	}
+
+	func stopJobPanelTimers() {
+		jobPollTimer?.invalidate()
+		jobPollTimer = nil
+	}
+
+	func installJobPanelObservers() {
+		guard jobObserverTokens.isEmpty else {
+			return
+		}
+		let names: [Notification.Name] = [.aiJobsDidChange, .aiTranslationReady, .aiRewriteReady, .aiRewriteStored, .aiRewriteRemoved, .aiJobFailed]
+		for name in names {
+			let token = NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+				Task { @MainActor [weak self] in
+					self?.scheduleJobPanelRefresh()
+				}
+			}
+			jobObserverTokens.append(token)
+		}
+	}
+
+	func scheduleJobPanelRefresh(immediate: Bool = false) {
+		jobDebounceWorkItem?.cancel()
+		jobDebounceWorkItem = nil
+		guard !immediate else {
+			refreshJobPanel()
+			return
+		}
+		let work = DispatchWorkItem { [weak self] in
+			Task { @MainActor [weak self] in
+				self?.refreshJobPanel()
+			}
+		}
+		jobDebounceWorkItem = work
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+	}
+
+	func refreshJobPanel() {
+		guard jobPanelVisible, article == nil, let context = jobPanelContextProvider?() else {
+			return
+		}
+		let generation = UUID()
+		jobRefreshGeneration = generation
+		jobRefreshTask?.cancel()
+		jobRefreshTask = Task { @MainActor [weak self] in
+			guard let self else {
+				return
+			}
+			let now = Date()
+			let store = AIEnvironment.shared.store
+			let since = now.addingTimeInterval(-24 * 60 * 60)
+			let activeJobs: [AIJob]
+			let foldedFailures: [AIJob]
+			let completedTodayJobs: [AIJob]
+			do {
+				async let active = store.activeJobs()
+				async let folded = store.foldedFailures(since: since)
+				async let completedToday = store.recentJobs(status: .completed, since: AIJobStatusModel.startOfDay(for: now), limit: 3000)
+				activeJobs = try await active
+				foldedFailures = try await folded
+				completedTodayJobs = try await completedToday
+			} catch {
+				return
+			}
+			guard self.jobRefreshGeneration == generation, self.jobPanelVisible else {
+				return
+			}
+
+			let articleIDs = Set(activeJobs.map(\.articleID))
+				.union(foldedFailures.map(\.articleID))
+				.union(completedTodayJobs.map(\.articleID))
+			let articles: Set<Article>
+			if articleIDs.isEmpty {
+				articles = []
+			} else if articleIDs.count > 1000 {
+				var merged: Set<Article> = []
+				let ids = Array(articleIDs)
+				var start = 0
+				while start < ids.count {
+					if Task.isCancelled {
+						return
+					}
+					let end = min(start + 500, ids.count)
+					let batch = Set(ids[start..<end])
+					let fetched = await AccountManager.shared.fetchArticlesAsync(.articleIDs(batch))
+					merged.formUnion(fetched)
+					start = end
+				}
+				articles = merged
+			} else {
+				articles = await AccountManager.shared.fetchArticlesAsync(.articleIDs(articleIDs))
+			}
+			let articlesByID = Dictionary(articles.map { ($0.articleID, AIJobArticleInfo(article: $0)) }, uniquingKeysWith: { first, _ in first })
+
+			let visibleIDs = context.timelineArticleIDs
+			var coverage: AIJobCoverage?
+			var coverageQueryFailed = false
+			if visibleIDs.isEmpty {
+				coverage = AIJobCoverageBuilder.build(
+					articles: [],
+					unreadOnly: context.unreadOnly,
+					feedDisplayNames: context.feedDisplayNames,
+					translatedArticleIDs: [],
+					rewrittenArticleIDs: []
+				)
+			} else {
+				do {
+					async let translated = store.completedTranslationArticleIDs(for: visibleIDs)
+					async let rewritten = store.completedRewriteArticleIDs(for: visibleIDs)
+					coverage = AIJobCoverageBuilder.build(
+						articles: context.articles,
+						unreadOnly: context.unreadOnly,
+						feedDisplayNames: context.feedDisplayNames,
+						translatedArticleIDs: try await translated,
+						rewrittenArticleIDs: try await rewritten
+					)
+				} catch {
+					coverage = nil
+					coverageQueryFailed = true
+				}
+			}
+
+			guard self.jobRefreshGeneration == generation, self.jobPanelVisible else {
+				return
+			}
+			self.jobSnapshot = JobSnapshot(
+				context: context,
+				activeJobs: activeJobs,
+				foldedFailures: foldedFailures,
+				completedTodayJobs: completedTodayJobs,
+				articlesByID: articlesByID,
+				coverage: coverage,
+				coverageQueryFailed: coverageQueryFailed,
+				now: now
+			)
+			self.renderJobPanel()
+		}
+	}
+
+	func renderJobPanel() {
+		guard jobPanelVisible, let snapshot = jobSnapshot else {
+			return
+		}
+		let input = AIJobStatusInput(
+			scope: snapshot.context.scope,
+			now: snapshot.now,
+			hasAPIKey: AIEnvironment.shared.hasAPIKey,
+			activeJobs: snapshot.activeJobs,
+			foldedFailures: snapshot.foldedFailures,
+			completedTodayJobs: snapshot.completedTodayJobs,
+			articlesByID: snapshot.articlesByID,
+			timelineArticleCount: snapshot.context.timelineArticleCount,
+			unreadOnly: snapshot.context.unreadOnly,
+			coverage: snapshot.coverage,
+			coverageQueryFailed: snapshot.coverageQueryFailed,
+			feedDisplayNames: snapshot.context.feedDisplayNames,
+			expandedFailureGroups: expandedFailureGroups,
+			retryingFailureGroups: retryingFailureGroups,
+			failureRetryNotices: failureRetryNotices
+		)
+		jobStatusView.render(AIJobStatusModel.build(input))
+	}
+
+	func toggleFailureGroup(_ key: AIJobFailureGroupKey) {
+		if expandedFailureGroups.contains(key) {
+			expandedFailureGroups.remove(key)
+		} else {
+			expandedFailureGroups.insert(key)
+		}
+		renderJobPanel()
+	}
+
+	/// “Retry all” goes through the executor's manual enqueue paths. The runner
+	/// reserves each article + kind before its first await, so a double click
+	/// cannot submit the same job twice, and a concurrent catch-up pass wins or
+	/// loses the same reservation exactly once.
+	func retryFailureGroup(_ key: AIJobFailureGroupKey, requests: [AIJobRequeueRequest]) {
+		guard !retryingFailureGroups.contains(key) else {
+			return
+		}
+		retryingFailureGroups.insert(key)
+		failureRetryNotices[key] = nil
+		renderJobPanel()
+		Task { @MainActor [weak self] in
+			guard let self else {
+				return
+			}
+			let outcome = await self.retryRunner.retry(requests)
+			self.retryingFailureGroups.remove(key)
+			self.failureRetryNotices[key] = outcome.skippedCount > 0 ? "已跳过 \(outcome.skippedCount) 项" : nil
+			self.renderJobPanel()
+			self.scheduleJobPanelRefresh()
+		}
+	}
+
+	func openAISettings() {
+		NSApp.sendAction(#selector(AppDelegate.showAIPreferences(_:)), to: nil, from: self)
 	}
 }

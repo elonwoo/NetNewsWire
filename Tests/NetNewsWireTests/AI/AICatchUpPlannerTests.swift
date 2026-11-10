@@ -42,6 +42,25 @@ import Testing
 		)
 	}
 
+	private func shortEnglishArticle(id: String, publishedAt: Date) -> AIArticle {
+		AIArticle(
+			id: id,
+			title: "Title",
+			contentText: String(repeating: "a", count: 800),
+			publishedAt: publishedAt
+		)
+	}
+
+	private func shortPaperArticle(id: String, publishedAt: Date) -> AIArticle {
+		AIArticle(
+			id: id,
+			title: "Title",
+			contentText: String(repeating: "a", count: 800),
+			url: "https://arxiv.org/abs/2501.00001",
+			publishedAt: publishedAt
+		)
+	}
+
 	@Test func chineseLongArticleIsSkippedWithoutOverride() {
 		let article = chineseArticle(id: "zh", publishedAt: now)
 		let plan = AICatchUpPlanner.plan(
@@ -84,6 +103,45 @@ import Testing
 
 		#expect(plan.rewriteArticleIDs.isEmpty)
 		#expect(plan.titleTranslationArticleIDs.isEmpty)
+	}
+
+	@Test func shortBodyRewriteWithoutFullTextProvenanceIsQueuedOnce() {
+		let article = shortEnglishArticle(id: "short", publishedAt: now)
+		let plan = AICatchUpPlanner.plan(
+			articles: [article],
+			now: now,
+			cachedRewrites: ["short": AIContentHash.rewrite(for: article)],
+			cachedTitleHashes: [:],
+			limit: 200
+		)
+
+		#expect(plan.rewriteArticleIDs == ["short"])
+	}
+
+	@Test func shortBodyFullTextRewriteStaysCurrent() {
+		let article = shortEnglishArticle(id: "short", publishedAt: now)
+		let plan = AICatchUpPlanner.plan(
+			articles: [article],
+			now: now,
+			cachedRewrites: ["short": "ft:" + AIContentHash.rewrite(for: article)],
+			cachedTitleHashes: [:],
+			limit: 200
+		)
+
+		#expect(plan.rewriteArticleIDs.isEmpty)
+	}
+
+	@Test func shortPaperRewriteIsNotRequeuedForFullText() {
+		let article = shortPaperArticle(id: "paper", publishedAt: now)
+		let plan = AICatchUpPlanner.plan(
+			articles: [article],
+			now: now,
+			cachedRewrites: ["paper": AIContentHash.rewrite(for: article)],
+			cachedTitleHashes: [:],
+			limit: 200
+		)
+
+		#expect(plan.rewriteArticleIDs.isEmpty)
 	}
 
 	@Test func legacyRewriteIsNotQueuedAutomatically() {

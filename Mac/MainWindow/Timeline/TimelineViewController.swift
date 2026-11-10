@@ -226,6 +226,14 @@ final class TimelineViewController: NSViewController, UndoableCommandRunner, Unr
 	var translatedArticleIDs = Set<String>()
 	/// Translation counterpart of `checkedRewriteArticleIDs`.
 	var checkedTranslationArticleIDs = Set<String>()
+	/// Chinese titles for the visible articles, keyed by articleID. Read by the
+	/// standard layout when it configures and measures a row.
+	private var titleZhByArticleID = [String: String]()
+	/// Article IDs whose title has been queried. Scrolls over them again don’t re-query.
+	private var checkedTitleArticleIDs = Set<String>()
+	/// Title refreshes triggered by completed translations, coalesced into one per run loop turn.
+	private var pendingTitleRefreshArticleIDs = Set<String>()
+	private var isTitleRefreshScheduled = false
 
 	// Owned by the window’s TimelineContainerViewController.
 	// Before the view loads there is nothing to re-sort — the first fetch uses the current value.
@@ -366,6 +374,7 @@ final class TimelineViewController: NSViewController, UndoableCommandRunner, Unr
 			NotificationCenter.default.addObserver(self, selector: #selector(handleTimelineFadeReadArticlesDidChange(_:)), name: .timelineFadeReadArticlesDidChange, object: nil)
 			NotificationCenter.default.addObserver(self, selector: #selector(handleAIRewriteReady(_:)), name: .aiRewriteReady, object: nil)
 			NotificationCenter.default.addObserver(self, selector: #selector(handleAIRewriteReady(_:)), name: .aiRewriteStored, object: nil)
+			NotificationCenter.default.addObserver(self, selector: #selector(handleAIRewriteRemoved(_:)), name: .aiRewriteRemoved, object: nil)
 			NotificationCenter.default.addObserver(self, selector: #selector(handleAITranslationReady(_:)), name: .aiTranslationReady, object: nil)
 			NotificationCenter.default.addObserver(self, selector: #selector(handleFeedSettingDidChange(_:)), name: .feedSettingDidChange, object: nil)
 			didRegisterForNotifications = true
@@ -1054,7 +1063,8 @@ final class TimelineViewController: NSViewController, UndoableCommandRunner, Unr
 		}
 		let needRewrite = articleIDs.subtracting(checkedRewriteArticleIDs)
 		let needTranslation = articleIDs.subtracting(checkedTranslationArticleIDs)
-		guard !needRewrite.isEmpty || !needTranslation.isEmpty else {
+		let needTitle = articleIDs.subtracting(checkedTitleArticleIDs).subtracting(titleZhByArticleID.keys)
+		guard !needRewrite.isEmpty || !needTranslation.isEmpty || !needTitle.isEmpty else {
 			return
 		}
 
@@ -1101,6 +1111,48 @@ final class TimelineViewController: NSViewController, UndoableCommandRunner, Unr
 				}
 			}
 		}
+		if !needTitle.isEmpty {
+			checkedTitleArticleIDs.formUnion(needTitle)
+			Task { @MainActor [weak self] in
+				guard let self else {
+					return
+				}
+				do {
+					let titles = try await AIEnvironment.shared.store.translatedTitles(for: needTitle)
+					self.applyTranslatedTitles(titles, queriedIDs: needTitle)
+				} catch {
+					// Leave only these IDs unchecked so the next trigger retries them.
+					self.checkedTitleArticleIDs.subtract(needTitle)
+					Self.logger.debug("TimelineViewController: translated title query failed: \(error.localizedDescription, privacy: .public)")
+				}
+			}
+		}
+	}
+
+	/// Merges a completed title query into the cache, then re-measures and
+	/// redraws the rows whose subtitle changed. A queried ID with no title is
+	/// removed from the cache but stays checked, so scrolling doesn’t re-query it;
+	/// an ID that does have a title is covered by the cache instead.
+	private func applyTranslatedTitles(_ titles: [String: String], queriedIDs: Set<String>) {
+		var changedArticleIDs = Set<String>()
+		for articleID in queriedIDs {
+			if let titleZh = titles[articleID] {
+				if titleZhByArticleID[articleID] != titleZh {
+					titleZhByArticleID[articleID] = titleZh
+					changedArticleIDs.insert(articleID)
+				}
+				checkedTitleArticleIDs.remove(articleID)
+			} else {
+				titleZhByArticleID[articleID] = nil
+				changedArticleIDs.insert(articleID)
+			}
+		}
+		guard !changedArticleIDs.isEmpty else {
+			return
+		}
+		let rows = indexesForArticleIDs(changedArticleIDs)
+		remeasureRowHeights(rows)
+		reloadVisibleCells(for: rows)
 	}
 
 	private func visibleArticleIDs() -> Set<String> {
@@ -1139,6 +1191,20 @@ final class TimelineViewController: NSViewController, UndoableCommandRunner, Unr
 		reloadVisibleCells(for: [articleID])
 	}
 
+	/// The green dot only draws; it does not affect row height, so a cell reload
+	/// is enough and no row-height cache needs invalidating.
+	@objc private func handleAIRewriteRemoved(_ notification: Notification) {
+		guard let articleID = notification.userInfo?[AIUserInfoKey.articleID] as? String else {
+			return
+		}
+		rewrittenArticleIDs = Self.rewrittenArticleIDsAfterRemoval(rewrittenArticleIDs, articleID: articleID)
+		reloadVisibleCells(for: [articleID])
+	}
+
+	static func rewrittenArticleIDsAfterRemoval(_ articleIDs: Set<String>, articleID: String) -> Set<String> {
+		articleIDs.subtracting([articleID])
+	}
+
 	@objc private func handleAITranslationReady(_ notification: Notification) {
 		guard let articleID = notification.userInfo?[AIUserInfoKey.articleID] as? String else {
 			return
@@ -1146,6 +1212,30 @@ final class TimelineViewController: NSViewController, UndoableCommandRunner, Unr
 		// The row is re-queried through the unified path, so the dot turns yellow
 		// as soon as the store has the row.
 		checkedTranslationArticleIDs.remove(articleID)
+		// A batch of translations posts one notification per article, so the
+		// refreshes are coalesced instead of reloading once per notification.
+		pendingTitleRefreshArticleIDs.insert(articleID)
+		checkedTitleArticleIDs.remove(articleID)
+		titleZhByArticleID[articleID] = nil
+		scheduleTitleRefresh()
+	}
+
+	private func scheduleTitleRefresh() {
+		guard !isTitleRefreshScheduled else {
+			return
+		}
+		isTitleRefreshScheduled = true
+		Task { @MainActor [weak self] in
+			self?.flushTitleRefresh()
+		}
+	}
+
+	private func flushTitleRefresh() {
+		isTitleRefreshScheduled = false
+		guard !pendingTitleRefreshArticleIDs.isEmpty else {
+			return
+		}
+		pendingTitleRefreshArticleIDs.removeAll()
 		scheduleRewriteIndicatorRefresh()
 	}
 
@@ -1187,7 +1277,7 @@ final class TimelineViewController: NSViewController, UndoableCommandRunner, Unr
 
 	private func measureRowHeight(for article: Article) {
 		let showThumbnail = articleShowsThumbnail(article)
-		let cellData = TimelineCellData(article: article, showFeedName: showFeedNames, feedName: article.feed?.nameForDisplay, byline: article.byline(), iconImage: nil, showIcon: showIcons, thumbnail: nil, showThumbnail: showThumbnail)
+		let cellData = TimelineCellData(article: article, showFeedName: showFeedNames, feedName: article.feed?.nameForDisplay, byline: article.byline(), iconImage: nil, showIcon: showIcons, thumbnail: nil, showThumbnail: showThumbnail, titleZh: titleZhByArticleID[article.articleID])
 		let appearance: TimelineCellAppearance = showIcons ? cellAppearanceWithIcon : cellAppearance
 		let height = TimelineCellLayout.height(for: rowHeightWidth, cellData: cellData, appearance: appearance)
 		rowHeights[article.articleID] = TimelineRowHeight(article: article, showsThumbnail: showThumbnail, height: height)
@@ -1565,7 +1655,7 @@ extension TimelineViewController: NSTableViewDelegate {
 			showThumbnail = true
 			thumbnail = ThumbnailDownloader.shared.thumbnail(url: thumbnailURL, mode: thumbnailMode, articleTitle: article.title)
 		}
-		cell.cellData = TimelineCellData(article: article, showFeedName: showFeedNames, feedName: article.feed?.nameForDisplay, byline: article.byline(), iconImage: iconImage, showIcon: showIcons, thumbnail: thumbnail, showThumbnail: showThumbnail, hasRewrite: showsRewriteIndicator(for: article), hasTranslation: showsTranslationIndicator(for: article))
+		cell.cellData = TimelineCellData(article: article, showFeedName: showFeedNames, feedName: article.feed?.nameForDisplay, byline: article.byline(), iconImage: iconImage, showIcon: showIcons, thumbnail: thumbnail, showThumbnail: showThumbnail, hasRewrite: showsRewriteIndicator(for: article), hasTranslation: showsTranslationIndicator(for: article), titleZh: titleZhByArticleID[article.articleID])
 	}
 
 	/// Fades the cell views, not the row view, so the selection highlight and separators stay full strength.
@@ -1927,6 +2017,9 @@ private extension TimelineViewController {
 
 	func replaceArticles(with unsortedArticles: Set<Article>) {
 		articles = Array(unsortedArticles).sorted(by: sortParameters)
+		// The right-pane task board counts the visible list, so it must refresh
+		// as soon as a fetch lands (for example after a read-filter toggle).
+		NotificationCenter.default.post(name: .aiTimelineArticlesDidChange, object: self)
 	}
 
 	func fetchUnsortedArticlesSync(for representedObjects: [Any]) -> Set<Article> {

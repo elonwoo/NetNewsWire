@@ -69,6 +69,12 @@ final class MainWindowController: NSWindowController, NSUserInterfaceValidations
 	private var isAIPaneVisible = false
 	private var rememberedAIPaneWidth = MainWindowController.aiPaneDefaultWidth
 	private var isUserResizingAIPane = false
+	/// The timeline posts after every fetch; the panel recalculates immediately
+	/// instead of waiting for its five-second poll. Both are injectable so tests
+	/// can assert the wiring without a live timeline.
+	var aiJobPanelRefreshCenter: NotificationCenter = .default
+	var aiJobPanelRefreshHandler: (() -> Void)?
+	private var timelineRefreshToken: NSObjectProtocol?
 	private var currentSearchField: NSSearchField?
 	private var searchString: String?
 	private var lastSentSearchString: String?
@@ -78,6 +84,7 @@ final class MainWindowController: NSWindowController, NSUserInterfaceValidations
 			detailViewController?.showDetail(for: timelineSourceMode)
 			updateStatusBarLink()
 			updateAIPaneArticle()
+			detailPaneViewController?.updateJobPanel()
 		}
 	}
 	private var searchSmartFeed: SmartFeed?
@@ -91,6 +98,12 @@ final class MainWindowController: NSWindowController, NSUserInterfaceValidations
 	}
 
 	// MARK: - NSWindowController
+
+	isolated deinit {
+		if let timelineRefreshToken {
+			aiJobPanelRefreshCenter.removeObserver(timelineRefreshToken)
+		}
+	}
 
 	convenience init() {
 		self.init(windowNibName: "MainWindow")
@@ -122,7 +135,11 @@ final class MainWindowController: NSWindowController, NSUserInterfaceValidations
 		self.detailViewController = detailViewController
 
 		let detailPaneViewController = AIDetailPaneViewController(detailViewController: detailViewController)
+		detailPaneViewController.jobPanelContextProvider = { [weak self] in
+			self?.currentAIJobPanelContext()
+		}
 		self.detailPaneViewController = detailPaneViewController
+		installTimelineRefreshObservation()
 
 		let aiViewController = AIChatViewController()
 		aiViewController.selectedTextProvider = { [weak self] completion in
@@ -164,6 +181,90 @@ final class MainWindowController: NSWindowController, NSUserInterfaceValidations
 
 	func selectedObjectsInSidebar() -> [AnyObject]? {
 		return sidebarViewController?.selectedObjects
+	}
+
+	/// The task panel only understands the five scopes in the design. Anything
+	/// else (search, no selection, multiple selection, an account row or the
+	/// Smart Feeds group) returns nil and the panel stays hidden.
+	func currentAIJobPanelContext() -> AIJobPanelContext? {
+		guard timelineSourceMode == .regular else {
+			return nil
+		}
+		guard let selectedObjects = selectedObjectsInSidebar(), selectedObjects.count == 1, let object = selectedObjects.first else {
+			return nil
+		}
+		guard let scope = aiJobScope(for: object) else {
+			return nil
+		}
+		let timeline = currentTimelineViewController
+		let timelineArticles = timeline?.articles ?? []
+		var feedDisplayNames: [String: String] = [:]
+		for article in timelineArticles {
+			let host = article.feed.flatMap { URL(string: $0.url)?.host }
+			feedDisplayNames[article.feedID] = AIJobCoverageBuilder.feedDisplayName(
+				feedName: article.feed?.nameForDisplay,
+				urlHost: host,
+				feedID: article.feedID
+			)
+		}
+		return AIJobPanelContext(
+			scope: scope,
+			articles: timelineArticles.map { AIJobArticleInfo(article: $0) },
+			feedDisplayNames: feedDisplayNames,
+			unreadOnly: timeline?.isReadFiltered == true
+		)
+	}
+
+	/// Installs the timeline-fetch observer. Idempotent so tests and the window
+	/// setup can both call it.
+	func installTimelineRefreshObservation() {
+		guard timelineRefreshToken == nil else {
+			return
+		}
+		timelineRefreshToken = aiJobPanelRefreshCenter.addObserver(forName: .aiTimelineArticlesDidChange, object: nil, queue: .main) { [weak self] _ in
+			Task { @MainActor [weak self] in
+				self?.handleTimelineArticlesDidChange()
+			}
+		}
+	}
+
+	func handleTimelineArticlesDidChange() {
+		if let aiJobPanelRefreshHandler {
+			aiJobPanelRefreshHandler()
+			return
+		}
+		detailPaneViewController?.refreshJobPanelFromTimelineChange()
+	}
+
+	private func aiJobScope(for object: AnyObject) -> AIJobScope? {
+		if let feed = object as? Feed {
+			return AIJobScope(kind: .feed, name: feed.nameForDisplay, feedIDs: [feed.feedID], feedCount: 1)
+		}
+		if let folder = object as? Folder {
+			let feeds = folder.flattenedFeeds()
+			return AIJobScope(kind: .folder, name: folder.nameForDisplay, feedIDs: Set(feeds.map(\.feedID)), feedCount: feeds.count)
+		}
+		let smartFeeds = SmartFeedsController.shared
+		if object === smartFeeds.todayFeed {
+			return AIJobScope(kind: .today, name: smartFeeds.todayFeed.nameForDisplay)
+		}
+		if object === smartFeeds.unreadFeed {
+			return AIJobScope(kind: .allUnread, name: smartFeeds.unreadFeed.nameForDisplay)
+		}
+		if object === smartFeeds.starredFeed {
+			return AIJobScope(kind: .starred, name: smartFeeds.starredFeed.nameForDisplay)
+		}
+		return nil
+	}
+
+	private func selectTimelineArticle(_ articleID: String) {
+		guard let timeline = currentTimelineViewController,
+		      let index = timeline.articles.firstIndex(where: { $0.articleID == articleID }) else {
+			return
+		}
+		timeline.tableView.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+		timeline.tableView.scrollTo(row: index)
+		timeline.focus()
 	}
 
 	func selectedContainerInSidebar() -> Container? {
@@ -741,6 +842,7 @@ extension MainWindowController: SidebarDelegate {
 			forceSearchToEnd()
 		}
 		updateWindowTitle()
+		detailPaneViewController?.updateJobPanel()
 		NotificationCenter.default.post(name: .InspectableObjectsDidChange, object: nil)
 	}
 
@@ -1186,6 +1288,33 @@ extension MainWindowController {
 			return false
 		}
 		setAIPaneVisible(false, focus: false)
+		return true
+	}
+}
+
+// MARK: - Keyboard
+
+extension MainWindowController {
+
+	/// Clears the timeline’s article selection on Escape, so the detail pane
+	/// goes back to the no-selection state and the task panel shows again.
+	/// Returns false when the event belongs to something else, which lets it
+	/// travel on to the page or the field that owns it.
+	func closeSelectedArticleOnEscape(from view: NSView) -> Bool {
+		let window = view.window
+		let firstResponder = window?.firstResponder
+		let policy = EscapeArticleClosePolicy(
+			hasSelectedArticle: oneSelectedArticle != nil,
+			isTextInputFirstResponder: firstResponder is NSTextView || firstResponder is NSTextField,
+			hasModalWindowOrSheet: window?.attachedSheet != nil || NSApp.modalWindow != nil,
+			isArticleBodyFirstResponder: view is DetailWebView
+		)
+		guard policy.shouldCloseSelectedArticle, let timeline = currentTimelineViewController else {
+			return false
+		}
+
+		timeline.tableView.deselectAll(nil)
+		makeTimelineViewFirstResponder()
 		return true
 	}
 }

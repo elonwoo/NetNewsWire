@@ -26,6 +26,8 @@ struct TimelineCellAppearance: Equatable {
 
 	let titleFont: NSFont
 	let titleBottomMargin: CGFloat = 1.0
+	let subtitleFont: NSFont
+	let subtitleSpacing: CGFloat = 1.0
 	let numberOfLines: Int // Shared by the title and summary, or the title alone when there’s no summary
 	let showsSummary: Bool
 	let textOnlyNumberOfLines: Int // For the text when there’s no title
@@ -67,6 +69,7 @@ struct TimelineCellAppearance: Equatable {
 		self.feedNameFont = NSFont.systemFont(ofSize: smallItemFontSize, weight: NSFont.Weight.bold)
 		self.dateFont = NSFont.systemFont(ofSize: smallItemFontSize, weight: NSFont.Weight.bold)
 		self.titleFont = NSFont.systemFont(ofSize: largeItemFontSize, weight: NSFont.Weight.semibold)
+		self.subtitleFont = NSFont.systemFont(ofSize: smallItemFontSize)
 		self.textFont = NSFont.systemFont(ofSize: largeItemFontSize)
 		self.textOnlyFont = NSFont.systemFont(ofSize: largeItemFontSize)
 

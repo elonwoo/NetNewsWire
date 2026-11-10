@@ -24,6 +24,8 @@ enum AIRewriteState: Equatable {
 /// must never overwrite one another.
 enum AIContentHash {
 
+	private static let bodyLengthCache = BodyLengthCache()
+
 	static func title(for article: AIArticle) -> String {
 		ContentFingerprint.title(for: article)
 	}
@@ -53,13 +55,49 @@ enum AIContentHash {
 		guard let stored, !stored.isEmpty else {
 			return .missing
 		}
-		if stored == rewrite(for: article) {
+		if requiresFullTextRefresh(storedHash: stored, article: article) {
+			return .contentChanged
+		}
+		let normalized = normalizedRewriteHash(stored)
+		if normalized == rewrite(for: article) {
 			return .current
 		}
-		if stored == ContentFingerprint.legacyRewrite(for: article) {
+		if normalized == ContentFingerprint.legacyRewrite(for: article) {
 			return .pipelineOutdated
 		}
 		return .contentChanged
+	}
+
+	/// Full-text rewrites carry an `ft:` provenance prefix. Every automatic
+	/// comparison ignores it so the rewrite stays current.
+	static func normalizedRewriteHash(_ hash: String) -> String {
+		hash.hasPrefix("ft:") ? String(hash.dropFirst(3)) : hash
+	}
+
+	/// A short article rewritten before full-text fetching is untrusted even
+	/// when its feed-based hash still matches. Every short-body article must
+	/// either gain an `ft:` rewrite or lose the old row.
+	static func requiresFullTextRefresh(storedHash: String, article: AIArticle) -> Bool {
+		guard AIRewriteKindSelector.kind(for: article) == .article else {
+			return false
+		}
+		return bodyCharacterCount(for: article) < AIFullTextFetcher.summaryCharacterLimit
+			&& !storedHash.hasPrefix("ft:")
+	}
+
+	/// Body length is parsed from HTML, so cache it by article id, content
+	/// fingerprint and text fallback. The fallback is part of the key because a
+	/// blank HTML body is measured from `contentText` instead. The first lookup
+	/// per content still runs on the caller's actor, which is the main actor for
+	/// the pane and planner.
+	static func bodyCharacterCount(for article: AIArticle) -> Int {
+		let key = "\(article.id)|\(ContentFingerprint.body(for: article))|\(article.contentText ?? "")" as NSString
+		if let cached = bodyLengthCache.value(for: key) {
+			return cached
+		}
+		let count = AIFullTextFetcher.bodyCharacterCount(for: article)
+		bodyLengthCache.insert(count, for: key)
+		return count
 	}
 
 	/// Legacy and pipeline-outdated rewrites are treated as up to date by every
@@ -75,5 +113,20 @@ enum AIContentHash {
 
 	static func sha256Hex(_ text: String) -> String {
 		ContentFingerprint.sha256Hex(text)
+	}
+}
+
+/// `NSCache` is thread-safe but not `Sendable`; this wrapper keeps the shared
+/// cache usable from both the main actor and concurrent callers.
+private final class BodyLengthCache: @unchecked Sendable {
+
+	private let cache = NSCache<NSString, NSNumber>()
+
+	func value(for key: NSString) -> Int? {
+		cache.object(forKey: key)?.intValue
+	}
+
+	func insert(_ value: Int, for key: NSString) {
+		cache.setObject(NSNumber(value: value), forKey: key)
 	}
 }

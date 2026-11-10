@@ -145,6 +145,23 @@ public enum HTMLSourceBlocks {
 		return blocks.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n")
 	}
 
+	/// Cleans an HTML fragment without splitting it into blocks.
+	///
+	/// Applies the same active-content removal, tag/attribute whitelist, URL
+	/// allowlist and attribute escaping as `blocks`, which makes it safe to run
+	/// over stored HTML (such as an old translation `targetHTML`) right before
+	/// it is rendered.
+	public static func sanitizedHTML(_ html: String) -> String {
+		guard !html.isEmpty else {
+			return ""
+		}
+		// Tree building repairs unclosed tags, so a stored fragment that loses
+		// a closing tag to the active-content skip still renders balanced.
+		let tokens = dropActiveContent(tokenize(Array(html)))
+		let root = buildTree(tokens)
+		return root.children.map(render).joined()
+	}
+
 	/// Reparses an already-cleaned fragment. Used by the translation planner and
 	/// the rewrite source builder; the fragment came from `blocks` output, so it
 	/// contains no active content.
@@ -162,6 +179,9 @@ public enum HTMLSourceBlocks {
 		"gt": ">",
 		"quot": "\"",
 		"apos": "'",
+		"colon": ":",
+		"tab": "\t",
+		"newline": "\n",
 		"eacute": "é",
 		"egrave": "è",
 		"agrave": "à",
@@ -370,7 +390,26 @@ public enum HTMLSourceBlocks {
 		"p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote", "pre", "figure", "table"
 	]
 
-	static let mediaTags: Set<String> = ["img", "hr"]
+	static let mediaTags: Set<String> = ["img", "hr", "iframe"]
+
+	/// The canonical watch URL for the first YouTube embed in the given HTML.
+	static func youTubeWatchURL(in html: String) -> String? {
+		guard let identifier = youTubeVideoID(in: html) else {
+			return nil
+		}
+		return "https://www.youtube.com/watch?v=\(identifier)"
+	}
+
+	/// The video ID of the first canonical embed in the given HTML.
+	static func youTubeVideoID(in html: String) -> String? {
+		let pattern = "youtube-nocookie\\.com/embed/([A-Za-z0-9_-]{11})"
+		guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+		      let match = regex.firstMatch(in: html, range: NSRange(html.startIndex..., in: html)),
+		      let range = Range(match.range(at: 1), in: html) else {
+			return nil
+		}
+		return String(html[range])
+	}
 
 	static let textBoundaryTags: Set<String> = [
 		"p", "div", "section", "article", "main", "header", "footer", "aside", "nav",
@@ -590,7 +629,6 @@ extension HTMLSourceBlocks {
 		}
 
 		var attributes: [ParsedAttribute] = []
-		var sawSelfClosingSlash = false
 		while index < characters.count {
 			while index < characters.count, characters[index].isWhitespace {
 				index += 1
@@ -603,7 +641,6 @@ extension HTMLSourceBlocks {
 				break
 			}
 			if characters[index] == "/" {
-				sawSelfClosingSlash = true
 				index += 1
 				continue
 			}
@@ -664,26 +701,39 @@ extension HTMLSourceBlocks {
 			))
 		}
 
+		// The HTML parser ignores a self-closing slash on non-void elements, so
+		// only void elements may be emitted as `<tag />`. Everything else is
+		// always paired with an explicit closing tag.
+		let isVoid = voidElements.contains(name.lowercased())
 		var cleaned = "<\(name.lowercased())"
 		for attribute in attributes where attribute.isAllowed {
-			if let raw = attribute.rawValue {
-				cleaned += " \(attribute.name)=\(raw)"
+			if let value = attribute.value {
+				cleaned += " \(attribute.name)=\"\(escapeAttributeValue(value))\""
 			} else {
 				cleaned += " \(attribute.name)"
 			}
 		}
-		if sawSelfClosingSlash || voidElements.contains(name.lowercased()) {
+		if isVoid {
 			cleaned += " />"
 		} else {
 			cleaned += ">"
 		}
 
-		return (StartTag(name: name.lowercased(), isSelfClosing: sawSelfClosingSlash, attributes: attributes, startTag: cleaned), index)
+		return (StartTag(name: name.lowercased(), isSelfClosing: isVoid, attributes: attributes, startTag: cleaned), index)
+	}
+
+	private static func escapeAttributeValue(_ value: String) -> String {
+		value
+			.replacingOccurrences(of: "&", with: "&amp;")
+			.replacingOccurrences(of: "\"", with: "&quot;")
+			.replacingOccurrences(of: "<", with: "&lt;")
+			.replacingOccurrences(of: ">", with: "&gt;")
 	}
 
 	private static let allowedAttributes: [String: Set<String>] = [
 		"a": ["href", "title"],
 		"img": ["src", "alt", "title", "width", "height"],
+		"iframe": ["src", "width", "height", "frameborder", "allow", "allowfullscreen", "title", "referrerpolicy"],
 		"blockquote": ["cite"],
 		"ol": ["start", "reversed", "type"],
 		"li": ["value"],
@@ -711,18 +761,107 @@ extension HTMLSourceBlocks {
 			guard let value else {
 				return false
 			}
-			let lowered = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-			if lowered.hasPrefix("javascript:") || lowered.hasPrefix("vbscript:") || lowered.hasPrefix("data:") {
-				return false
-			}
+			return isSafeURLValue(value)
 		}
 		return true
+	}
+
+	/// Checks the scheme only after decoding character references and dropping
+	/// whitespace and control characters, so `javascript&colon;`,
+	/// `javascript&#58alert(1)` or `java&#9script:` cannot slip past. Allowed
+	/// are http, https, mailto, fragments and relative URLs.
+	private static func isSafeURLValue(_ value: String) -> Bool {
+		let decoded = decodeCharacterReferences(value)
+		var normalized = ""
+		for scalar in decoded.unicodeScalars {
+			if CharacterSet.whitespacesAndNewlines.contains(scalar) || CharacterSet.controlCharacters.contains(scalar) {
+				continue
+			}
+			normalized.append(Character(scalar))
+		}
+		normalized = normalized.lowercased()
+		guard let colon = normalized.firstIndex(of: ":") else {
+			return true
+		}
+		// A `#` or path/query separator before the colon means the colon is
+		// not a scheme separator. The check runs after decoding so an encoded
+		// `#` cannot be used to justify a relative URL.
+		let prefix = normalized[..<colon]
+		guard !prefix.contains("/"), !prefix.contains("?"), !prefix.contains("#") else {
+			return true
+		}
+		let scheme = String(prefix)
+		return scheme == "http" || scheme == "https" || scheme == "mailto"
+	}
+
+	/// Decodes named and numeric character references greedily, with the
+	/// trailing semicolon optional, unlike the stricter text decoder above.
+	private static func decodeCharacterReferences(_ text: String) -> String {
+		let characters = Array(text)
+		var result = ""
+		var index = 0
+		while index < characters.count {
+			guard characters[index] == "&", let reference = characterReference(in: characters, at: index) else {
+				result.append(characters[index])
+				index += 1
+				continue
+			}
+			result += reference.value
+			index += reference.length
+		}
+		return result
+	}
+
+	private static func characterReference(in characters: [Character], at index: Int) -> (value: String, length: Int)? {
+		var cursor = index + 1
+		guard cursor < characters.count else {
+			return nil
+		}
+		if characters[cursor] == "#" {
+			cursor += 1
+			var radix = 10
+			if cursor < characters.count, characters[cursor] == "x" || characters[cursor] == "X" {
+				radix = 16
+				cursor += 1
+			}
+			let digitsStart = cursor
+			while cursor < characters.count,
+			      radix == 16 ? characters[cursor].isHexDigit : characters[cursor].isNumber {
+				cursor += 1
+			}
+			guard cursor > digitsStart,
+			      let value = UInt32(String(characters[digitsStart..<cursor]), radix: radix),
+			      let scalar = UnicodeScalar(value) else {
+				return nil
+			}
+			if cursor < characters.count, characters[cursor] == ";" {
+				cursor += 1
+			}
+			return (String(scalar), cursor - index)
+		}
+
+		let tail = String(characters[cursor...]).lowercased()
+		var matched: (name: String, value: String)?
+		for (name, value) in namedEntities where tail.hasPrefix(name) {
+			if matched == nil || name.count > matched!.name.count {
+				matched = (name, value)
+			}
+		}
+		guard let matched else {
+			return nil
+		}
+		var end = cursor + matched.name.count
+		if end < characters.count, characters[end] == ";" {
+			end += 1
+		}
+		return (matched.value, end - index)
 	}
 
 	static func dropActiveContent(_ tokens: [Token]) -> [Token] {
 		var result: [Token] = []
 		var skipName: String?
 		var skipDepth = 0
+		var embeddedVideoIDs = Set<String>()
 
 		for token in tokens {
 			if let currentSkip = skipName {
@@ -742,9 +881,34 @@ extension HTMLSourceBlocks {
 				if droppedVoidElements.contains(tag.name) {
 					continue
 				}
-				if droppedContentElements.contains(tag.name), !tag.isSelfClosing {
-					skipName = tag.name
-					skipDepth = 1
+				if tag.name == "iframe" {
+					// Keep a video only when it is a YouTube embed; everything
+					// else is still dropped along with its content. A repeated
+					// video is removed entirely so no raw youtube.com frame or
+					// second player survives.
+					if let sanitized = sanitizedYouTubeIframe(tag),
+					   let identifier = youTubeVideoID(in: sanitized.startTag) {
+						if embeddedVideoIDs.insert(identifier).inserted {
+							result.append(.start(sanitized))
+							result.append(.end("iframe"))
+						}
+						if !tag.isSelfClosing {
+							skipName = tag.name
+							skipDepth = 1
+						}
+					} else if !tag.isSelfClosing {
+						skipName = tag.name
+						skipDepth = 1
+					}
+					continue
+				}
+				if droppedContentElements.contains(tag.name) {
+					// Self-closing syntax is ignored by HTML parsers on these
+					// elements, so always drop the tag and skip its content.
+					if !voidElements.contains(tag.name) {
+						skipName = tag.name
+						skipDepth = 1
+					}
 					continue
 				}
 				result.append(token)
@@ -753,6 +917,62 @@ extension HTMLSourceBlocks {
 			}
 		}
 		return result
+	}
+
+	/// Rebuilds a YouTube iframe with a privacy-preserving embed URL and only
+	/// the allowed attributes. Mirrors the app's YouTubeEmbedRewriter, which
+	/// runs again on the rendered pane and is idempotent; the module cannot
+	/// import the app target.
+	private static func sanitizedYouTubeIframe(_ tag: StartTag) -> StartTag? {
+		guard let source = tag.attributes.first(where: { $0.name == "src" && $0.isAllowed })?.value,
+		      let embedURL = youTubeEmbedURL(from: source) else {
+			return nil
+		}
+		var cleaned = "<iframe src=\"\(embedURL)\""
+		var attributes: [ParsedAttribute] = []
+		for attribute in tag.attributes where attribute.isAllowed && attribute.name != "src" {
+			attributes.append(attribute)
+			if let value = attribute.value {
+				cleaned += " \(attribute.name)=\"\(escapeAttributeValue(value))\""
+			} else {
+				cleaned += " \(attribute.name)"
+			}
+		}
+		cleaned += ">"
+		return StartTag(name: "iframe", isSelfClosing: false, attributes: attributes, startTag: cleaned)
+	}
+
+	private static func youTubeEmbedURL(from source: String) -> String? {
+		var value = source.trimmingCharacters(in: .whitespacesAndNewlines)
+		if value.hasPrefix("//") {
+			value = "https:" + value
+		}
+		guard value.contains("://"), let url = URL(string: value), let host = url.host?.lowercased() else {
+			return nil
+		}
+
+		let candidate: String?
+		if host == "youtu.be" || host == "www.youtu.be" {
+			candidate = url.pathComponents.first { $0 != "/" }
+		} else if host == "youtube.com" || host.hasSuffix(".youtube.com") || host == "youtube-nocookie.com" || host.hasSuffix(".youtube-nocookie.com") {
+			if let video = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "v" })?.value {
+				candidate = video
+			} else {
+				let components = url.pathComponents.filter { $0 != "/" }
+				if components.count >= 2, ["embed", "shorts", "live", "v"].contains(components[0].lowercased()) {
+					candidate = components[1]
+				} else {
+					candidate = nil
+				}
+			}
+		} else {
+			candidate = nil
+		}
+
+		guard let candidate, candidate.range(of: "^[A-Za-z0-9_-]{11}$", options: .regularExpression) != nil else {
+			return nil
+		}
+		return "https://www.youtube-nocookie.com/embed/\(candidate)"
 	}
 }
 
@@ -908,8 +1128,11 @@ extension HTMLSourceBlocks {
 		let html = nodes.map(render).joined()
 		let text = plainText(nodes: nodes)
 		let images = collectImages(nodes, caption: nil, baseURL: baseURL)
-		guard !text.isEmpty || !images.isEmpty else {
-			return nil
+		if text.isEmpty, images.isEmpty {
+			guard HTMLSourceBlocks.youTubeWatchURL(in: html) != nil else {
+				return nil
+			}
+			return RawBlock(tag: "#text", kind: .media, text: "", html: html, images: [], isTranslatable: false)
 		}
 		let kind: HTMLSourceBlockKind = text.isEmpty ? .media : .text
 		return RawBlock(tag: "#text", kind: kind, text: text, html: html, images: images, isTranslatable: !text.isEmpty)
@@ -922,25 +1145,35 @@ extension HTMLSourceBlocks {
 		let html = render(node)
 		let images = collectImages([node], caption: nil, baseURL: baseURL)
 
+		let block: RawBlock
 		switch tag {
 		case "pre":
-			return RawBlock(tag: tag, kind: .code, text: codeText(node), html: html, images: [], isTranslatable: false)
+			block = RawBlock(tag: tag, kind: .code, text: codeText(node), html: html, images: [], isTranslatable: false)
 		case "table":
 			let text = tableText(node)
-			return RawBlock(tag: tag, kind: .table, text: text, html: html, images: images, isTranslatable: !text.isEmpty)
+			block = RawBlock(tag: tag, kind: .table, text: text, html: html, images: images, isTranslatable: !text.isEmpty)
 		case "figure":
 			let caption = figcaptionText(node)
 			if let caption, !caption.isEmpty {
-				return RawBlock(tag: tag, kind: .text, text: caption, html: html, images: images, isTranslatable: true)
+				block = RawBlock(tag: tag, kind: .text, text: caption, html: html, images: images, isTranslatable: true)
+			} else {
+				block = RawBlock(tag: tag, kind: .media, text: images.first?.alt ?? "", html: html, images: images, isTranslatable: false)
 			}
-			return RawBlock(tag: tag, kind: .media, text: images.first?.alt ?? "", html: html, images: images, isTranslatable: false)
 		case "li":
 			let text = listText(node)
-			return RawBlock(tag: tag, kind: .text, text: text, html: html, images: images, isTranslatable: !text.isEmpty)
+			block = RawBlock(tag: tag, kind: .text, text: text, html: html, images: images, isTranslatable: !text.isEmpty)
 		default:
 			let text = plainText(nodes: node.children)
-			return RawBlock(tag: tag, kind: .text, text: text, html: html, images: images, isTranslatable: !text.isEmpty)
+			block = RawBlock(tag: tag, kind: .text, text: text, html: html, images: images, isTranslatable: !text.isEmpty)
 		}
+
+		// A wrapper such as `<p>` or `<li>` that holds only a sanitized
+		// YouTube iframe has no text and no image; keep it as media so the
+		// video is not filtered out as an empty text block.
+		if block.kind == .text, block.text.isEmpty, block.images.isEmpty, HTMLSourceBlocks.youTubeWatchURL(in: html) != nil {
+			return RawBlock(tag: tag, kind: .media, text: "", html: html, images: [], isTranslatable: false)
+		}
+		return block
 	}
 
 	private static func makeMediaBlock(_ node: HTMLSourceBlocks.ParsedNode, baseURL: URL?) -> RawBlock {
@@ -1489,8 +1722,9 @@ public enum RewriteSourceBuilder {
 		var links: [RewriteLink] = []
 		var segments: [String] = []
 		var imageOffset = 0
+		var emittedVideoIDs = Set<String>()
 		for block in blocks {
-			let segment = serialize(block: block, imageOffset: imageOffset, baseURL: baseURL, links: &links)
+			let segment = serialize(block: block, imageOffset: imageOffset, baseURL: baseURL, links: &links, emittedVideoIDs: &emittedVideoIDs)
 			if !segment.isEmpty {
 				segments.append(segment)
 			}
@@ -1524,7 +1758,7 @@ public enum RewriteSourceBuilder {
 			.replacingOccurrences(of: "{{t", with: "\\{\\{t")
 	}
 
-	private static func serialize(block: HTMLSourceBlock, imageOffset: Int, baseURL: URL?, links: inout [RewriteLink]) -> String {
+	private static func serialize(block: HTMLSourceBlock, imageOffset: Int, baseURL: URL?, links: inout [RewriteLink], emittedVideoIDs: inout Set<String>) -> String {
 		switch block.kind {
 		case .code:
 			let language = languageClass(in: block.html) ?? ""
@@ -1532,7 +1766,7 @@ public enum RewriteSourceBuilder {
 		case .table:
 			let root = HTMLSourceBlocks.fragment(block.html, baseURL: baseURL)
 			var counter = imageOffset
-			return serializeTable(root, imageCounter: &counter, baseURL: baseURL, links: &links)
+			return serializeTable(root, imageCounter: &counter, baseURL: baseURL, links: &links, emittedVideoIDs: &emittedVideoIDs)
 		case .media:
 			var counter = imageOffset
 			var lines: [String] = []
@@ -1540,25 +1774,34 @@ public enum RewriteSourceBuilder {
 				lines.append("{{img:\(counter)}}")
 				counter += 1
 			}
+			// The sanitizer rewrites YouTube iframes to a nocookie embed, but
+			// they produce no image, so without the watch URL the rewrite
+			// prompt would lose the article's video. Repeated videos are
+			// emitted once; regular links are left untouched.
+			if let watchURL = HTMLSourceBlocks.youTubeWatchURL(in: block.html),
+			   let identifier = HTMLSourceBlocks.youTubeVideoID(in: block.html),
+			   emittedVideoIDs.insert(identifier).inserted {
+				lines.append(watchURL)
+			}
 			return lines.joined(separator: "\n")
 		case .text:
 			let root = HTMLSourceBlocks.fragment(block.html, baseURL: baseURL)
 			var counter = imageOffset
 			if let figure = root.children.first(where: { $0.tag == "figure" }) {
-				return serializeFigure(figure, imageCounter: &counter, baseURL: baseURL, links: &links)
+				return serializeFigure(figure, imageCounter: &counter, baseURL: baseURL, links: &links, emittedVideoIDs: &emittedVideoIDs)
 			}
 			if let list = root.children.first(where: { $0.tag == "li" }) {
-				return serializeList(list, depth: 0, imageCounter: &counter, baseURL: baseURL, links: &links)
+				return serializeList(list, depth: 0, imageCounter: &counter, baseURL: baseURL, links: &links, emittedVideoIDs: &emittedVideoIDs)
 			}
 			var result = ""
 			for child in root.children {
-				result += inlineMarkdown(child, imageCounter: &counter, baseURL: baseURL, links: &links)
+				result += inlineMarkdown(child, imageCounter: &counter, baseURL: baseURL, links: &links, emittedVideoIDs: &emittedVideoIDs)
 			}
 			return HTMLSourceBlocks.normalizeLines(result)
 		}
 	}
 
-	private static func serializeFigure(_ figure: HTMLSourceBlocks.ParsedNode, imageCounter: inout Int, baseURL: URL?, links: inout [RewriteLink]) -> String {
+	private static func serializeFigure(_ figure: HTMLSourceBlocks.ParsedNode, imageCounter: inout Int, baseURL: URL?, links: inout [RewriteLink], emittedVideoIDs: inout Set<String>) -> String {
 		var imageIndices: [Int] = []
 		var probe = imageCounter
 		collectImageIndices(figure, imageCounter: &probe, into: &imageIndices)
@@ -1580,7 +1823,7 @@ public enum RewriteSourceBuilder {
 				inline += "{{img:\(imageCounter)}}"
 				imageCounter += 1
 			} else {
-				inline += inlineMarkdown(child, imageCounter: &imageCounter, baseURL: baseURL, links: &links)
+				inline += inlineMarkdown(child, imageCounter: &imageCounter, baseURL: baseURL, links: &links, emittedVideoIDs: &emittedVideoIDs)
 			}
 		}
 		lines.append(inline)
@@ -1598,61 +1841,71 @@ public enum RewriteSourceBuilder {
 		}
 	}
 
-	private static func serializeList(_ list: HTMLSourceBlocks.ParsedNode, depth: Int, imageCounter: inout Int, baseURL: URL?, links: inout [RewriteLink]) -> String {
+	private static func serializeList(_ list: HTMLSourceBlocks.ParsedNode, depth: Int, imageCounter: inout Int, baseURL: URL?, links: inout [RewriteLink], emittedVideoIDs: inout Set<String>) -> String {
 		var lines: [String] = []
 		var own = ""
 		for child in list.children {
 			if let tag = child.tag, tag == "ul" || tag == "ol" {
-				let line = HTMLSourceBlocks.collapseSpaces(own)
-				if !line.isEmpty {
-					lines.append(String(repeating: "  ", count: depth) + "- " + line)
-					own = ""
-				}
+				lines.append(contentsOf: listLines(own, depth: depth))
+				own = ""
 				for item in child.children where item.tag == "li" {
-					let nested = serializeList(item, depth: depth + 1, imageCounter: &imageCounter, baseURL: baseURL, links: &links)
+					let nested = serializeList(item, depth: depth + 1, imageCounter: &imageCounter, baseURL: baseURL, links: &links, emittedVideoIDs: &emittedVideoIDs)
 					if !nested.isEmpty {
 						lines.append(nested)
 					}
 				}
 			} else if let tag = child.tag, tag == "li" {
-				let line = HTMLSourceBlocks.collapseSpaces(own)
-				if !line.isEmpty {
-					lines.append(String(repeating: "  ", count: depth) + "- " + line)
-					own = ""
-				}
-				let nested = serializeList(child, depth: depth + 1, imageCounter: &imageCounter, baseURL: baseURL, links: &links)
+				lines.append(contentsOf: listLines(own, depth: depth))
+				own = ""
+				let nested = serializeList(child, depth: depth + 1, imageCounter: &imageCounter, baseURL: baseURL, links: &links, emittedVideoIDs: &emittedVideoIDs)
 				if !nested.isEmpty {
 					lines.append(nested)
 				}
 			} else {
-				own += inlineMarkdown(child, imageCounter: &imageCounter, baseURL: baseURL, links: &links)
+				own += inlineMarkdown(child, imageCounter: &imageCounter, baseURL: baseURL, links: &links, emittedVideoIDs: &emittedVideoIDs)
 			}
 		}
-		let line = HTMLSourceBlocks.collapseSpaces(own)
-		if !line.isEmpty {
-			lines.append(String(repeating: "  ", count: depth) + "- " + line)
-		}
+		lines.append(contentsOf: listLines(own, depth: depth))
 		return lines.joined(separator: "\n")
 	}
 
-	private static func serializeTable(_ node: HTMLSourceBlocks.ParsedNode, imageCounter: inout Int, baseURL: URL?, links: inout [RewriteLink]) -> String {
+	/// Formats list item text. A YouTube watch URL emitted by an inline iframe
+	/// gets its own line so it is never glued to the following caption or item.
+	private static func listLines(_ text: String, depth: Int) -> [String] {
+		let parts = text.components(separatedBy: "\n")
+			.map(HTMLSourceBlocks.collapseSpaces)
+			.filter { !$0.isEmpty }
+		guard parts.contains(where: { isWatchLine($0) }) else {
+			let line = HTMLSourceBlocks.collapseSpaces(text)
+			return line.isEmpty ? [] : [String(repeating: "  ", count: depth) + "- " + line]
+		}
+		return parts.map { part in
+			isWatchLine(part) ? part : String(repeating: "  ", count: depth) + "- " + part
+		}
+	}
+
+	private static func isWatchLine(_ text: String) -> Bool {
+		text.range(of: "^https://www\\.youtube\\.com/watch\\?v=[A-Za-z0-9_-]{11}$", options: .regularExpression) != nil
+	}
+
+	private static func serializeTable(_ node: HTMLSourceBlocks.ParsedNode, imageCounter: inout Int, baseURL: URL?, links: inout [RewriteLink], emittedVideoIDs: inout Set<String>) -> String {
 		var rows: [String] = []
-		collectTableMarkdown(node, imageCounter: &imageCounter, baseURL: baseURL, links: &links, into: &rows)
+		collectTableMarkdown(node, imageCounter: &imageCounter, baseURL: baseURL, links: &links, emittedVideoIDs: &emittedVideoIDs, into: &rows)
 		return rows.joined(separator: "\n")
 	}
 
-	private static func collectTableMarkdown(_ node: HTMLSourceBlocks.ParsedNode, imageCounter: inout Int, baseURL: URL?, links: inout [RewriteLink], into rows: inout [String]) {
+	private static func collectTableMarkdown(_ node: HTMLSourceBlocks.ParsedNode, imageCounter: inout Int, baseURL: URL?, links: inout [RewriteLink], emittedVideoIDs: inout Set<String>, into rows: inout [String]) {
 		if node.tag == "tr" {
 			var cells: [String] = []
 			for child in node.children {
 				if child.tag == "td" || child.tag == "th" {
 					var cell = ""
 					for grandchild in child.children {
-						cell += inlineMarkdown(grandchild, imageCounter: &imageCounter, baseURL: baseURL, links: &links)
+						cell += inlineMarkdown(grandchild, imageCounter: &imageCounter, baseURL: baseURL, links: &links, emittedVideoIDs: &emittedVideoIDs)
 					}
 					cells.append(HTMLSourceBlocks.collapseSpaces(cell))
 				} else {
-					collectTableMarkdown(child, imageCounter: &imageCounter, baseURL: baseURL, links: &links, into: &rows)
+					collectTableMarkdown(child, imageCounter: &imageCounter, baseURL: baseURL, links: &links, emittedVideoIDs: &emittedVideoIDs, into: &rows)
 				}
 			}
 			if !cells.isEmpty {
@@ -1661,11 +1914,11 @@ public enum RewriteSourceBuilder {
 			return
 		}
 		for child in node.children {
-			collectTableMarkdown(child, imageCounter: &imageCounter, baseURL: baseURL, links: &links, into: &rows)
+			collectTableMarkdown(child, imageCounter: &imageCounter, baseURL: baseURL, links: &links, emittedVideoIDs: &emittedVideoIDs, into: &rows)
 		}
 	}
 
-	private static func inlineMarkdown(_ node: HTMLSourceBlocks.ParsedNode, imageCounter: inout Int, baseURL: URL?, links: inout [RewriteLink]) -> String {
+	private static func inlineMarkdown(_ node: HTMLSourceBlocks.ParsedNode, imageCounter: inout Int, baseURL: URL?, links: inout [RewriteLink], emittedVideoIDs: inout Set<String>) -> String {
 		if let text = node.text {
 			return escapeTokenPrefixes(HTMLSourceBlocks.decodeEntities(text))
 		}
@@ -1681,10 +1934,19 @@ public enum RewriteSourceBuilder {
 			return token
 		case "hr":
 			return ""
+		case "iframe":
+			guard let watchURL = HTMLSourceBlocks.youTubeWatchURL(in: node.startTag),
+			      let identifier = HTMLSourceBlocks.youTubeVideoID(in: node.startTag),
+			      emittedVideoIDs.insert(identifier).inserted else {
+				return ""
+			}
+			// Keep the URL on its own line so the surrounding text can never be
+			// glued onto the 11-character video ID.
+			return "\n\(watchURL)\n"
 		case "a":
 			var label = ""
 			for child in node.children {
-				label += inlineMarkdown(child, imageCounter: &imageCounter, baseURL: baseURL, links: &links)
+				label += inlineMarkdown(child, imageCounter: &imageCounter, baseURL: baseURL, links: &links, emittedVideoIDs: &emittedVideoIDs)
 			}
 			label = HTMLSourceBlocks.collapseSpaces(label)
 			guard let href = node.attribute(["href"]),
@@ -1694,20 +1956,20 @@ public enum RewriteSourceBuilder {
 			links.append(RewriteLink(label: label, url: resolved))
 			return "[\(label)](\(resolved))"
 		case "strong", "b":
-			return "**" + childMarkdown(node, imageCounter: &imageCounter, baseURL: baseURL, links: &links) + "**"
+			return "**" + childMarkdown(node, imageCounter: &imageCounter, baseURL: baseURL, links: &links, emittedVideoIDs: &emittedVideoIDs) + "**"
 		case "em", "i":
-			return "*" + childMarkdown(node, imageCounter: &imageCounter, baseURL: baseURL, links: &links) + "*"
+			return "*" + childMarkdown(node, imageCounter: &imageCounter, baseURL: baseURL, links: &links, emittedVideoIDs: &emittedVideoIDs) + "*"
 		case "code":
-			return "`" + childMarkdown(node, imageCounter: &imageCounter, baseURL: baseURL, links: &links) + "`"
+			return "`" + childMarkdown(node, imageCounter: &imageCounter, baseURL: baseURL, links: &links, emittedVideoIDs: &emittedVideoIDs) + "`"
 		default:
-			return childMarkdown(node, imageCounter: &imageCounter, baseURL: baseURL, links: &links)
+			return childMarkdown(node, imageCounter: &imageCounter, baseURL: baseURL, links: &links, emittedVideoIDs: &emittedVideoIDs)
 		}
 	}
 
-	private static func childMarkdown(_ node: HTMLSourceBlocks.ParsedNode, imageCounter: inout Int, baseURL: URL?, links: inout [RewriteLink]) -> String {
+	private static func childMarkdown(_ node: HTMLSourceBlocks.ParsedNode, imageCounter: inout Int, baseURL: URL?, links: inout [RewriteLink], emittedVideoIDs: inout Set<String>) -> String {
 		var result = ""
 		for child in node.children {
-			result += inlineMarkdown(child, imageCounter: &imageCounter, baseURL: baseURL, links: &links)
+			result += inlineMarkdown(child, imageCounter: &imageCounter, baseURL: baseURL, links: &links, emittedVideoIDs: &emittedVideoIDs)
 		}
 		return result
 	}

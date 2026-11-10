@@ -186,6 +186,44 @@ import Testing
 		#expect(!quoteHTML.contains("<table>"))
 		#expect(quoteHTML.hasPrefix("<blockquote><p>a | b</p></blockquote>"))
 	}
+
+	@Test func documentEmbedsYouTubeLink() {
+		let html = AIMarkdownRenderer.document(from: "Watch [this video](https://www.youtube.com/watch?v=dQw4w9WgXcQ) now.")
+
+		#expect(html.contains("<iframe"))
+		#expect(html.contains("src=\"https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ\""))
+		#expect(!html.contains("<a href=\"https://www.youtube.com/watch"))
+		#expect(html.contains("<p>Watch "))
+		#expect(html.contains(" now.</p>"))
+	}
+
+	@Test func documentEmbedsBareYouTubeURL() {
+		let html = AIMarkdownRenderer.document(from: "See https://youtu.be/dQw4w9WgXcQ for details.")
+
+		#expect(html.contains("src=\"https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ\""))
+		#expect(!html.contains("https://youtu.be/dQw4w9WgXcQ"))
+	}
+
+	@Test func documentEmbedsURLWithDoubleEscapedEntities() {
+		for suffix in ["&amp;nbsp;", "&amp;amp;", "&amp;#39;", "&amp;amp;amp;nbsp;", "&amp;amp;amp;amp;nbsp;"] {
+			let html = AIMarkdownRenderer.document(from: "See https://youtu.be/VIDEOTEST01\(suffix)后续")
+
+			#expect(html.contains("src=\"https://www.youtube-nocookie.com/embed/VIDEOTEST01\""), Comment(rawValue: suffix))
+			#expect(html.contains("后续"), Comment(rawValue: suffix))
+		}
+	}
+
+	@Test func documentKeepsOrdinaryLinksAndText() {
+		let html = AIMarkdownRenderer.document(from: "See [example](https://example.com) and **bold**.")
+
+		#expect(html.contains("<a href=\"https://example.com\">example</a>"))
+		#expect(html.contains("<strong>bold</strong>"))
+		#expect(!html.contains("<iframe"))
+
+		let plain = AIMarkdownRenderer.document(from: "Just text.")
+		#expect(plain.contains("<p>Just text.</p>"))
+		#expect(!plain.contains("youtube-nocookie.com"))
+	}
 }
 
 private func occurrences(of needle: String, in haystack: String) -> Int {

@@ -25,26 +25,29 @@ final class AIBodyTranslationRunner {
 		self.config = config
 	}
 
-	func translate(_ article: AIArticle) async throws -> AI.Translation {
+	func translate(_ article: AIArticle) async throws -> BodyTranslationResult {
 		let expectedHash = AIContentHash.body(for: article)
 		// Body translations are never re-run automatically: readable blocks stay
 		// even when the source or pipeline version changes.
 		if let cached = try? await store.translation(for: article.id), !cached.blocks.isEmpty {
-			return cached
+			return BodyTranslationResult(translation: cached, wasCached: true)
 		}
 
 		let segments = Self.segments(for: article, config: config)
 		if segments.count > 1, try await hasProgress(article: article, segments: segments) {
-			return try await translateSegments(article, segments: segments, expectedHash: expectedHash)
+			let translation = try await translateSegments(article, segments: segments, expectedHash: expectedHash)
+			return BodyTranslationResult(translation: translation, wasCached: false)
 		}
 
 		do {
-			return try await engine.translateBody(article)
+			let translation = try await engine.translateBody(article)
+			return BodyTranslationResult(translation: translation, wasCached: false)
 		} catch {
 			guard segments.count > 1, Self.isRecoverable(error) else {
 				throw error
 			}
-			return try await translateSegments(article, segments: segments, expectedHash: expectedHash)
+			let translation = try await translateSegments(article, segments: segments, expectedHash: expectedHash)
+			return BodyTranslationResult(translation: translation, wasCached: false)
 		}
 	}
 

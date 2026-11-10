@@ -32,6 +32,10 @@ import RSCore
 			if ImmersiveReadingMode.shared.exit(for: view.window) {
 				return true
 			}
+			if let mainWindowController = view.window?.windowController as? MainWindowController,
+			   mainWindowController.closeSelectedArticleOnEscape(from: view) {
+				return true
+			}
 		}
 
 		let key = KeyboardKey(with: event)

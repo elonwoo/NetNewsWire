@@ -22,6 +22,36 @@ import Testing
 		#expect(layout.dateRect.maxY <= layout.titleRect.minY)
 		#expect(layout.feedNameRect.minY == layout.dateRect.minY)
 	}
+
+	@Test func chineseSubtitleAddsALineAndSitsUnderTheTitle() {
+		let appearance = TimelineCellAppearance(showIcon: true, textSize: .medium, iconSize: .large, numberOfLines: 3, showsFullTitles: false, feedNameAndDateAboveTitle: false, showsLargeThumbnails: false)
+		let article = makeArticle()
+		let plain = TimelineCellData(article: article, showFeedName: .feed, feedName: "Daring Fireball", byline: nil, iconImage: nil, showIcon: true, thumbnail: nil, showThumbnail: false)
+		let translated = TimelineCellData(article: article, showFeedName: .feed, feedName: "Daring Fireball", byline: nil, iconImage: nil, showIcon: true, thumbnail: nil, showThumbnail: false, titleZh: "苹果发布新款 MacBook Pro")
+
+		let plainHeight = TimelineCellLayout.height(for: 400.0, cellData: plain, appearance: appearance)
+		let translatedHeight = TimelineCellLayout.height(for: 400.0, cellData: translated, appearance: appearance)
+		#expect(translatedHeight > plainHeight)
+
+		let layout = TimelineCellLayout(width: 400.0, height: 0.0, cellData: translated, appearance: appearance)
+		#expect(layout.subtitleRect.height > 0.0)
+		#expect(layout.subtitleRect.minY >= layout.titleRect.maxY)
+		#expect(layout.dateRect.minY >= layout.subtitleRect.maxY)
+	}
+
+	@Test func emptyOrWhitespaceChineseSubtitleKeepsTheHeight() {
+		let appearance = TimelineCellAppearance(showIcon: true, textSize: .medium, iconSize: .large, numberOfLines: 3, showsFullTitles: false, feedNameAndDateAboveTitle: false, showsLargeThumbnails: false)
+		let article = makeArticle()
+		let plain = TimelineCellData(article: article, showFeedName: .feed, feedName: "Daring Fireball", byline: nil, iconImage: nil, showIcon: true, thumbnail: nil, showThumbnail: false)
+		let empty = TimelineCellData(article: article, showFeedName: .feed, feedName: "Daring Fireball", byline: nil, iconImage: nil, showIcon: true, thumbnail: nil, showThumbnail: false, titleZh: "")
+		let whitespace = TimelineCellData(article: article, showFeedName: .feed, feedName: "Daring Fireball", byline: nil, iconImage: nil, showIcon: true, thumbnail: nil, showThumbnail: false, titleZh: "   ")
+
+		let plainHeight = TimelineCellLayout.height(for: 400.0, cellData: plain, appearance: appearance)
+		#expect(TimelineCellLayout.height(for: 400.0, cellData: empty, appearance: appearance) == plainHeight)
+		#expect(TimelineCellLayout.height(for: 400.0, cellData: whitespace, appearance: appearance) == plainHeight)
+		#expect(empty.titleZh == nil)
+		#expect(whitespace.titleZh == nil)
+	}
 }
 
 // MARK: - Helpers

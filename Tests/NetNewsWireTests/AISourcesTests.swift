@@ -163,6 +163,98 @@ final class AISourcesTests: XCTestCase {
 		XCTAssertEqual(YouTubeEmbedRewriter.rewriteHTML(html), html)
 	}
 
+	func testYouTubeBareURLNextToChineseBecomesEmbed() {
+		let withPunctuation = YouTubeEmbedRewriter.rewriteHTML("<p>观看https://youtu.be/VIDEOTEST01。</p>")
+		XCTAssertTrue(withPunctuation.contains("https://www.youtube-nocookie.com/embed/VIDEOTEST01"))
+		XCTAssertFalse(withPunctuation.contains("youtu.be"))
+		XCTAssertTrue(withPunctuation.contains("观看"))
+		XCTAssertTrue(withPunctuation.contains("。"))
+
+		let withFollowingText = YouTubeEmbedRewriter.rewriteHTML("<p>看 https://youtu.be/VIDEOTEST01。视频</p>")
+		XCTAssertTrue(withFollowingText.contains("https://www.youtube-nocookie.com/embed/VIDEOTEST01"))
+		XCTAssertFalse(withFollowingText.contains("youtu.be"))
+		XCTAssertTrue(withFollowingText.contains("。视频"))
+	}
+
+	func testYouTubeBareURLStopsAtNonURLCharacters() {
+		let cases: [(suffix: String, preserved: String)] = [
+			("〜后续", "〜后续"),
+			("・后续", "・后续"),
+			("〔测试〕", "〔测试〕"),
+			("&nbsp;后续", "&nbsp;后续"),
+			("&amp;后继", "&amp;后继"),
+			("&#39;后续", "&#39;后续")
+		]
+
+		for testCase in cases {
+			let rewritten = YouTubeEmbedRewriter.rewriteHTML("<p>看 https://youtu.be/VIDEOTEST01\(testCase.suffix)</p>")
+			XCTAssertTrue(rewritten.contains("https://www.youtube-nocookie.com/embed/VIDEOTEST01"), testCase.suffix)
+			XCTAssertFalse(rewritten.contains("youtu.be"), testCase.suffix)
+			XCTAssertTrue(rewritten.contains(testCase.preserved), testCase.suffix)
+		}
+	}
+
+	func testYouTubeIgnoresDataHref() {
+		let withoutHref = #"<a data-href="https://www.youtube.com/watch?v=VIDEOTEST01">x</a>"#
+		XCTAssertEqual(YouTubeEmbedRewriter.rewriteHTML(withoutHref), withoutHref)
+
+		let withSafeHref = #"<a data-href="https://www.youtube.com/watch?v=VIDEOTEST01" href="https://example.com">x</a>"#
+		XCTAssertFalse(YouTubeEmbedRewriter.rewriteHTML(withSafeHref).contains("youtube-nocookie.com"))
+	}
+
+	func testYouTubeBareURLInStraightQuotesAndAfterEquals() {
+		let doubleQuoted = #"<p>Watch "https://youtu.be/VIDEOTEST01" now.</p>"#
+		XCTAssertTrue(YouTubeEmbedRewriter.rewriteHTML(doubleQuoted).contains("youtube-nocookie.com/embed/VIDEOTEST01"))
+
+		let singleQuoted = "<p>Watch 'https://youtu.be/VIDEOTEST01' now.</p>"
+		XCTAssertTrue(YouTubeEmbedRewriter.rewriteHTML(singleQuoted).contains("youtube-nocookie.com/embed/VIDEOTEST01"))
+
+		let afterEquals = "<p>link=https://youtu.be/VIDEOTEST01</p>"
+		XCTAssertTrue(YouTubeEmbedRewriter.rewriteHTML(afterEquals).contains("youtube-nocookie.com/embed/VIDEOTEST01"))
+
+		let attributeOnly = #"<img src="https://www.youtube.com/watch?v=VIDEOTEST01">"#
+		XCTAssertEqual(YouTubeEmbedRewriter.rewriteHTML(attributeOnly), attributeOnly)
+	}
+
+	func testYouTubeDuplicateIframesAreEmbeddedOnce() {
+		let html = #"<iframe src="https://www.youtube.com/embed/VIDEOTEST01"></iframe><iframe src="https://www.youtube.com/embed/VIDEOTEST01" width="560"></iframe>"#
+		let rewritten = YouTubeEmbedRewriter.rewriteHTML(html)
+
+		XCTAssertEqual(rewritten.components(separatedBy: "<iframe").count - 1, 1)
+		XCTAssertEqual(rewritten.components(separatedBy: "</iframe>").count - 1, 1)
+		XCTAssertFalse(rewritten.lowercased().contains("www.youtube.com/embed"))
+		XCTAssertTrue(rewritten.contains("youtube-nocookie.com/embed/VIDEOTEST01"))
+	}
+
+	func testYouTubeDuplicateIframeIsRemovedEntirely() {
+		let html = #"<p>Before</p><iframe src="https://www.youtube.com/embed/VIDEOTEST01"></iframe><iframe src="https://www.youtube.com/embed/VIDEOTEST01"></iframe><p>After</p>"#
+		let rewritten = YouTubeEmbedRewriter.rewriteHTML(html)
+
+		XCTAssertEqual(rewritten.components(separatedBy: "<iframe").count - 1, 1)
+		XCTAssertFalse(rewritten.contains("<iframe src=\"https://www.youtube.com"))
+		XCTAssertTrue(rewritten.contains("Before"))
+		XCTAssertTrue(rewritten.contains("After"))
+	}
+
+	func testYouTubeBareURLPeelsDeepEscapedEntities() {
+		for suffix in ["&amp;amp;amp;nbsp;", "&amp;amp;amp;amp;nbsp;"] {
+			let rewritten = YouTubeEmbedRewriter.rewriteHTML("<p>看 https://youtu.be/VIDEOTEST01\(suffix)后续</p>")
+			XCTAssertTrue(rewritten.contains("youtube-nocookie.com/embed/VIDEOTEST01"), suffix)
+			XCTAssertFalse(rewritten.contains("youtu.be"), suffix)
+			XCTAssertTrue(rewritten.contains("后续"), suffix)
+		}
+	}
+
+	func testYouTubeAnchorWithUnquotedHrefBecomesEmbed() {
+		let html = #"<p>Watch <a href=https://www.youtube.com/watch?v=dQw4w9WgXcQ>this video</a> now.</p>"#
+		let rewritten = YouTubeEmbedRewriter.rewriteHTML(html)
+
+		XCTAssertTrue(rewritten.contains("https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"))
+		XCTAssertFalse(rewritten.contains("<a href"))
+		XCTAssertTrue(rewritten.contains("Watch "))
+		XCTAssertTrue(rewritten.contains(" now."))
+	}
+
 	// MARK: - Product Hunt
 
 	func testProductHuntFeedParsesEntry() throws {

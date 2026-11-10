@@ -13,6 +13,7 @@ import RSCore
 struct AIJobServices {
 	let translation: AITranslationService
 	let rewrite: AIRewriteService
+	let model: String
 }
 
 /// Everything the catch-up scan needs from the live account graph. Injected so
@@ -37,6 +38,58 @@ enum BodyTranslationEnqueueResult {
 	case failed
 }
 
+/// How a rewrite entered the queue. Used only for the task log.
+enum AIJobOrigin: Sendable, Equatable {
+	case auto
+	case manual
+	case catchUp
+
+	var trigger: AITaskLogTrigger {
+		switch self {
+		case .auto:
+			return .auto
+		case .manual:
+			return .manual
+		case .catchUp:
+			return .catchUp
+		}
+	}
+}
+
+/// Keeps the origin of jobs that were queued by this executor. Jobs inserted
+/// directly into the store have no entry and are logged as `unknown`.
+struct AIJobOriginRegistry {
+
+	private var origins: [String: AIJobOrigin] = [:]
+
+	mutating func register(jobID: String, origin: AIJobOrigin) {
+		origins[jobID] = origin
+	}
+
+	mutating func remove(jobID: String) {
+		origins.removeValue(forKey: jobID)
+	}
+
+	func origin(for jobID: String) -> AIJobOrigin? {
+		origins[jobID]
+	}
+}
+
+/// Why a rewrite did or did not enter the queue.
+enum RewriteEnqueueResult: Equatable, Sendable {
+	case enqueued
+	case blocked(AITaskLogReason)
+	case alreadyUpToDate
+	case alreadyInFlight
+	case failed
+}
+
+/// The title batch plus the values the task log needs from that call.
+struct TitleBatchOutcome {
+	let result: TitleTranslationResult
+	let batchSize: Int
+}
+
 /// Serial executor for persisted AI jobs.
 ///
 /// Jobs live in the SQLite store, so quitting the app never loses work: the
@@ -53,6 +106,9 @@ final class AIJobExecutor {
 	private static let catchUpDelay: Duration = .seconds(5)
 	private static let catchUpLimit = 200
 	private static let leaseRenewInterval: Duration = .seconds(60)
+	/// Finished jobs stay in the database for this long so the task panel can
+	/// still show recent results.
+	private static let terminalJobRetention: TimeInterval = 30 * 24 * 60 * 60
 	/// User-visible translation work gets its own lane so it never waits behind
 	/// a long rewrite.
 	private static let interactiveKinds: [AIJobKind] = [.bodyTranslation, .titleTranslation]
@@ -60,11 +116,12 @@ final class AIJobExecutor {
 	/// Rollback switch: false puts every kind back on a single lane.
 	private static let backgroundLaneEnabled = true
 	private static let didPruneRewriteBacklogKey = "AI.DidPruneRewriteBacklog"
-	private static let logger = Logger(subsystem: Logger.nnwSubsystem, category: "AIJobs")
+	nonisolated private static let logger = Logger(subsystem: Logger.nnwSubsystem, category: "AIJobs")
 
 	private let store: AIStore
 	private let queue: AIQueue
 	private let resolver: AIArticleResolving
+	private let fullTextFetcher: AIFullTextFetching
 	private let services: @MainActor () -> AIJobServices
 	private let isConfigured: @MainActor () -> Bool
 	private let notificationCenter: NotificationCenter
@@ -74,6 +131,7 @@ final class AIJobExecutor {
 	/// Acceptance-only switch. The environment variable is unset in normal use,
 	/// so every automatic paid path keeps its regular behaviour.
 	private let autoWorkDisabled: Bool
+	private let taskLog: AITaskLogging
 
 	private var interactiveLoopTask: Task<Void, Never>?
 	private var backgroundLoopTask: Task<Void, Never>?
@@ -81,22 +139,26 @@ final class AIJobExecutor {
 	private var observerToken: NSObjectProtocol?
 	private var feedRemovalObserverToken: NSObjectProtocol?
 	private var isPaused = false
+	private var didScheduleTerminalJobCleanup = false
 	/// Title translations are claimed only by the interactive lane, so this map
 	/// keeps a single writer. Moving title jobs to the background lane would let
 	/// two lanes mutate it concurrently.
 	private var pendingTitleArticles: [String: AIArticle] = [:]
 	private var reservations = AIEnqueueReservations()
+	private var originRegistry = AIJobOriginRegistry()
 
 	private init() {
 		let environment = AIEnvironment.shared
 		self.store = environment.store
 		self.queue = environment.queue
 		self.resolver = AIArticleResolver()
+		self.fullTextFetcher = AIFullTextFetcher()
 		self.services = {
 			let environment = AIEnvironment.shared
 			return AIJobServices(
 				translation: AITranslationService(store: environment.store, engine: environment.engine, config: environment.config),
-				rewrite: AIRewriteService(store: environment.store, engine: environment.engine)
+				rewrite: AIRewriteService(store: environment.store, engine: environment.engine),
+				model: environment.config.model
 			)
 		}
 		self.isConfigured = {
@@ -107,23 +169,27 @@ final class AIJobExecutor {
 		self.catchUpSourceProvider = Self.liveCatchUpSource
 		self.chineseAllowedFeedIDsProvider = Self.liveChineseAllowedFeedIDs
 		self.autoWorkDisabled = Self.environmentAutoWorkDisabled
+		self.taskLog = AITaskLog.shared
 	}
 
 	init(
 		store: AIStore,
 		queue: AIQueue,
 		resolver: AIArticleResolving,
+		fullTextFetcher: AIFullTextFetching = AIFullTextFetcher(),
 		services: @escaping @MainActor () -> AIJobServices,
 		isConfigured: @escaping @MainActor () -> Bool = { true },
 		notificationCenter: NotificationCenter = .default,
 		autoStart: Bool = true,
 		catchUpSourceProvider: (@MainActor () async -> AICatchUpSource)? = nil,
 		chineseAllowedFeedIDsProvider: (@MainActor () -> Set<String>)? = nil,
-		autoWorkDisabled: Bool? = nil
+		autoWorkDisabled: Bool? = nil,
+		taskLog: AITaskLogging = AITaskLog.shared
 	) {
 		self.store = store
 		self.queue = queue
 		self.resolver = resolver
+		self.fullTextFetcher = fullTextFetcher
 		self.services = services
 		self.isConfigured = isConfigured
 		self.notificationCenter = notificationCenter
@@ -131,12 +197,14 @@ final class AIJobExecutor {
 		self.catchUpSourceProvider = catchUpSourceProvider ?? Self.liveCatchUpSource
 		self.chineseAllowedFeedIDsProvider = chineseAllowedFeedIDsProvider ?? Self.liveChineseAllowedFeedIDs
 		self.autoWorkDisabled = autoWorkDisabled ?? Self.environmentAutoWorkDisabled
+		self.taskLog = taskLog
 	}
 
 	// MARK: - Lifecycle
 
 	func start() {
 		installObserverIfNeeded()
+		scheduleTerminalJobCleanupIfNeeded()
 		guard interactiveLoopTask == nil, backgroundLoopTask == nil else {
 			return
 		}
@@ -251,13 +319,13 @@ final class AIJobExecutor {
 				&& !activeTitleIDs.contains($0.id)
 				&& AIRewriteAdmission.allowsTranslation(feedID: $0.feedID, translationDisabledFeedIDs: disabledTranslationFeedIDs)
 		}
-		await enqueueTitleTranslations(for: translatable)
+		await enqueueTitleTranslations(for: translatable, origin: .auto)
 
 		guard AppDefaults.aiAutoRewriteEnabled else {
 			return
 		}
 		for article in usable where AutoWorkPolicy.shouldRewrite(article, now: now, chineseAllowed: AIArticleLanguageGate.allows(article, chineseAllowedFeedIDs: chineseAllowedFeedIDs)) && !activeRewriteIDs.contains(article.id) {
-			await enqueueRewrite(for: article)
+			_ = await enqueueRewrite(for: article, origin: .auto)
 		}
 	}
 
@@ -339,7 +407,7 @@ final class AIJobExecutor {
 			titleArticles.append(article)
 		}
 		enqueuedCount += titleArticles.count
-		await enqueueTitleTranslations(for: titleArticles)
+		await enqueueTitleTranslations(for: titleArticles, origin: .catchUp)
 
 		if AppDefaults.aiAutoRewriteEnabled {
 			for articleID in plan.rewriteArticleIDs where !activeRewriteIDs.contains(articleID) {
@@ -350,29 +418,33 @@ final class AIJobExecutor {
 					continue
 				}
 				enqueuedCount += 1
-				await enqueueRewrite(for: article)
+				_ = await enqueueRewrite(for: article, origin: .catchUp)
 			}
 		}
 
 		Self.logger.info("AI catch-up scanned \(articles.count, privacy: .public) articles, queued \(enqueuedCount, privacy: .public) jobs")
 	}
 
-	func enqueueTitleTranslations(for articles: [AIArticle]) async {
+	func enqueueTitleTranslations(for articles: [AIArticle], origin: AIJobOrigin = .manual) async {
 		let disabledFeedIDs = translationDisabledFeedIDs
 		let chineseAllowedFeedIDs = currentChineseAllowedFeedIDs
 		var jobs: [AIJob] = []
+		var jobsByArticleID: [String: AIArticle] = [:]
 		for article in articles {
 			guard !article.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
 				continue
 			}
 			guard AIArticleLanguageGate.allows(article, chineseAllowedFeedIDs: chineseAllowedFeedIDs) else {
+				await recordManualRejection(origin, kind: .translateTitles, article: article, reason: .chineseArticle)
 				continue
 			}
 			guard AIRewriteAdmission.allowsTranslation(feedID: article.feedID, translationDisabledFeedIDs: disabledFeedIDs) else {
+				await recordManualRejection(origin, kind: .translateTitles, article: article, reason: .feedTranslationDisabled)
 				continue
 			}
 			let key = Self.key(kind: .titleTranslation, articleID: article.id)
 			guard !reservations.contains(key) else {
+				await recordManualRejection(origin, kind: .translateTitles, article: article, reason: .alreadyInFlight)
 				continue
 			}
 			if let cached = try? await store.translation(for: article.id),
@@ -382,12 +454,14 @@ final class AIJobExecutor {
 				continue
 			}
 			guard reservations.reserve(key) else {
+				await recordManualRejection(origin, kind: .translateTitles, article: article, reason: .alreadyInFlight)
 				continue
 			}
 			pendingTitleArticles[article.id] = article
+			jobsByArticleID[article.id] = article
 			jobs.append(AIJobFactory.job(articleID: article.id, kind: .titleTranslation))
 		}
-		await enqueue(jobs)
+		await enqueue(jobs, origin: origin, articles: jobsByArticleID)
 	}
 
 	/// Queues the body translation for the pane that just opened. The reservation
@@ -396,47 +470,70 @@ final class AIJobExecutor {
 	@discardableResult
 	func enqueueBodyTranslation(for article: AIArticle) async -> BodyTranslationEnqueueResult {
 		guard !autoWorkDisabled else {
+			await recordManualRejection(.manual, kind: .translate, article: article, reason: .autoWorkDisabled)
 			return .notNeeded
 		}
 		guard AIArticleLanguageGate.allows(article, chineseAllowedFeedIDs: currentChineseAllowedFeedIDs) else {
+			await recordManualRejection(.manual, kind: .translate, article: article, reason: .chineseArticle)
 			return .notNeeded
 		}
-		guard AIRewriteAdmission.allowsTranslation(feedID: article.feedID, translationDisabledFeedIDs: translationDisabledFeedIDs), article.hasBody else {
+		guard AIRewriteAdmission.allowsTranslation(feedID: article.feedID, translationDisabledFeedIDs: translationDisabledFeedIDs) else {
+			await recordManualRejection(.manual, kind: .translate, article: article, reason: .feedTranslationDisabled)
+			return .notNeeded
+		}
+		guard article.hasBody else {
+			await recordManualRejection(.manual, kind: .translate, article: article, reason: .emptyBody)
 			return .notNeeded
 		}
 		let key = Self.key(kind: .bodyTranslation, articleID: article.id)
 		guard reservations.reserve(key) else {
+			await recordManualRejection(.manual, kind: .translate, article: article, reason: .alreadyInFlight)
 			return .alreadyInFlight
 		}
 		return await enqueueBodyTranslationReserved(article: article, key: key)
 	}
 
-	func enqueueRewrite(for article: AIArticle) async {
+	@discardableResult
+	func enqueueRewrite(for article: AIArticle, origin: AIJobOrigin = .manual) async -> RewriteEnqueueResult {
 		guard AIArticleLanguageGate.allows(article, chineseAllowedFeedIDs: currentChineseAllowedFeedIDs) else {
-			return
+			await recordManualRejection(origin, kind: .rewrite, article: article, reason: .chineseArticle)
+			return .blocked(.chineseArticle)
 		}
 		guard AIRewriteAdmission.allowsRewrite(feedID: article.feedID, rewriteDisabledFeedIDs: rewriteDisabledFeedIDs) else {
-			return
+			await recordManualRejection(origin, kind: .rewrite, article: article, reason: .feedRewriteDisabled)
+			return .blocked(.feedRewriteDisabled)
 		}
 		guard article.hasBody else {
-			return
+			await recordManualRejection(origin, kind: .rewrite, article: article, reason: .emptyBody)
+			return .blocked(.emptyBody)
 		}
 		let key = Self.key(kind: .rewrite, articleID: article.id)
 		guard reservations.reserve(key) else {
-			return
+			await recordManualRejection(origin, kind: .rewrite, article: article, reason: .alreadyInFlight)
+			return .alreadyInFlight
 		}
-		if let cached = try? await store.rewrite(for: article.id),
+		// A manual click always re-runs the rewrite: the executor still skips the
+		// model call when the stored hash matches, but the job must reach it so
+		// the pane can move off an outdated pipeline result.
+		if origin != .manual,
+		   let cached = try? await store.rewrite(for: article.id),
 		   AIContentHash.isRewriteUpToDate(stored: cached.contentHash, article: article),
 		   !cached.bodyMarkdown.isEmpty {
 			reservations.release(key)
-			return
+			return .alreadyUpToDate
 		}
-		await enqueue([AIJobFactory.job(articleID: article.id, kind: .rewrite)])
+		let priority = origin == .manual ? 100 : AIJobFactory.priority(for: .rewrite)
+		let queued = await enqueue([AIJobFactory.job(articleID: article.id, kind: .rewrite, priority: priority)], origin: origin, articles: [article.id: article])
+		guard queued else {
+			return .failed
+		}
+		return .enqueued
 	}
 
 	@discardableResult
 	func enqueueBodyTranslation(articleID: String) async -> BodyTranslationEnqueueResult {
 		guard let article = await resolver.article(for: articleID) else {
+			await recordManualRejection(.manual, kind: .translate, article: nil, articleID: articleID, outcome: .failed, reason: .articleMissing, error: "找不到文章")
 			return .notNeeded
 		}
 		return await enqueueBodyTranslation(for: article)
@@ -444,19 +541,19 @@ final class AIJobExecutor {
 
 	func enqueueTitleTranslation(articleID: String) async {
 		guard let article = await resolver.article(for: articleID) else {
+			await recordManualRejection(.manual, kind: .translateTitles, article: nil, articleID: articleID, outcome: .failed, reason: .articleMissing, error: "找不到文章")
 			return
 		}
-		await enqueueTitleTranslations(for: [article])
+		await enqueueTitleTranslations(for: [article], origin: .manual)
 	}
 
-	func enqueueRewrite(articleID: String) async {
+	@discardableResult
+	func enqueueRewrite(articleID: String) async -> RewriteEnqueueResult {
 		guard let article = await resolver.article(for: articleID) else {
-			return
+			await recordManualRejection(.manual, kind: .rewrite, article: nil, articleID: articleID, outcome: .failed, reason: .articleMissing, error: "找不到文章")
+			return .failed
 		}
-		guard AIRewriteAdmission.allowsRewrite(feedID: article.feedID, rewriteDisabledFeedIDs: rewriteDisabledFeedIDs) else {
-			return
-		}
-		await enqueueRewrite(for: article)
+		return await enqueueRewrite(for: article, origin: .manual)
 	}
 }
 
@@ -476,6 +573,28 @@ private extension AIJobExecutor {
 				UserDefaults.standard.set(true, forKey: Self.didPruneRewriteBacklogKey)
 			} catch {
 				Self.logger.error("Failed to prune rewrite backlog: \(String(describing: error), privacy: .public)")
+			}
+		}
+	}
+
+	/// Drops terminal job rows past the retention window once per executor
+	/// lifetime. The cleanup runs off the main actor and never blocks the job
+	/// loops.
+	func scheduleTerminalJobCleanupIfNeeded() {
+		guard !didScheduleTerminalJobCleanup else {
+			return
+		}
+		didScheduleTerminalJobCleanup = true
+		let cutoff = Date().addingTimeInterval(-Self.terminalJobRetention)
+		let store = self.store
+		Task.detached(priority: .utility) {
+			do {
+				let deleted = try await store.deleteTerminalJobs(olderThan: cutoff)
+				if deleted > 0 {
+					Self.logger.info("Deleted \(deleted, privacy: .public) expired AI job rows")
+				}
+			} catch {
+				Self.logger.error("Failed to delete expired AI jobs: \(String(describing: error), privacy: .public)")
 			}
 		}
 	}
@@ -540,16 +659,49 @@ private extension AIJobExecutor {
 			reservations.release(Self.key(kind: job.kind, articleID: job.articleID))
 		}
 
+		let startedAt = job.startedAt ?? Date()
+		let jobServices = services()
+		let model = jobServices.model
+		let trigger = originRegistry.origin(for: job.id)?.trigger ?? .unknown
+
 		guard isConfigured() else {
 			let message = "未配置模型 API key"
-			try? await store.failJobPermanently(id: job.id, error: message)
+			do {
+				try await store.failJobPermanently(id: job.id, error: message)
+				await recordTerminal(terminalEvent(
+					job: job,
+					article: nil,
+					trigger: trigger,
+					model: model,
+					startedAt: startedAt,
+					outcome: .failed,
+					reason: .notConfigured,
+					error: message
+				))
+			} catch {
+				Self.logger.error("Failed to record unconfigured AI job: \(String(describing: error), privacy: .public)")
+			}
 			postFailure(articleID: job.articleID, error: message)
 			return
 		}
 
 		guard let article = await resolver.article(for: job.articleID) else {
 			let message = "找不到文章"
-			try? await store.failJobPermanently(id: job.id, error: message)
+			do {
+				try await store.failJobPermanently(id: job.id, error: message)
+				await recordTerminal(terminalEvent(
+					job: job,
+					article: nil,
+					trigger: trigger,
+					model: model,
+					startedAt: startedAt,
+					outcome: .failed,
+					reason: .articleMissing,
+					error: message
+				))
+			} catch {
+				Self.logger.error("Failed to record missing-article AI job: \(String(describing: error), privacy: .public)")
+			}
 			postFailure(articleID: job.articleID, error: message)
 			return
 		}
@@ -558,56 +710,235 @@ private extension AIJobExecutor {
 		// model, even when a job was persisted before the rule existed. The job
 		// completes silently: it is not retried and no failure notification fires.
 		guard AIArticleLanguageGate.allows(article, chineseAllowedFeedIDs: currentChineseAllowedFeedIDs) else {
-			try? await store.completeJob(id: job.id)
+			do {
+				try await store.completeJob(id: job.id)
+				await recordTerminal(terminalEvent(
+					job: job,
+					article: article,
+					trigger: trigger,
+					model: model,
+					startedAt: startedAt,
+					outcome: .skipped,
+					reason: .chineseArticle
+				))
+			} catch {
+				Self.logger.error("Failed to complete Chinese AI job: \(String(describing: error), privacy: .public)")
+			}
 			return
 		}
 
-		let jobServices = services()
 		do {
 			switch job.kind {
 			case .titleTranslation:
 				guard AIRewriteAdmission.allowsTranslation(feedID: article.feedID, translationDisabledFeedIDs: translationDisabledFeedIDs) else {
 					try await store.completeJob(id: job.id)
+					await recordTerminal(terminalEvent(
+						job: job,
+						article: article,
+						trigger: trigger,
+						model: model,
+						startedAt: startedAt,
+						outcome: .skipped,
+						reason: .feedTranslationDisabled
+					))
 					break
 				}
-				let generated = try await translateTitles(article: article, service: jobServices.translation)
+				let batch = try await translateTitles(article: article, service: jobServices.translation)
+				let ownSucceeded = batch.result.translated.contains(article.id) || batch.result.cached.contains(article.id)
+				guard ownSucceeded else {
+					let message = "模型未返回该标题"
+					let terminal = AIQueuePolicy.retryDelay(afterAttempt: job.attempts) == nil
+					try await store.failJob(id: job.id, error: message, retryAt: nil)
+					if terminal {
+						postFailure(articleID: article.id, error: message)
+						await recordTerminal(terminalEvent(
+							job: job,
+							article: article,
+							trigger: trigger,
+							model: model,
+							startedAt: startedAt,
+							outcome: .failed,
+							error: message,
+							batchSize: batch.batchSize
+						))
+					}
+					return
+				}
 				try await store.completeJob(id: job.id)
-				for articleID in generated {
+				let stored = try? await store.translation(for: job.articleID)
+				let outcome: AITaskLogOutcome = batch.result.cached.contains(article.id) ? .cached : .stored
+				for articleID in batch.result.translated {
 					postTranslationReady(articleID: articleID)
 				}
+				await recordTerminal(terminalEvent(
+					job: job,
+					article: article,
+					trigger: trigger,
+					model: model,
+					startedAt: startedAt,
+					outcome: outcome,
+					outputCharacters: stored?.titleZh?.count,
+					batchSize: batch.batchSize
+				))
 			case .bodyTranslation:
 				guard AIRewriteAdmission.allowsTranslation(feedID: article.feedID, translationDisabledFeedIDs: translationDisabledFeedIDs) else {
 					try await store.completeJob(id: job.id)
+					await recordTerminal(terminalEvent(
+						job: job,
+						article: article,
+						trigger: trigger,
+						model: model,
+						startedAt: startedAt,
+						outcome: .skipped,
+						reason: .feedTranslationDisabled
+					))
 					break
 				}
 				// A job persisted before the body check, or an article whose HTML
 				// is blank, has nothing to translate.
 				guard article.hasBody else {
 					try await store.completeJob(id: job.id)
+					await recordTerminal(terminalEvent(
+						job: job,
+						article: article,
+						trigger: trigger,
+						model: model,
+						startedAt: startedAt,
+						outcome: .skipped,
+						reason: .emptyBody
+					))
 					break
 				}
-				_ = try await jobServices.translation.translateBody(article)
+				let result = try await jobServices.translation.translateBody(article)
 				try await store.completeJob(id: job.id)
 				postTranslationReady(articleID: article.id)
+				let outputCharacters = result.translation.blocks.reduce(0) { count, block in
+					count + block.target.count
+				}
+				await recordTerminal(terminalEvent(
+					job: job,
+					article: article,
+					trigger: trigger,
+					model: model,
+					startedAt: startedAt,
+					outcome: result.wasCached ? .cached : .stored,
+					outputCharacters: outputCharacters,
+					blocks: result.translation.blocks.count
+				))
 			case .rewrite:
 				// A rewrite claimed before the feed's switch was turned off may
 				// still be running; one row is the accepted residual. The check
 				// runs when the job starts so a newly toggled switch blocks it.
-				guard AIRewriteAdmission.allowsRewrite(feedID: article.feedID, rewriteDisabledFeedIDs: rewriteDisabledFeedIDs) else {					try await store.completeJob(id: job.id)
+				guard AIRewriteAdmission.allowsRewrite(feedID: article.feedID, rewriteDisabledFeedIDs: rewriteDisabledFeedIDs) else {
+					try await store.completeJob(id: job.id)
+					await recordTerminal(terminalEvent(
+						job: job,
+						article: article,
+						trigger: trigger,
+						model: model,
+						startedAt: startedAt,
+						outcome: .skipped,
+						reason: .feedRewriteDisabled
+					))
 					break
 				}
-				_ = try await jobServices.rewrite.rewrite(article)
+				// A teaser with fewer than five alphanumeric characters cannot be
+				// checked against any page. Manual rewrites skip the hasBody check
+				// elsewhere, so the guard lives here for every rewrite path.
+				if AIRewriteKindSelector.kind(for: article) == .article,
+				   !AIFullTextFetcher.hasUsableFeedBody(article) {
+					await deleteNonFullTextRewrite(articleID: article.id)
+					let message = "原文过短，已跳过改写"
+					try? await store.failJobPermanently(id: job.id, error: message)
+					await recordTerminal(terminalEvent(
+						job: job,
+						article: article,
+						trigger: trigger,
+						model: model,
+						startedAt: startedAt,
+						outcome: .skipped,
+						reason: .bodyTooShort
+					))
+					postFailure(articleID: article.id, error: message)
+					return
+				}
+				var rewriteArticle = article
+				var usedFullText = false
+				if await fullTextFetcher.isLikelySummary(article) {
+					// A teaser-based rewrite is not trusted as full text. A valid
+					// full-text rewrite (`ft:`) stays as `previous` so a failed fetch
+					// or rejected model output can keep or restore it.
+					if AIRewriteKindSelector.kind(for: article) == .article {
+						await deleteNonFullTextRewrite(articleID: article.id)
+					}
+					switch await fullTextFetcher.enrichedArticle(for: article) {
+					case .notApplicable:
+						break
+					case .enriched(let enriched):
+						rewriteArticle = enriched
+						usedFullText = true
+					case .unavailable(let reason):
+						let message = "原文为摘要，未获取到全文，已跳过改写：\(reason)"
+						try? await store.failJobPermanently(id: job.id, error: message)
+						await recordTerminal(terminalEvent(
+							job: job,
+							article: article,
+							trigger: trigger,
+							model: model,
+							startedAt: startedAt,
+							outcome: .skipped,
+							reason: .fullTextUnavailable,
+							error: message,
+							fullText: false
+						))
+						postFailure(articleID: article.id, error: message)
+						return
+					}
+				}
+				let result = try await jobServices.rewrite.rewrite(rewriteArticle, fingerprintArticle: article, fullText: usedFullText, force: usedFullText)
 				try await store.completeJob(id: job.id)
 				postRewriteReady(articleID: article.id)
+				let stored = try? await store.rewrite(for: article.id)
+				await recordTerminal(terminalEvent(
+					job: job,
+					article: article,
+					trigger: trigger,
+					model: model,
+					startedAt: startedAt,
+					outcome: result.generated ? .stored : .cached,
+					inputCharacters: result.inputCharacters,
+					outputCharacters: stored?.bodyMarkdown.count,
+					fullText: usedFullText
+				))
 			}
 		} catch {
 			let message = AIJobErrorDescription.describe(error)
 			let terminal = AIQueuePolicy.retryDelay(afterAttempt: job.attempts) == nil
-			try? await store.failJob(id: job.id, error: message, retryAt: nil)
-			Self.logger.error("AI job \(job.kind.rawValue, privacy: .public) failed: \(message, privacy: .public)")
-			if terminal {
-				postFailure(articleID: article.id, error: message)
+			do {
+				try await store.failJob(id: job.id, error: message, retryAt: nil)
+			} catch {
+				Self.logger.error("Failed to record AI job failure: \(String(describing: error), privacy: .public)")
+				return
 			}
+			Self.logger.error("AI job \(job.kind.rawValue, privacy: .public) failed: \(message, privacy: .public)")
+			guard terminal else {
+				return
+			}
+			postFailure(articleID: article.id, error: message)
+			var reason: AITaskLogReason?
+			if case AIRewriteError.qualityRejected = error {
+				reason = .qualityRejected
+			}
+			await recordTerminal(terminalEvent(
+				job: job,
+				article: article,
+				trigger: trigger,
+				model: model,
+				startedAt: startedAt,
+				outcome: .failed,
+				reason: reason,
+				error: message
+			))
 		}
 	}
 
@@ -615,7 +946,7 @@ private extension AIJobExecutor {
 	/// the engine can batch them. The buffered jobs stay in the queue and
 	/// complete immediately from cache when their turn comes. Buffered articles
 	/// from feeds that turned translation off are dropped instead of translated.
-	func translateTitles(article: AIArticle, service: AITranslationService) async throws -> Set<String> {
+	func translateTitles(article: AIArticle, service: AITranslationService) async throws -> TitleBatchOutcome {
 		let disabledFeedIDs = translationDisabledFeedIDs
 		pendingTitleArticles = pendingTitleArticles.filter { _, pending in
 			AIRewriteAdmission.allowsTranslation(feedID: pending.feedID, translationDisabledFeedIDs: disabledFeedIDs)
@@ -625,15 +956,16 @@ private extension AIJobExecutor {
 			pendingTitleArticles.removeValue(forKey: item.id)
 		}
 		guard !batch.isEmpty else {
-			return []
+			return TitleBatchOutcome(result: TitleTranslationResult(), batchSize: 0)
 		}
-		return try await service.translateTitles(batch)
+		let result = try await service.translateTitles(batch)
+		return TitleBatchOutcome(result: result, batchSize: batch.count)
 	}
 
 	/// Hands jobs to the queue. Returns false when any job could not be queued so
 	/// callers can report the failure instead of assuming the work is running.
 	@discardableResult
-	func enqueue(_ jobs: [AIJob]) async -> Bool {
+	func enqueue(_ jobs: [AIJob], origin: AIJobOrigin, articles: [String: AIArticle] = [:]) async -> Bool {
 		guard !jobs.isEmpty else {
 			return true
 		}
@@ -644,10 +976,23 @@ private extension AIJobExecutor {
 		for job in jobs {
 			do {
 				try await queue.enqueue(job)
+				originRegistry.register(jobID: job.id, origin: origin)
 			} catch {
 				allQueued = false
+				originRegistry.remove(jobID: job.id)
+				let failedArticle = articles[job.articleID] ?? pendingTitleArticles[job.articleID]
 				reservations.release(Self.key(kind: job.kind, articleID: job.articleID))
 				pendingTitleArticles.removeValue(forKey: job.articleID)
+				await taskLog.recordAttempt(AITaskAttemptEvent(
+					kind: job.kind.taskLogKind,
+					articleID: job.articleID,
+					title: failedArticle?.title,
+					url: failedArticle?.url,
+					trigger: origin.trigger,
+					outcome: .failed,
+					reason: .enqueueFailed,
+					error: "提交任务失败"
+				))
 			}
 		}
 		return allQueued
@@ -660,6 +1005,7 @@ private extension AIJobExecutor {
 			let active = try await store.activeJobArticleIDs(kinds: [.bodyTranslation])
 			if active.contains(article.id) {
 				reservations.release(key)
+				await recordManualRejection(.manual, kind: .translate, article: article, reason: .alreadyInFlight)
 				return .alreadyInFlight
 			}
 			if let cached = try await store.translation(for: article.id),
@@ -671,9 +1017,10 @@ private extension AIJobExecutor {
 			}
 		} catch {
 			reservations.release(key)
+			await recordManualRejection(.manual, kind: .translate, article: article, outcome: .failed, reason: .enqueueFailed, error: "提交任务失败")
 			return .failed
 		}
-		let queued = await enqueue([AIJobFactory.job(articleID: article.id, kind: .bodyTranslation)])
+		let queued = await enqueue([AIJobFactory.job(articleID: article.id, kind: .bodyTranslation)], origin: .manual, articles: [article.id: article])
 		guard queued else {
 			reservations.release(key)
 			return .failed
@@ -734,6 +1081,25 @@ private extension AIJobExecutor {
 	func postRewriteReady(articleID: String) {
 		notificationCenter.post(
 			name: .aiRewriteReady,
+			object: nil,
+			userInfo: [AIUserInfoKey.articleID: articleID]
+		)
+	}
+
+	/// Removes a stored teaser-based rewrite before a full-text attempt. A
+	/// full-text rewrite (`ft:`) is left in place as the previous result.
+	func deleteNonFullTextRewrite(articleID: String) async {
+		guard let stored = try? await store.rewrite(for: articleID),
+		      !stored.contentHash.hasPrefix("ft:") else {
+			return
+		}
+		try? await store.deleteRewrite(articleID: articleID)
+		postRewriteRemoved(articleID: articleID)
+	}
+
+	func postRewriteRemoved(articleID: String) {
+		notificationCenter.post(
+			name: .aiRewriteRemoved,
 			object: nil,
 			userInfo: [AIUserInfoKey.articleID: articleID]
 		)
@@ -834,5 +1200,75 @@ private extension AIJobExecutor {
 
 	static func key(kind: AIJobKind, articleID: String) -> String {
 		"\(kind.rawValue):\(articleID)"
+	}
+
+	func terminalEvent(
+		job: AIJob,
+		article: AIArticle?,
+		trigger: AITaskLogTrigger,
+		model: String,
+		startedAt: Date,
+		outcome: AITaskLogOutcome,
+		reason: AITaskLogReason? = nil,
+		error: String? = nil,
+		inputCharacters: Int? = nil,
+		outputCharacters: Int? = nil,
+		blocks: Int? = nil,
+		batchSize: Int? = nil,
+		fullText: Bool? = nil
+	) -> AITaskTerminalEvent {
+		let duration = max(0, Int(Date().timeIntervalSince(startedAt) * 1000))
+		return AITaskTerminalEvent(
+			jobID: job.id,
+			kind: job.kind.taskLogKind,
+			articleID: job.articleID,
+			title: article?.title,
+			url: article?.url,
+			trigger: trigger,
+			outcome: outcome,
+			reason: reason,
+			error: error,
+			durationMilliseconds: duration,
+			feedCharacters: article.map { AIFullTextFetcher.bodyCharacterCount(for: $0) },
+			inputCharacters: inputCharacters,
+			outputCharacters: outputCharacters,
+			blocks: blocks,
+			batchSize: batchSize,
+			fullText: fullText,
+			model: model,
+			attempts: job.attempts
+		)
+	}
+
+	func recordTerminal(_ event: AITaskTerminalEvent) async {
+		await taskLog.recordTerminal(event)
+		originRegistry.remove(jobID: event.jobID)
+	}
+
+	/// Rejections in the automatic scan are policy noise and are not logged.
+	/// Only manual entry points produce an attempt record.
+	func recordManualRejection(
+		_ origin: AIJobOrigin,
+		kind: AITaskLogKind,
+		article: AIArticle?,
+		articleID: String? = nil,
+		outcome: AITaskLogOutcome = .skipped,
+		reason: AITaskLogReason? = nil,
+		error: String? = nil
+	) async {
+		guard origin == .manual else {
+			return
+		}
+		let resolvedArticleID = article?.id ?? articleID ?? ""
+		await taskLog.recordAttempt(AITaskAttemptEvent(
+			kind: kind,
+			articleID: resolvedArticleID,
+			title: article?.title,
+			url: article?.url,
+			trigger: .manual,
+			outcome: outcome,
+			reason: reason,
+			error: error
+		))
 	}
 }

@@ -83,4 +83,81 @@ import Testing
 		#expect(source.promptText == "Hello world")
 		#expect(source.plainText == "Hello world")
 	}
+
+	@Test func serializesYouTubeIframeAsWatchURL() {
+		let html = """
+		<p>Intro</p><iframe src="https://www.youtube.com/embed/VIDEOTEST01"></iframe>
+		"""
+		let source = RewriteSourceBuilder.source(html: html, baseURL: nil)
+
+		#expect(source.promptText.contains("Intro"))
+		#expect(source.promptText.components(separatedBy: "\n").contains("https://www.youtube.com/watch?v=VIDEOTEST01"))
+	}
+
+	@Test func omitsNonYouTubeIframeFromRewriteSource() {
+		let html = """
+		<p>Intro</p><iframe src="https://player.vimeo.com/video/123"></iframe>
+		"""
+		let source = RewriteSourceBuilder.source(html: html, baseURL: nil)
+
+		#expect(source.promptText.contains("Intro"))
+		#expect(!source.promptText.contains("vimeo"))
+		#expect(!source.promptText.contains("youtube"))
+	}
+
+	@Test func serializesImageAndYouTubeIframeTogether() {
+		let html = """
+		<p>Intro</p><img src="https://example.com/a.png" alt="A"><iframe src="https://www.youtube.com/embed/VIDEOTEST01"></iframe>
+		"""
+		let source = RewriteSourceBuilder.source(html: html, baseURL: nil)
+
+		#expect(source.images.map(\.url) == ["https://example.com/a.png"])
+		#expect(source.promptText.contains("{{img:0}}"))
+		#expect(source.promptText.contains("https://www.youtube.com/watch?v=VIDEOTEST01"))
+	}
+
+	@Test func serializesIframeInsideParagraphAtItsPosition() {
+		let html = #"<p>Intro <iframe src="https://www.youtube.com/embed/VIDEOTEST01"></iframe> Outro</p>"#
+		let source = RewriteSourceBuilder.source(html: html, baseURL: nil)
+
+		#expect(source.promptText.contains("Intro"))
+		#expect(source.promptText.contains("Outro"))
+		#expect(source.promptText.components(separatedBy: "\n").contains("https://www.youtube.com/watch?v=VIDEOTEST01"))
+	}
+
+	@Test func serializesIframeInsideFigure() {
+		let html = #"<figure><iframe src="https://www.youtube.com/embed/VIDEOTEST01"></iframe><figcaption>Video</figcaption></figure>"#
+		let source = RewriteSourceBuilder.source(html: html, baseURL: nil)
+
+		#expect(source.promptText.contains("Video"))
+		#expect(source.promptText.components(separatedBy: "\n").contains("https://www.youtube.com/watch?v=VIDEOTEST01"))
+	}
+
+	@Test func serializesIframeInsideListItemOnItsOwnLine() {
+		let html = #"<ul><li>Item <iframe src="https://www.youtube.com/embed/VIDEOTEST01"></iframe></li></ul>"#
+		let source = RewriteSourceBuilder.source(html: html, baseURL: nil)
+
+		#expect(source.promptText.contains("- Item"))
+		#expect(source.promptText.components(separatedBy: "\n").contains("https://www.youtube.com/watch?v=VIDEOTEST01"))
+		#expect(!source.promptText.contains("VIDEOTEST01Item"))
+	}
+
+	@Test func keepsBothLinksToTheSameVideo() {
+		let html = #"<p><a href="https://youtu.be/VIDEOTEST01">one</a> <a href="https://youtu.be/VIDEOTEST01">two</a></p>"#
+		let source = RewriteSourceBuilder.source(html: html, baseURL: nil)
+
+		#expect(source.promptText.contains("[one](https://youtu.be/VIDEOTEST01)"))
+		#expect(source.promptText.contains("[two](https://youtu.be/VIDEOTEST01)"))
+		#expect(source.links.count == 2)
+	}
+
+	@Test func deduplicatesWatchURLsPerSource() {
+		let html = """
+		<p>One <iframe src="https://www.youtube.com/embed/VIDEOTEST01"></iframe></p><p>Two <iframe src="https://www.youtube.com/embed/VIDEOTEST01"></iframe></p>
+		"""
+		let source = RewriteSourceBuilder.source(html: html, baseURL: nil)
+		let count = source.promptText.components(separatedBy: "https://www.youtube.com/watch?v=VIDEOTEST01").count - 1
+
+		#expect(count == 1)
+	}
 }

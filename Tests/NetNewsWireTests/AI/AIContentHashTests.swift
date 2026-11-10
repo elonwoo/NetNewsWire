@@ -15,6 +15,10 @@ import Testing
 		AIArticle(id: "a", title: "Title", contentHTML: contentHTML, contentText: contentText, url: "https://example.com/post", feedID: "feed")
 	}
 
+	private func longArticle() -> AIArticle {
+		article(contentHTML: "<p>" + String(repeating: "a", count: 2000) + "</p>")
+	}
+
 	@Test func rewriteAndBodyHashesAreVersioned() {
 		let value = article(contentHTML: "<p>Body</p>")
 		#expect(AIContentHash.rewrite(for: value).hasPrefix("r2:"))
@@ -33,7 +37,7 @@ import Testing
 	}
 
 	@Test func rewriteStateMapsLegacyToPipelineOutdated() {
-		let value = article(contentHTML: "<p>Body</p>")
+		let value = longArticle()
 		let state = AIContentHash.rewriteState(stored: AIContentHash.legacyRewrite(for: value), article: value)
 		#expect(state == .pipelineOutdated)
 	}
@@ -43,8 +47,44 @@ import Testing
 		#expect(AIContentHash.rewriteState(stored: "stale", article: value) == .contentChanged)
 	}
 
-	@Test func rewriteStateMapsMissingCurrentAndContentChanged() {
+	@Test func fullTextProvenanceIsIgnoredByRewriteState() {
 		let value = article(contentHTML: "<p>Body</p>")
+		let fullTextHash = "ft:" + AIContentHash.rewrite(for: value)
+
+		#expect(AIContentHash.rewriteState(stored: fullTextHash, article: value) == .current)
+		#expect(AIContentHash.isRewriteUpToDate(stored: fullTextHash, article: value))
+	}
+
+	@Test func shortBodyFeedRewriteIsStaleUntilFullText() {
+		let value = article(contentHTML: "<p>" + String(repeating: "a", count: 800) + "</p>")
+		let feedHash = AIContentHash.rewrite(for: value)
+
+		#expect(AIContentHash.rewriteState(stored: feedHash, article: value) == .contentChanged)
+		#expect(!AIContentHash.isRewriteUpToDate(stored: feedHash, article: value))
+		#expect(AIContentHash.rewriteState(stored: "ft:" + feedHash, article: value) == .current)
+		#expect(AIContentHash.isRewriteUpToDate(stored: "ft:" + feedHash, article: value))
+	}
+
+	@Test func bodyLengthCacheSeparatesTextFallback() {
+		let long = AIArticle(
+			id: "cache",
+			title: "Title",
+			contentHTML: "<p></p>",
+			contentText: String(repeating: "a", count: 2500)
+		)
+		let short = AIArticle(
+			id: "cache",
+			title: "Title",
+			contentHTML: "<p></p>",
+			contentText: "short"
+		)
+
+		#expect(AIContentHash.bodyCharacterCount(for: long) == 2500)
+		#expect(AIContentHash.bodyCharacterCount(for: short) == 5)
+	}
+
+	@Test func rewriteStateMapsMissingCurrentAndContentChanged() {
+		let value = longArticle()
 
 		#expect(AIContentHash.rewriteState(stored: nil, article: value) == .missing)
 		#expect(AIContentHash.rewriteState(stored: "", article: value) == .missing)
@@ -53,7 +93,7 @@ import Testing
 	}
 
 	@Test func rewriteUpToDateAcceptsCurrentAndPipelineOutdated() {
-		let value = article(contentHTML: "<p>Body</p>")
+		let value = longArticle()
 		#expect(AIContentHash.isRewriteUpToDate(stored: AIContentHash.rewrite(for: value), article: value))
 		#expect(AIContentHash.isRewriteUpToDate(stored: AIContentHash.legacyRewrite(for: value), article: value))
 		#expect(!AIContentHash.isRewriteUpToDate(stored: nil, article: value))

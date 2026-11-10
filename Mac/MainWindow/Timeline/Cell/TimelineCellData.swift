@@ -15,6 +15,8 @@ import Images
 	private static let noText = NSLocalizedString("(No Text)", comment: "No Text")
 
 	let title: String
+	/// The stored Chinese title, shown as a subtitle under `title`. Nil when it hasn’t been translated.
+	let titleZh: String?
 	let attributedTitle: NSAttributedString
 	let text: String
 	let dateString: String
@@ -30,11 +32,14 @@ import Images
 	let hasRewrite: Bool
 	let hasTranslation: Bool
 
-	init(article: Article, showFeedName: TimelineShowFeedName, feedName: String?, byline: String?, iconImage: IconImage?, showIcon: Bool, thumbnail: NSImage?, showThumbnail: Bool, hasRewrite: Bool = false, hasTranslation: Bool = false) {
+	init(article: Article, showFeedName: TimelineShowFeedName, feedName: String?, byline: String?, iconImage: IconImage?, showIcon: Bool, thumbnail: NSImage?, showThumbnail: Bool, hasRewrite: Bool = false, hasTranslation: Bool = false, titleZh: String? = nil) {
 
 		self.title = ArticleStringFormatter.shared.truncatedTitle(article)
 		self.attributedTitle = ArticleStringFormatter.shared.attributedTruncatedTitle(article)
 		self.text = Self.summaryText(for: article, title: self.title)
+
+		let trimmedTitleZh = titleZh?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+		self.titleZh = trimmedTitleZh.isEmpty ? nil : trimmedTitleZh
 
 		self.dateString = ArticleStringFormatter.shared.dateString(article.logicalDatePublished)
 
@@ -76,6 +81,7 @@ import Images
 
 	init() { // Empty
 		self.title = ""
+		self.titleZh = nil
 		self.text = ""
 		self.dateString = ""
 		self.feedName = ""

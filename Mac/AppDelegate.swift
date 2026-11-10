@@ -587,6 +587,10 @@ let appName = "NetNewsWire"
 		preferencesWindowController.showWindow(self)
 	}
 
+	@IBAction func showAIPreferences(_ sender: Any?) {
+		preferencesWindowController.showWindow(self, selecting: PreferencesWindowController.aiToolbarItemIdentifier)
+	}
+
 	@IBAction func newMainWindow(_ sender: Any?) {
 		createAndShowMainWindow()
 	}

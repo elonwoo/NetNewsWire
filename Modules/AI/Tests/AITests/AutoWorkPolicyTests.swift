@@ -24,13 +24,13 @@ import Testing
 	}
 
 	@Test func chineseArticleBelowMinimumLengthIsNotRewritten() {
-		let article = makeArticle(title: "中文标题", body: String(repeating: "中", count: 1999), publishedAt: daysAgo(1))
+		let article = makeArticle(title: "中文标题", body: String(repeating: "中", count: 199), publishedAt: daysAgo(1))
 		#expect(!AutoWorkPolicy.shouldRewrite(article, now: now))
 		#expect(!AutoWorkPolicy.shouldTranslate(article, now: now))
 	}
 
 	@Test func chineseArticleAtMinimumLengthIsNotRewrittenWithoutOverride() {
-		let article = makeArticle(title: "中文标题", body: String(repeating: "中", count: 2000), publishedAt: daysAgo(1))
+		let article = makeArticle(title: "中文标题", body: String(repeating: "中", count: 200), publishedAt: daysAgo(1))
 		#expect(!AutoWorkPolicy.shouldRewrite(article, now: now))
 		#expect(!AutoWorkPolicy.shouldTranslate(article, now: now))
 	}
@@ -62,7 +62,7 @@ import Testing
 	}
 
 	@Test func englishArticleBelowMinimumLengthIsNotRewritten() {
-		let article = makeArticle(title: "Hello World", body: String(repeating: "a", count: 1999), publishedAt: daysAgo(1))
+		let article = makeArticle(title: "Hello World", body: String(repeating: "a", count: 199), publishedAt: daysAgo(1))
 		#expect(!AutoWorkPolicy.shouldRewrite(article, now: now))
 		#expect(AutoWorkPolicy.shouldTranslate(article, now: now))
 	}
@@ -117,7 +117,7 @@ import Testing
 	}
 
 	@Test func chineseArticleBelowMinimumLengthTranslatesOnlyWithOverride() {
-		let article = makeArticle(title: "中文标题", body: String(repeating: "中", count: 1999), publishedAt: daysAgo(1))
+		let article = makeArticle(title: "中文标题", body: String(repeating: "中", count: 199), publishedAt: daysAgo(1))
 		#expect(!AutoWorkPolicy.shouldRewrite(article, now: now, chineseAllowed: true))
 		#expect(AutoWorkPolicy.shouldTranslate(article, now: now, chineseAllowed: true))
 	}

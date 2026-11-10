@@ -87,6 +87,16 @@ private extension YouTubeEmbedRewriter {
 			guard let identifier = videoID(from: source) else {
 				continue
 			}
+			if embeddedIDs.contains(identifier) {
+				// A repeated iframe is removed entirely: leaving it in place
+				// would keep a raw youtube.com frame and a second player.
+				var removalRange = match.range
+				if let closingRange = closingIframeRange(in: html, after: match.range) {
+					removalRange.length = NSMaxRange(closingRange) - removalRange.location
+				}
+				replacements.append(Replacement(range: removalRange, text: ""))
+				continue
+			}
 			embeddedIDs.insert(identifier)
 			replacements.append(Replacement(range: match.range(at: 2), text: embedURL(identifier)))
 		}
@@ -95,7 +105,10 @@ private extension YouTubeEmbedRewriter {
 	}
 
 	static func rewriteAnchors(_ html: String, embeddedIDs: inout Set<String>) -> String {
-		let pattern = "(?is)<a\\b[^>]*\\bhref\\s*=\\s*([\"'])([^\"']+)\\1[^>]*>(.*?)</a\\s*>"
+		// Unquoted attributes survive the source-block sanitizer, so accept
+		// `href=value` as well as `href="value"` and `href='value'`. The
+		// lookbehind keeps `data-href` from matching.
+		let pattern = "(?is)<a\\b[^>]*(?<![\\w-])href\\s*=\\s*(?:([\"'])([^\"']*)\\1|([^\\s>]+))[^>]*>(.*?)</a\\s*>"
 		guard let regex = try? NSRegularExpression(pattern: pattern) else {
 			return html
 		}
@@ -104,7 +117,8 @@ private extension YouTubeEmbedRewriter {
 		var replacements: [Replacement] = []
 
 		for match in matches {
-			guard let hrefRange = Range(match.range(at: 2), in: html) else {
+			let valueRange = match.range(at: 2).location == NSNotFound ? match.range(at: 3) : match.range(at: 2)
+			guard valueRange.location != NSNotFound, let hrefRange = Range(valueRange, in: html) else {
 				continue
 			}
 			let href = String(html[hrefRange])
@@ -114,7 +128,7 @@ private extension YouTubeEmbedRewriter {
 			embeddedIDs.insert(identifier)
 
 			let title: String
-			if let innerRange = Range(match.range(at: 3), in: html) {
+			if let innerRange = Range(match.range(at: 4), in: html) {
 				title = HTMLTextExtractor.text(fromHTML: String(html[innerRange]))
 			} else {
 				title = ""
@@ -126,20 +140,72 @@ private extension YouTubeEmbedRewriter {
 	}
 
 	static func rewriteBareURLs(_ html: String, embeddedIDs: inout Set<String>) -> String {
-		let pattern = "(?i)(?<![=\"'\\w])(https?://(?:www\\.)?(?:youtube\\.com|youtu\\.be|m\\.youtube\\.com|music\\.youtube\\.com)/[^\\s<\"']+)"
+		// Match only RFC 3986 URL characters, so any other character (CJK,
+		// full-width punctuation, whitespace) ends the URL.
+		let pattern = "(?i)(https?://(?:www\\.)?(?:youtube\\.com|youtu\\.be|m\\.youtube\\.com|music\\.youtube\\.com)/[A-Za-z0-9\\-._~:/?#\\[\\]@!$&'()*+,;=%]+)"
 		guard let regex = try? NSRegularExpression(pattern: pattern) else {
 			return html
 		}
 
-		let matches = regex.matches(in: html, range: NSRange(html.startIndex..., in: html))
+		// Only text segments are rewritten, so URLs in tags and attribute
+		// values stay under the iframe and anchor passes. This also lets a
+		// bare URL inside straight quotes or after `=` become an embed.
+		var result = ""
+		var index = html.startIndex
+		while index < html.endIndex {
+			guard let tagStart = html[index...].firstIndex(of: "<") else {
+				result += rewriteBareURLs(inText: String(html[index...]), regex: regex, embeddedIDs: &embeddedIDs)
+				break
+			}
+			result += rewriteBareURLs(inText: String(html[index..<tagStart]), regex: regex, embeddedIDs: &embeddedIDs)
+
+			let afterTagStart = html.index(after: tagStart)
+			guard afterTagStart < html.endIndex,
+			      html[afterTagStart].isLetter || html[afterTagStart] == "/" || html[afterTagStart] == "!" || html[afterTagStart] == "?" else {
+				result.append("<")
+				index = afterTagStart
+				continue
+			}
+
+			if html[tagStart...].hasPrefix("<!--"), let commentEnd = html.range(of: "-->", range: tagStart..<html.endIndex) {
+				result += html[tagStart..<commentEnd.upperBound]
+				index = commentEnd.upperBound
+			} else if let tagEnd = tagEnd(in: html, from: tagStart) {
+				result += html[tagStart..<tagEnd]
+				index = tagEnd
+			} else {
+				result += html[tagStart...]
+				break
+			}
+		}
+		return result
+	}
+
+	private static func rewriteBareURLs(inText text: String, regex: NSRegularExpression, embeddedIDs: inout Set<String>) -> String {
+		let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
 		var replacements: [Replacement] = []
 
 		for match in matches {
-			guard let urlRange = Range(match.range(at: 1), in: html) else {
+			guard let urlRange = Range(match.range(at: 1), in: text) else {
 				continue
 			}
-			var urlString = String(html[urlRange])
+			var urlString = String(text[urlRange])
 			var trailingCount = 0
+
+			// A URL followed by an HTML entity reference must not carry it into
+			// the video ID. Repeated `&amp;` prefixes come from escaping the
+			// text once (markdown) or several times (stored pane HTML), so peel
+			// until the tail is stable; the cap only guards pathological input.
+			let entityPattern = "&(?:amp;)*(?:#[0-9]+|#[xX][0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]*);?$"
+			var peelCount = 0
+			while peelCount < 10,
+			      let entityRange = urlString.range(of: entityPattern, options: [.regularExpression, .caseInsensitive]) {
+				trailingCount += urlString.distance(from: entityRange.lowerBound, to: urlString.endIndex)
+				urlString = String(urlString[..<entityRange.lowerBound])
+				peelCount += 1
+			}
+
+			// URL-legal characters that are almost never part of a YouTube URL.
 			while let last = urlString.last, ".,;:!?)]}'\"".contains(last) {
 				urlString.removeLast()
 				trailingCount += 1
@@ -153,7 +219,39 @@ private extension YouTubeEmbedRewriter {
 			replacements.append(Replacement(range: replacementRange, text: embedHTML(identifier: identifier, title: "YouTube video")))
 		}
 
-		return applying(replacements, to: html)
+		return applying(replacements, to: text)
+	}
+
+	private static func closingIframeRange(in html: String, after range: NSRange) -> NSRange? {
+		let pattern = "(?is)^\\s*</iframe\\s*>"
+		guard let regex = try? NSRegularExpression(pattern: pattern) else {
+			return nil
+		}
+		let start = NSMaxRange(range)
+		guard start <= (html as NSString).length else {
+			return nil
+		}
+		let searchRange = NSRange(location: start, length: (html as NSString).length - start)
+		return regex.firstMatch(in: html, range: searchRange)?.range
+	}
+
+	private static func tagEnd(in html: String, from start: String.Index) -> String.Index? {
+		var index = html.index(after: start)
+		var quote: Character?
+		while index < html.endIndex {
+			let character = html[index]
+			if let currentQuote = quote {
+				if character == currentQuote {
+					quote = nil
+				}
+			} else if character == "\"" || character == "'" {
+				quote = character
+			} else if character == ">" {
+				return html.index(after: index)
+			}
+			index = html.index(after: index)
+		}
+		return nil
 	}
 
 	static func applying(_ replacements: [Replacement], to html: String) -> String {

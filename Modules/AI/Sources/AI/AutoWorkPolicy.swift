@@ -21,7 +21,7 @@ public enum AutoWorkPolicy {
 	public static let recencyWindow: TimeInterval = 2 * 24 * 60 * 60
 
 	/// Minimum body length, after stripping HTML and whitespace, for a rewrite.
-	public static let minimumRewriteLength = 2000
+	public static let minimumRewriteLength = 200
 
 	/// How many body characters are inspected when detecting Chinese text.
 	public static let languageSampleLength = 4000

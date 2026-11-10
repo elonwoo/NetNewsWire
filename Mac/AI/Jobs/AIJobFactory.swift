@@ -8,12 +8,12 @@ import Foundation
 
 enum AIJobFactory {
 
-	static func job(articleID: String, kind: AIJobKind, now: Date = Date()) -> AIJob {
+	static func job(articleID: String, kind: AIJobKind, priority override: Int? = nil, now: Date = Date()) -> AIJob {
 		AIJob(
 			id: UUID().uuidString,
 			articleID: articleID,
 			kind: kind,
-			priority: priority(for: kind),
+			priority: override ?? priority(for: kind),
 			availableAt: now,
 			createdAt: now
 		)
