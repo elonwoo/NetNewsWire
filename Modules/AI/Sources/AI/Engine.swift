@@ -368,10 +368,16 @@ private extension AIEngine {
 			searchStart = range.upperBound
 		}
 
+		// Table prompts join cells with " | ", so a cell translation that precedes
+		// another marker ends with that separator. Drop only the leading/trailing
+		// pipes and whitespace; pipes inside a cell stay.
+		let tableTrimSet = CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "|"))
 		var slotTranslations: [String] = []
 		for (index, range) in ranges.enumerated() {
 			let end = index + 1 < ranges.count ? ranges[index + 1].lowerBound : raw.endIndex
-			slotTranslations.append(String(raw[range.upperBound..<end]).trimmingCharacters(in: .whitespacesAndNewlines))
+			let translation = String(raw[range.upperBound..<end])
+			let trimSet = plan.kind == .table ? tableTrimSet : CharacterSet.whitespacesAndNewlines
+			slotTranslations.append(translation.trimmingCharacters(in: trimSet))
 		}
 
 		var template = plan.templateHTML

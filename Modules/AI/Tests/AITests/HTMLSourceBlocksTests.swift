@@ -74,6 +74,34 @@ import Testing
 		#expect(plans[0].slotTexts.allSatisfy { !$0.contains("let x") })
 	}
 
+	@Test func paragraphWithOnlyLinkTextIsTranslatable() throws {
+		let samples = [
+			"<p><a href=\"/a\">Tool</a>: <a href=\"/b\">Yonkers Rises</a></p>",
+			"<p><a href=\"/a\">Tool:</a> <a href=\"/b\">Yonkers Rises</a></p>"
+		]
+		for html in samples {
+			let block = try #require(HTMLSourceBlocks.blocks(html).first)
+			let plan = try #require(TranslationBlockPlanner.plans(from: [block]).first)
+
+			#expect(plan.slotCount > 1)
+			#expect(plan.isTranslatable)
+			#expect(plan.promptText.contains("{{t0}}Tool"))
+		}
+	}
+
+	@Test func paragraphWithTextOutsideLinksStaysTranslatable() throws {
+		let html = """
+		<p>The <a href="/a">Tool</a> ships with <a href="/b">Yonkers Rises</a> inside.</p>
+		"""
+		let block = try #require(HTMLSourceBlocks.blocks(html).first)
+		let plan = try #require(TranslationBlockPlanner.plans(from: [block]).first)
+
+		#expect(plan.isTranslatable)
+		#expect(plan.slotCount == 5)
+		#expect(plan.slotTexts == ["The", "Tool", "ships with", "Yonkers Rises", "inside."])
+		#expect(plan.promptText == "{{t0}}The {{t1}}Tool{{t2}} ships with {{t3}}Yonkers Rises{{t4}} inside.")
+	}
+
 	@Test func tableCellsBecomeSlots() throws {
 		let html = """
 		<table><tr><th>Name</th><th>Value</th></tr><tr><td>Alpha</td><td>1</td></tr></table>
@@ -87,6 +115,7 @@ import Testing
 		#expect(plan.templateHTML.contains("{{t0}}"))
 		#expect(!plan.templateHTML.contains("Name"))
 		#expect(!plan.templateHTML.contains("Alpha"))
+		#expect(plan.promptText == "{{t0}}Name | {{t1}}Value\n{{t2}}Alpha | {{t3}}1")
 	}
 
 	@Test func resolvesImageURLsAndDropsUnsafeOnes() {

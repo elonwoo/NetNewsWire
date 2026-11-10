@@ -1406,7 +1406,10 @@ public enum TranslationBlockPlanner {
 	private static func walkPrompt(_ node: HTMLSourceBlocks.ParsedNode, markers: [Int: String], into result: inout String) {
 		if let text = node.text {
 			if let marker = markers[node.id] {
+				// Keep the marker next to the text it stands for, so the model knows
+				// which placeholder to translate and `fill` can split the reply.
 				result += marker
+				result += HTMLSourceBlocks.decodeEntities(text)
 			} else {
 				result += HTMLSourceBlocks.decodeEntities(text)
 			}

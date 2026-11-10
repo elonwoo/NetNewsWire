@@ -240,6 +240,26 @@ import Testing
 		#expect(block.targetHTML?.contains("Two") == true)
 	}
 
+	@Test func tableFillDropsCellSeparatorsFromTranslations() async throws {
+		let client = MockAIClient { _ in
+			try Self.translationJSON(blocks: [["i": 0, "target": "{{t0}}名称 | {{t1}}值\n{{t2}}阿尔法 | {{t3}}1"]])
+		}
+		let engine = AIEngine(store: store, client: client, config: AIConfig(model: "test-model"))
+		let article = AIArticle(
+			id: "article-table-fill",
+			title: "标题",
+			contentHTML: "<table><tr><th>Name</th><th>Value</th></tr><tr><td>Alpha</td><td>1</td></tr></table>"
+		)
+
+		let translation = try await engine.translateBody(article)
+		let block = try #require(translation.blocks.first)
+
+		#expect(block.targetHTML?.contains("<th>名称</th>") == true)
+		#expect(block.targetHTML?.contains("<th>值</th>") == true)
+		#expect(block.targetHTML?.contains("<td>阿尔法</td>") == true)
+		#expect(block.targetHTML?.contains("|") == false)
+	}
+
 	@Test func normalBlockMarkerMismatchWrapsOuterTag() async throws {
 		let client = MockAIClient { _ in
 			try Self.translationJSON(blocks: [["i": 0, "target": "{{t2}}中{{t0}}文{{t1}}字"]])
