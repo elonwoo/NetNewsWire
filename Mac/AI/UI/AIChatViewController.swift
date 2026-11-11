@@ -22,11 +22,17 @@ final class AIChatViewController: NSViewController {
 			guard article?.articleID != oldValue?.articleID else {
 				return
 			}
+			streamTask?.cancel()
+			streamTask = nil
 			articleTitleLabel.stringValue = article?.title ?? "未选择文章"
 			resetConversation()
 			loadMessages()
 			updateInputState()
 		}
+	}
+
+	deinit {
+		streamTask?.cancel()
 	}
 
 	private let headerTitleLabel = NSTextField(labelWithString: "AI 对话")
@@ -45,8 +51,17 @@ final class AIChatViewController: NSViewController {
 
 	private var storedMessages: [ChatMessage] = []
 	private var pendingUserMessage: ChatMessage?
+	private var pendingAssistantText: String?
+	private var streamingRow: AIMessageRowView?
+	private var streamTask: Task<Void, Never>?
 	private var isSending = false
+	private var receivedDelta = false
+	private var lastStreamRenderTime = Date.distantPast
 	private var loadToken = UUID()
+
+	private static let thinkingPlaceholder = "正在思考…"
+	private static let streamingRenderInterval: TimeInterval = 0.1
+	private static let streamFollowThreshold: CGFloat = 60
 
 	override func loadView() {
 		let rootView = NSView()
@@ -225,9 +240,14 @@ private extension AIChatViewController {
 private extension AIChatViewController {
 
 	func resetConversation() {
+		streamTask?.cancel()
+		streamTask = nil
 		storedMessages = []
 		pendingUserMessage = nil
+		pendingAssistantText = nil
+		streamingRow = nil
 		isSending = false
+		receivedDelta = false
 		errorLabel.isHidden = true
 		statusLabel.isHidden = true
 		rebuildMessages()
@@ -282,6 +302,9 @@ private extension AIChatViewController {
 			model: nil,
 			createdAt: Date()
 		)
+		pendingAssistantText = Self.thinkingPlaceholder
+		receivedDelta = false
+		lastStreamRenderTime = .distantPast
 		isSending = true
 		updateSendingState()
 		rebuildMessages()
@@ -291,50 +314,121 @@ private extension AIChatViewController {
 		let articleID = article.articleID
 		let aiArticle = AIArticle(article: article)
 
-		Task { @MainActor in
+		streamTask?.cancel()
+		streamTask = Task { @MainActor in
 			do {
-				_ = try await AIEnvironment.shared.engine.chat(article: aiArticle, history: history, userMessage: trimmedPrompt)
-				guard self.article?.articleID == articleID else {
-					return
+				let stream = AIEnvironment.shared.engine.chatStream(article: aiArticle, history: history, userMessage: trimmedPrompt)
+				for try await event in stream {
+					guard self.article?.articleID == articleID else {
+						return
+					}
+					switch event {
+					case .delta(let delta):
+						if !self.receivedDelta {
+							self.receivedDelta = true
+							self.pendingAssistantText = ""
+							self.updateSendingState()
+						}
+						self.pendingAssistantText = (self.pendingAssistantText ?? "") + delta
+						let now = Date()
+						if now.timeIntervalSince(self.lastStreamRenderTime) >= Self.streamingRenderInterval {
+							self.lastStreamRenderTime = now
+							self.renderStreamingRow()
+						}
+					case .finished(let message):
+						await self.finishStreaming(articleID: articleID, message: message)
+						return
+					}
 				}
-				self.pendingUserMessage = nil
-				self.isSending = false
-				self.updateSendingState()
-				await self.reloadMessagesFromStore(articleID: articleID)
+				self.handleStreamFailure(AIClientError.invalidResponse, articleID: articleID)
 			} catch {
-				guard self.article?.articleID == articleID else {
-					return
-				}
-				self.isSending = false
-				self.updateSendingState()
-				self.showError("发送失败：\(error.localizedDescription)")
+				self.handleStreamFailure(error, articleID: articleID)
 			}
 		}
 	}
 
-	func reloadMessagesFromStore(articleID: String) async {
+	func finishStreaming(articleID: String, message: ChatMessage) async {
+		defer {
+			streamTask = nil
+		}
+
+		// Force the last throttled frame before swapping in the stored messages.
+		renderStreamingRow()
+
 		do {
-			let messages = try await AIEnvironment.shared.store.chatMessages(for: articleID)
-			guard article?.articleID == articleID else {
+			guard let messages = try await fetchStoredMessages(articleID: articleID) else {
 				return
 			}
+			guard messages.contains(where: { $0.id == message.id }) else {
+				isSending = false
+				receivedDelta = false
+				updateSendingState()
+				showError("发送失败：回复未保存到本地。")
+				return
+			}
+
+			pendingAssistantText = nil
+			pendingUserMessage = nil
+			streamingRow = nil
 			storedMessages = messages
+			isSending = false
+			receivedDelta = false
+			updateSendingState()
 			rebuildMessages()
 		} catch {
 			guard article?.articleID == articleID else {
 				return
 			}
+			isSending = false
+			receivedDelta = false
+			updateSendingState()
 			showError("读取对话失败：\(error.localizedDescription)")
 		}
 	}
 
-	func rebuildMessages() {
+	func handleStreamFailure(_ error: Error, articleID: String) {
+		defer {
+			streamTask = nil
+		}
+		guard article?.articleID == articleID else {
+			return
+		}
+
+		let cancelled = error is CancellationError
+			|| (error as? URLError)?.code == .cancelled
+			|| Task.isCancelled
+
+		pendingAssistantText = nil
+		pendingUserMessage = nil
+		streamingRow = nil
+		isSending = false
+		receivedDelta = false
+		updateSendingState()
+		rebuildMessages()
+
+		if !cancelled {
+			showError("发送失败：\(error.localizedDescription)")
+		}
+	}
+
+	/// Reads messages without rebuilding; the caller applies them once.
+	/// Returns nil when the article changed while the read was in flight.
+	func fetchStoredMessages(articleID: String) async throws -> [ChatMessage]? {
+		let messages = try await AIEnvironment.shared.store.chatMessages(for: articleID)
+		guard article?.articleID == articleID else {
+			return nil
+		}
+		return messages
+	}
+
+	func rebuildMessages(followScroll: Bool = true) {
 		for subview in messagesStack.arrangedSubviews {
 			messagesStack.removeArrangedSubview(subview)
 			subview.removeFromSuperview()
 		}
+		streamingRow = nil
 
-		if storedMessages.isEmpty, pendingUserMessage == nil {
+		if storedMessages.isEmpty, pendingUserMessage == nil, pendingAssistantText == nil {
 			let hint = NSTextField(wrappingLabelWithString: "选择下方的阅读任务，或输入问题开始对话。")
 			hint.font = .systemFont(ofSize: 12)
 			hint.textColor = .secondaryLabelColor
@@ -347,10 +441,43 @@ private extension AIChatViewController {
 			if let pendingUserMessage {
 				addMessageRow(AIMessageRowView(message: pendingUserMessage))
 			}
+			if let pendingAssistantText {
+				let row = AIMessageRowView(text: pendingAssistantText, isUser: false)
+				streamingRow = row
+				addMessageRow(row)
+			}
 		}
 
 		messagesDocumentView.layoutSubtreeIfNeeded()
-		scrollToBottom()
+		if followScroll {
+			scrollToBottom()
+		}
+	}
+
+	func renderStreamingRow() {
+		guard let pendingAssistantText else {
+			return
+		}
+		let followScroll = isNearBottom
+		if let streamingRow {
+			streamingRow.update(text: pendingAssistantText)
+			messagesDocumentView.layoutSubtreeIfNeeded()
+			if followScroll {
+				scrollToBottom()
+			}
+		} else {
+			rebuildMessages(followScroll: false)
+			if followScroll {
+				scrollToBottom()
+			}
+		}
+	}
+
+	var isNearBottom: Bool {
+		let documentHeight = messagesDocumentView.bounds.height
+		let clipHeight = messagesScrollView.contentView.bounds.height
+		let offset = messagesScrollView.contentView.bounds.origin.y
+		return documentHeight - clipHeight - offset <= Self.streamFollowThreshold
 	}
 
 	func addMessageRow(_ row: NSView) {
@@ -371,8 +498,9 @@ private extension AIChatViewController {
 
 	func updateSendingState() {
 		sendButton.isEnabled = !isSending && article != nil
-		statusLabel.stringValue = isSending ? "正在思考…" : ""
-		statusLabel.isHidden = !isSending
+		let showsThinking = isSending && !receivedDelta
+		statusLabel.stringValue = showsThinking ? Self.thinkingPlaceholder : ""
+		statusLabel.isHidden = !showsThinking
 	}
 
 	func updateInputState() {

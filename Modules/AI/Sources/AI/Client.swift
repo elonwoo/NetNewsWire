@@ -50,11 +50,34 @@ public enum AIThinkingMode: String, Sendable {
 
 public protocol AIClient: Sendable {
 	func complete(messages: [AIMessage], temperature: Double?, maxTokens: Int?, thinking: AIThinkingMode?) async throws -> String
+
+	/// Streams the answer as incremental text. The default implementation calls
+	/// `complete` and yields the whole answer once, so clients that do not
+	/// support streaming keep working unchanged.
+	func completeStream(messages: [AIMessage], temperature: Double?, maxTokens: Int?, thinking: AIThinkingMode?) -> AsyncThrowingStream<String, Error>
 }
 
 public extension AIClient {
 	func complete(messages: [AIMessage], temperature: Double? = nil, maxTokens: Int? = nil) async throws -> String {
 		try await complete(messages: messages, temperature: temperature, maxTokens: maxTokens, thinking: nil)
+	}
+
+	func completeStream(messages: [AIMessage], temperature: Double?, maxTokens: Int?, thinking: AIThinkingMode?) -> AsyncThrowingStream<String, Error> {
+		AsyncThrowingStream { continuation in
+			let task = Task {
+				do {
+					let content = try await complete(messages: messages, temperature: temperature, maxTokens: maxTokens, thinking: thinking)
+					try Task.checkCancellation()
+					continuation.yield(content)
+					continuation.finish()
+				} catch {
+					continuation.finish(throwing: error)
+				}
+			}
+			continuation.onTermination = { _ in
+				task.cancel()
+			}
+		}
 	}
 }
 
@@ -90,6 +113,71 @@ public final class OpenAIChatClient: AIClient, Sendable {
 		guard (200..<300).contains(httpResponse.statusCode) else {
 			throw AIClientError.httpStatus(httpResponse.statusCode)
 		}
+		return try decodeCompletion(data: data)
+	}
+
+	/// Requests an SSE stream and yields every `choices[].delta.content`.
+	///
+	/// When the gateway ignores `stream` and answers with JSON, the body is read
+	/// once and decoded the same way as `complete`; the request is never resent.
+	public func completeStream(messages: [AIMessage], temperature: Double?, maxTokens: Int?, thinking: AIThinkingMode?) -> AsyncThrowingStream<String, Error> {
+		AsyncThrowingStream { continuation in
+			let task = Task {
+				do {
+					var request = try makeRequest(messages: messages, temperature: temperature, maxTokens: maxTokens, thinking: thinking, stream: true)
+					request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+					let (bytes, response) = try await session.bytes(for: request)
+					guard let httpResponse = response as? HTTPURLResponse else {
+						throw AIClientError.invalidResponse
+					}
+					guard (200..<300).contains(httpResponse.statusCode) else {
+						throw AIClientError.httpStatus(httpResponse.statusCode)
+					}
+
+					let contentType = (httpResponse.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
+					if httpResponse.statusCode == 200, !contentType.contains("text/event-stream") {
+						var data = Data()
+						for try await byte in bytes {
+							data.append(byte)
+						}
+						continuation.yield(try decodeCompletion(data: data))
+						continuation.finish()
+						return
+					}
+
+					var decoder = SSEDecoder()
+					for try await line in bytes.lines {
+						try Task.checkCancellation()
+						switch decoder.event(forLine: line) {
+						case .delta(let text):
+							continuation.yield(text)
+						case .done:
+							continuation.finish()
+							return
+						case .truncated:
+							throw AIClientError.truncated
+						case .ignore:
+							continue
+						}
+					}
+					try Task.checkCancellation()
+					try decoder.finish()
+					continuation.finish()
+				} catch is CancellationError {
+					continuation.finish(throwing: CancellationError())
+				} catch let error as URLError where error.code == .cancelled {
+					continuation.finish(throwing: error)
+				} catch {
+					continuation.finish(throwing: error)
+				}
+			}
+			continuation.onTermination = { _ in
+				task.cancel()
+			}
+		}
+	}
+
+	private func decodeCompletion(data: Data) throws -> String {
 		let decoded: ChatCompletionResponse
 		do {
 			decoded = try JSONDecoder().decode(ChatCompletionResponse.self, from: data)
@@ -132,7 +220,7 @@ public final class OpenAIChatClient: AIClient, Sendable {
 		return decoded.data.map(\.id).filter { !$0.isEmpty }
 	}
 
-	private func makeRequest(messages: [AIMessage], temperature: Double?, maxTokens: Int?, thinking: AIThinkingMode?) throws -> URLRequest {
+	private func makeRequest(messages: [AIMessage], temperature: Double?, maxTokens: Int?, thinking: AIThinkingMode?, stream: Bool = false) throws -> URLRequest {
 		let url = config.baseURL.appendingPathComponent("chat/completions")
 		var request = URLRequest(url: url)
 		request.httpMethod = "POST"
@@ -146,7 +234,8 @@ public final class OpenAIChatClient: AIClient, Sendable {
 			messages: messages.map { ChatCompletionRequest.Message(role: $0.role, content: $0.content) },
 			temperature: temperature ?? config.temperature,
 			maxTokens: maxTokens ?? config.maxTokens,
-			thinking: thinking.map { ChatCompletionRequest.AIThinkingRequest(type: $0.rawValue) }
+			thinking: thinking.map { ChatCompletionRequest.AIThinkingRequest(type: $0.rawValue) },
+			stream: stream ? true : nil
 		)
 		request.httpBody = try JSONEncoder().encode(body)
 		return request
@@ -159,6 +248,81 @@ public enum AIClientError: Error, Sendable {
 	case missingContent
 	case emptyContent
 	case truncated
+}
+
+/// One decoded Server-Sent Events line.
+enum SSEStreamEvent: Equatable, Sendable {
+	case delta(String)
+	case done
+	case truncated
+	case ignore
+}
+
+/// Pure line-to-event decoder for OpenAI-compatible SSE streams.
+///
+/// Splitting this out keeps the line rules testable without a network stack.
+struct SSEDecoder {
+
+	private(set) var receivedContent = false
+
+	mutating func event(forLine line: String) -> SSEStreamEvent {
+		var text = line
+		if text.hasSuffix("\r") {
+			text.removeLast()
+		}
+		let trimmed = text.trimmingCharacters(in: .whitespaces)
+		if trimmed.isEmpty || trimmed.hasPrefix(":") {
+			return .ignore
+		}
+		guard trimmed.hasPrefix("data:") else {
+			return .ignore
+		}
+		var payload = String(trimmed.dropFirst("data:".count))
+		if payload.hasPrefix(" ") {
+			payload.removeFirst()
+		}
+		if payload == "[DONE]" {
+			return .done
+		}
+		guard let data = payload.data(using: .utf8),
+			  let chunk = try? JSONDecoder().decode(ChatCompletionChunk.self, from: data) else {
+			return .ignore
+		}
+		if chunk.choices.first?.finishReason == "length" {
+			return .truncated
+		}
+		guard let content = chunk.choices.first?.delta?.content, !content.isEmpty else {
+			return .ignore
+		}
+		receivedContent = true
+		return .delta(content)
+	}
+
+	/// EOF without `[DONE]`: content seen so far counts as a complete answer.
+	func finish() throws {
+		guard receivedContent else {
+			throw AIClientError.invalidResponse
+		}
+	}
+}
+
+struct ChatCompletionChunk: Decodable {
+
+	struct Choice: Decodable {
+		let delta: Delta?
+		let finishReason: String?
+
+		enum CodingKeys: String, CodingKey {
+			case delta
+			case finishReason = "finish_reason"
+		}
+	}
+
+	struct Delta: Decodable {
+		let content: String?
+	}
+
+	let choices: [Choice]
 }
 
 private struct ChatCompletionRequest: Encodable {
@@ -177,6 +341,7 @@ private struct ChatCompletionRequest: Encodable {
 	let temperature: Double
 	let maxTokens: Int
 	let thinking: AIThinkingRequest?
+	let stream: Bool?
 
 	enum CodingKeys: String, CodingKey {
 		case model
@@ -184,6 +349,7 @@ private struct ChatCompletionRequest: Encodable {
 		case temperature
 		case maxTokens = "max_tokens"
 		case thinking
+		case stream
 	}
 
 	func encode(to encoder: Encoder) throws {
@@ -193,6 +359,7 @@ private struct ChatCompletionRequest: Encodable {
 		try container.encode(temperature, forKey: .temperature)
 		try container.encode(maxTokens, forKey: .maxTokens)
 		try container.encodeIfPresent(thinking, forKey: .thinking)
+		try container.encodeIfPresent(stream, forKey: .stream)
 	}
 }
 

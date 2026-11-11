@@ -16,7 +16,15 @@ final class AIMessageRowView: NSView {
 	init(message: ChatMessage) {
 		self.isUser = message.role == .user
 		super.init(frame: .zero)
-		configure(text: message.content)
+		configure()
+		applyText(message.content)
+	}
+
+	init(text: String, isUser: Bool) {
+		self.isUser = isUser
+		super.init(frame: .zero)
+		configure()
+		applyText(text)
 	}
 
 	@available(*, unavailable)
@@ -24,10 +32,16 @@ final class AIMessageRowView: NSView {
 		fatalError("init(coder:) has not been implemented")
 	}
 
+	/// Replaces the bubble's text while a reply streams in.
+	func update(text: String) {
+		applyText(text)
+	}
+
 	override func layout() {
 		super.layout()
 		let maximumBubbleWidth = max(80, bounds.width - 36)
-		let maximumLabelWidth = maximumBubbleWidth - 18
+		let horizontalInset: CGFloat = isUser ? 9 : 11
+		let maximumLabelWidth = maximumBubbleWidth - horizontalInset * 2
 		if abs(label.preferredMaxLayoutWidth - maximumLabelWidth) > 0.5 {
 			label.preferredMaxLayoutWidth = maximumLabelWidth
 			label.invalidateIntrinsicContentSize()
@@ -38,7 +52,7 @@ final class AIMessageRowView: NSView {
 
 private extension AIMessageRowView {
 
-	func configure(text: String) {
+	func configure() {
 		translatesAutoresizingMaskIntoConstraints = false
 
 		bubble.translatesAutoresizingMaskIntoConstraints = false
@@ -52,8 +66,7 @@ private extension AIMessageRowView {
 		}
 
 		label.translatesAutoresizingMaskIntoConstraints = false
-		label.stringValue = text
-		label.font = .systemFont(ofSize: 12)
+		label.font = .systemFont(ofSize: 13)
 		label.maximumNumberOfLines = 0
 		label.lineBreakMode = .byWordWrapping
 		label.isSelectable = true
@@ -65,13 +78,15 @@ private extension AIMessageRowView {
 		addSubview(bubble)
 		bubble.addSubview(label)
 
+		let verticalInset: CGFloat = isUser ? 7 : 9
+		let horizontalInset: CGFloat = isUser ? 9 : 11
 		NSLayoutConstraint.activate([
 			bubble.topAnchor.constraint(equalTo: topAnchor, constant: 3),
 			bubble.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -3),
-			label.topAnchor.constraint(equalTo: bubble.topAnchor, constant: 7),
-			label.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -7),
-			label.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 9),
-			label.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -9)
+			label.topAnchor.constraint(equalTo: bubble.topAnchor, constant: verticalInset),
+			label.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -verticalInset),
+			label.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: horizontalInset),
+			label.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -horizontalInset)
 		])
 
 		if isUser {
@@ -85,5 +100,16 @@ private extension AIMessageRowView {
 				bubble.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -28)
 			])
 		}
+	}
+
+	func applyText(_ text: String) {
+		if isUser {
+			label.stringValue = text
+		} else {
+			label.attributedStringValue = AIChatMarkdownRenderer.attributedString(from: text)
+		}
+		label.invalidateIntrinsicContentSize()
+		invalidateIntrinsicContentSize()
+		needsLayout = true
 	}
 }

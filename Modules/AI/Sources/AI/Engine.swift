@@ -206,9 +206,7 @@ public actor AIEngine {
 	// MARK: - Chat
 
 	public func chat(article: AIArticle, history: [ChatMessage], userMessage: String) async throws -> ChatMessage {
-		var messages = [AIMessage(role: "system", content: AIPrompts.chatSystem + "\n\n当前文章上下文如下：\n" + articleContext(article))]
-		messages.append(contentsOf: history.map { AIMessage(role: $0.role.rawValue, content: $0.content) })
-		messages.append(AIMessage(role: "user", content: userMessage))
+		let messages = chatMessages(article: article, history: history, userMessage: userMessage)
 
 		let answer = try await client.complete(messages: messages, temperature: nil, maxTokens: nil)
 
@@ -232,6 +230,78 @@ public actor AIEngine {
 		try await store.appendChatMessage(assistantMessage)
 		return assistantMessage
 	}
+
+	/// Streams a chat answer. Deltas arrive as they are produced; the user and
+	/// assistant messages are persisted only after the stream completes, so a
+	/// cancelled or failed stream leaves the store untouched.
+	public nonisolated func chatStream(article: AIArticle, history: [ChatMessage], userMessage: String) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
+		AsyncThrowingStream { continuation in
+			let task = Task {
+				do {
+					let messages = await self.chatMessages(article: article, history: history, userMessage: userMessage)
+					let client = self.client
+					let config = self.config
+					let store = self.store
+
+					var answer = ""
+					for try await delta in client.completeStream(messages: messages, temperature: nil, maxTokens: nil, thinking: nil) {
+						try Task.checkCancellation()
+						answer += delta
+						continuation.yield(.delta(delta))
+					}
+
+					try Task.checkCancellation()
+					guard !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+						throw AIEngineError.emptyContent
+					}
+
+					let userChatMessage = ChatMessage(
+						id: UUID().uuidString,
+						articleID: article.id,
+						role: .user,
+						content: userMessage,
+						model: nil,
+						createdAt: Date()
+					)
+					let assistantMessage = ChatMessage(
+						id: UUID().uuidString,
+						articleID: article.id,
+						role: .assistant,
+						content: answer,
+						model: config.model,
+						createdAt: Date()
+					)
+
+					try Task.checkCancellation()
+					try await store.appendChatMessage(userChatMessage)
+					try Task.checkCancellation()
+					try await store.appendChatMessage(assistantMessage)
+					try Task.checkCancellation()
+
+					continuation.yield(.finished(assistantMessage))
+					continuation.finish()
+				} catch {
+					continuation.finish(throwing: error)
+				}
+			}
+			continuation.onTermination = { _ in
+				task.cancel()
+			}
+		}
+	}
+
+	private func chatMessages(article: AIArticle, history: [ChatMessage], userMessage: String) -> [AIMessage] {
+		var messages = [AIMessage(role: "system", content: AIPrompts.chatSystem + "\n\n当前文章上下文如下：\n" + articleContext(article))]
+		messages.append(contentsOf: history.map { AIMessage(role: $0.role.rawValue, content: $0.content) })
+		messages.append(AIMessage(role: "user", content: userMessage))
+		return messages
+	}
+}
+
+/// Events emitted by `AIEngine.chatStream`.
+public enum AIChatStreamEvent: Sendable {
+	case delta(String)
+	case finished(ChatMessage)
 }
 
 // MARK: - Rewrite input
