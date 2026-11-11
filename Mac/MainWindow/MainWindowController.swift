@@ -152,7 +152,7 @@ final class MainWindowController: NSWindowController, NSUserInterfaceValidations
 			self?.fetchSelectedTextForAI(completion)
 		}
 		aiViewController.onEscape = { [weak self] in
-			self?.detailPaneViewController?.focus()
+			_ = self?.closeAIPaneIfVisible()
 		}
 		self.aiViewController = aiViewController
 
@@ -1312,6 +1312,10 @@ extension MainWindowController {
 			return false
 		}
 		setAIPaneVisible(false, focus: false)
+		// Removing the pane can leave focus on the article body, where Escape is
+		// reserved for the page. Return to the timeline so the next Escape
+		// continues down the chain and closes the article.
+		makeTimelineViewFirstResponder()
 		return true
 	}
 }
