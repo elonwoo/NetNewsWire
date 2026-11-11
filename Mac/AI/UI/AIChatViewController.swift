@@ -24,6 +24,9 @@ final class AIChatViewController: NSViewController {
 			}
 			streamTask?.cancel()
 			streamTask = nil
+			closeTray()
+			pendingQuote = nil
+			updateQuoteChip()
 			articleTitleLabel.stringValue = article?.title ?? "未选择文章"
 			resetConversation()
 			loadMessages()
@@ -33,6 +36,15 @@ final class AIChatViewController: NSViewController {
 
 	deinit {
 		streamTask?.cancel()
+		if let localMouseMonitor {
+			NSEvent.removeMonitor(localMouseMonitor)
+		}
+		if let globalMouseMonitor {
+			NSEvent.removeMonitor(globalMouseMonitor)
+		}
+		if let escapeKeyMonitor {
+			NSEvent.removeMonitor(escapeKeyMonitor)
+		}
 	}
 
 	private let headerTitleLabel = NSTextField(labelWithString: "AI 对话")
@@ -41,9 +53,12 @@ final class AIChatViewController: NSViewController {
 	private let messagesScrollView = NSScrollView()
 	private let messagesDocumentView = AIFlippedView()
 	private let messagesStack = NSStackView()
-	private let taskListView = AITaskListView()
+	private let taskButton = AITaskButton()
+	private let taskTray = AITaskTrayView()
 	private let errorLabel = NSTextField(wrappingLabelWithString: "")
-	private let statusLabel = NSTextField(labelWithString: "")
+	private let quoteChipView = AIQuoteChipView()
+	private let quoteLabel = NSTextField(wrappingLabelWithString: "")
+	private let inputBox = AIComposerBoxView()
 	private let inputScrollView = NSScrollView()
 	private let inputTextView = NSTextView()
 	private let sendButton = NSButton()
@@ -58,8 +73,14 @@ final class AIChatViewController: NSViewController {
 	private var receivedDelta = false
 	private var lastStreamRenderTime = Date.distantPast
 	private var loadToken = UUID()
+	private var pendingQuote: String?
+	private var isTrayOpen = false
+	private var trayHeightConstraint: NSLayoutConstraint?
+	nonisolated(unsafe) private var localMouseMonitor: Any?
+	nonisolated(unsafe) private var globalMouseMonitor: Any?
+	nonisolated(unsafe) private var escapeKeyMonitor: Any?
 
-	private static let thinkingPlaceholder = "正在思考…"
+	private static let thinkingPlaceholder = "正在生成回复…"
 	private static let streamingRenderInterval: TimeInterval = 0.1
 	private static let streamFollowThreshold: CGFloat = 60
 
@@ -74,6 +95,38 @@ final class AIChatViewController: NSViewController {
 		rootView.addSubview(headerRow)
 		rootView.addSubview(messagesScrollView)
 		rootView.addSubview(bottomStack)
+		rootView.addSubview(taskTray)
+
+		taskTray.isHidden = true
+		let trayHeightConstraint = taskTray.heightAnchor.constraint(equalToConstant: 0)
+		self.trayHeightConstraint = trayHeightConstraint
+
+		NSLayoutConstraint.activate([
+			taskTray.leadingAnchor.constraint(equalTo: bottomStack.leadingAnchor),
+			taskTray.trailingAnchor.constraint(equalTo: bottomStack.trailingAnchor),
+			taskTray.bottomAnchor.constraint(equalTo: taskButton.topAnchor, constant: -9),
+			taskTray.topAnchor.constraint(greaterThanOrEqualTo: messagesScrollView.topAnchor, constant: 4),
+			trayHeightConstraint
+		])
+		taskTray.onSelectPrompt = { [weak self] prompt in
+			guard let self, !self.isSending else {
+				return
+			}
+			self.closeTray()
+			self.send(prompt: prompt)
+		}
+		taskTray.onAddCustomPrompt = { [weak self] in
+			self?.promptForNewCustomPrompt()
+		}
+		taskTray.onEditCustomPrompt = { [weak self] index in
+			self?.promptForEditingCustomPrompt(at: index)
+		}
+		taskTray.onDeleteCustomPrompt = { [weak self] index in
+			self?.deleteCustomPrompt(at: index)
+		}
+		taskTray.onClose = { [weak self] in
+			self?.closeTray()
+		}
 
 		NSLayoutConstraint.activate([
 			headerRow.topAnchor.constraint(equalTo: rootView.safeAreaLayoutGuide.topAnchor, constant: 10),
@@ -90,9 +143,15 @@ final class AIChatViewController: NSViewController {
 			bottomStack.bottomAnchor.constraint(equalTo: rootView.bottomAnchor, constant: -10)
 		])
 
-		taskListView.reload(customPrompts: customPromptStore.prompts)
+		updateTaskButtonCount()
 		updateInputState()
 		rebuildMessages()
+	}
+
+	override func viewDidLayout() {
+		super.viewDidLayout()
+		updateTrayHeight()
+		updateQuoteLabelWidth()
 	}
 
 	func focusInput() {
@@ -165,32 +224,100 @@ private extension AIChatViewController {
 	}
 
 	func makeBottomStack() -> NSStackView {
-		taskListView.onSelectTask = { [weak self] prompt in
-			self?.send(prompt: prompt)
-		}
-		taskListView.onAddCustomPrompt = { [weak self] in
-			self?.promptForCustomPrompt()
-		}
-		taskListView.onDeleteCustomPrompt = { [weak self] index in
-			self?.deleteCustomPrompt(at: index)
-		}
-		taskListView.translatesAutoresizingMaskIntoConstraints = false
-		taskListView.heightAnchor.constraint(equalToConstant: 300).isActive = true
+		taskButton.target = self
+		taskButton.action = #selector(toggleTaskTray)
 
 		errorLabel.font = .systemFont(ofSize: 11)
 		errorLabel.textColor = .systemRed
 		errorLabel.isHidden = true
 		errorLabel.maximumNumberOfLines = 3
 
-		statusLabel.font = .systemFont(ofSize: 11)
-		statusLabel.textColor = .secondaryLabelColor
-		statusLabel.isHidden = true
+		makeQuoteChip()
+		makeInputBox()
+
+		sendButton.title = "发送"
+		sendButton.bezelStyle = .rounded
+		sendButton.target = self
+		sendButton.action = #selector(sendFromInput)
+		sendButton.setContentHuggingPriority(.required, for: .horizontal)
+
+		let inputRow = NSStackView(views: [inputBox, sendButton])
+		inputRow.orientation = .horizontal
+		inputRow.alignment = .bottom
+		inputRow.spacing = 8
+		inputRow.distribution = .fill
+
+		let spacer = NSView()
+		let taskRow = NSStackView(views: [taskButton, spacer])
+		taskRow.orientation = .horizontal
+		taskRow.alignment = .centerY
+		taskRow.spacing = 8
+
+		let stack = NSStackView(views: [errorLabel, taskRow, inputRow])
+		stack.orientation = .vertical
+		stack.alignment = .leading
+		stack.spacing = 6
+		stack.translatesAutoresizingMaskIntoConstraints = false
+
+		for arrangedView in [errorLabel, taskRow, inputRow] {
+			arrangedView.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+		}
+
+		return stack
+	}
+
+	func makeQuoteChip() {
+		quoteChipView.translatesAutoresizingMaskIntoConstraints = false
+		quoteChipView.isHidden = true
+
+		let tag = NSTextField(labelWithString: "引用")
+		tag.font = .systemFont(ofSize: 10, weight: .semibold)
+		tag.textColor = .tertiaryLabelColor
+		tag.setContentHuggingPriority(.required, for: .horizontal)
+		tag.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+		quoteLabel.font = .systemFont(ofSize: 11)
+		quoteLabel.textColor = .secondaryLabelColor
+		quoteLabel.maximumNumberOfLines = 2
+		quoteLabel.lineBreakMode = .byWordWrapping
+		quoteLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+		quoteLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+		let removeButton = NSButton(title: "×", target: self, action: #selector(removeQuote))
+		removeButton.isBordered = false
+		removeButton.font = .systemFont(ofSize: 13)
+		removeButton.contentTintColor = .tertiaryLabelColor
+		removeButton.toolTip = "移除引用"
+		removeButton.setAccessibilityLabel("移除引用")
+		removeButton.translatesAutoresizingMaskIntoConstraints = false
+		NSLayoutConstraint.activate([
+			removeButton.widthAnchor.constraint(equalToConstant: 20),
+			removeButton.heightAnchor.constraint(equalToConstant: 20)
+		])
+
+		let chipStack = NSStackView(views: [tag, quoteLabel, removeButton])
+		chipStack.orientation = .horizontal
+		chipStack.alignment = .top
+		chipStack.spacing = 7
+		chipStack.translatesAutoresizingMaskIntoConstraints = false
+		quoteChipView.addSubview(chipStack)
+
+		NSLayoutConstraint.activate([
+			chipStack.topAnchor.constraint(equalTo: quoteChipView.topAnchor, constant: 5),
+			chipStack.leadingAnchor.constraint(equalTo: quoteChipView.leadingAnchor, constant: 7),
+			chipStack.trailingAnchor.constraint(equalTo: quoteChipView.trailingAnchor, constant: -4),
+			chipStack.bottomAnchor.constraint(equalTo: quoteChipView.bottomAnchor, constant: -5)
+		])
+	}
+
+	func makeInputBox() {
+		inputBox.translatesAutoresizingMaskIntoConstraints = false
 
 		inputScrollView.translatesAutoresizingMaskIntoConstraints = false
 		inputScrollView.hasVerticalScroller = true
 		inputScrollView.autohidesScrollers = true
-		inputScrollView.borderType = .bezelBorder
-		inputScrollView.drawsBackground = true
+		inputScrollView.borderType = .noBorder
+		inputScrollView.drawsBackground = false
 
 		inputTextView.minSize = NSSize(width: 0, height: 0)
 		inputTextView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
@@ -202,36 +329,30 @@ private extension AIChatViewController {
 		inputTextView.isAutomaticDashSubstitutionEnabled = false
 		inputTextView.isAutomaticTextReplacementEnabled = false
 		inputTextView.font = .systemFont(ofSize: 12)
+		inputTextView.textColor = .labelColor
+		inputTextView.drawsBackground = false
 		inputTextView.textContainerInset = NSSize(width: 4, height: 5)
 		inputTextView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
 		inputTextView.textContainer?.widthTracksTextView = true
 		inputTextView.delegate = self
 		inputScrollView.documentView = inputTextView
-		inputScrollView.heightAnchor.constraint(equalToConstant: 62).isActive = true
+		inputScrollView.heightAnchor.constraint(equalToConstant: 58).isActive = true
 
-		sendButton.title = "发送"
-		sendButton.bezelStyle = .rounded
-		sendButton.target = self
-		sendButton.action = #selector(sendFromInput)
-		sendButton.setContentHuggingPriority(.required, for: .horizontal)
+		let inputStack = NSStackView(views: [quoteChipView, inputScrollView])
+		inputStack.orientation = .vertical
+		inputStack.alignment = .leading
+		inputStack.spacing = 6
+		inputStack.translatesAutoresizingMaskIntoConstraints = false
+		inputBox.addSubview(inputStack)
 
-		let inputRow = NSStackView(views: [inputScrollView, sendButton])
-		inputRow.orientation = .horizontal
-		inputRow.alignment = .centerY
-		inputRow.spacing = 8
-		inputRow.distribution = .fill
-
-		let stack = NSStackView(views: [taskListView, errorLabel, statusLabel, inputRow])
-		stack.orientation = .vertical
-		stack.alignment = .leading
-		stack.spacing = 6
-		stack.translatesAutoresizingMaskIntoConstraints = false
-
-		for arrangedView in [taskListView, errorLabel, statusLabel, inputRow] {
-			arrangedView.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-		}
-
-		return stack
+		NSLayoutConstraint.activate([
+			inputStack.topAnchor.constraint(equalTo: inputBox.topAnchor, constant: 6),
+			inputStack.leadingAnchor.constraint(equalTo: inputBox.leadingAnchor, constant: 6),
+			inputStack.trailingAnchor.constraint(equalTo: inputBox.trailingAnchor, constant: -6),
+			inputStack.bottomAnchor.constraint(equalTo: inputBox.bottomAnchor, constant: -6),
+			quoteChipView.widthAnchor.constraint(equalTo: inputStack.widthAnchor),
+			inputScrollView.widthAnchor.constraint(equalTo: inputStack.widthAnchor)
+		])
 	}
 }
 
@@ -249,7 +370,6 @@ private extension AIChatViewController {
 		isSending = false
 		receivedDelta = false
 		errorLabel.isHidden = true
-		statusLabel.isHidden = true
 		rebuildMessages()
 	}
 
@@ -289,7 +409,16 @@ private extension AIChatViewController {
 		}
 
 		let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-		guard !trimmedPrompt.isEmpty else {
+		let quote = pendingQuote?.trimmingCharacters(in: .whitespacesAndNewlines)
+		var promptParts: [String] = []
+		if let quote, !quote.isEmpty {
+			promptParts.append(makeQuoteBlock(quote))
+		}
+		if !trimmedPrompt.isEmpty {
+			promptParts.append(trimmedPrompt)
+		}
+		let composedPrompt = promptParts.joined(separator: "\n\n")
+		guard !composedPrompt.isEmpty else {
 			return
 		}
 
@@ -298,7 +427,7 @@ private extension AIChatViewController {
 			id: UUID().uuidString,
 			articleID: article.articleID,
 			role: .user,
-			content: trimmedPrompt,
+			content: composedPrompt,
 			model: nil,
 			createdAt: Date()
 		)
@@ -306,10 +435,14 @@ private extension AIChatViewController {
 		receivedDelta = false
 		lastStreamRenderTime = .distantPast
 		isSending = true
+		closeTray()
+		pendingQuote = nil
+		updateQuoteChip()
 		updateSendingState()
 		rebuildMessages()
 		inputTextView.string = ""
 
+		let restoreQuote = quote
 		let history = storedMessages
 		let articleID = article.articleID
 		let aiArticle = AIArticle(article: article)
@@ -317,7 +450,7 @@ private extension AIChatViewController {
 		streamTask?.cancel()
 		streamTask = Task { @MainActor in
 			do {
-				let stream = AIEnvironment.shared.engine.chatStream(article: aiArticle, history: history, userMessage: trimmedPrompt)
+				let stream = AIEnvironment.shared.engine.chatStream(article: aiArticle, history: history, userMessage: composedPrompt)
 				for try await event in stream {
 					guard self.article?.articleID == articleID else {
 						return
@@ -336,18 +469,18 @@ private extension AIChatViewController {
 							self.renderStreamingRow()
 						}
 					case .finished(let message):
-						await self.finishStreaming(articleID: articleID, message: message)
+						await self.finishStreaming(articleID: articleID, message: message, restoreQuote: restoreQuote)
 						return
 					}
 				}
-				self.handleStreamFailure(AIClientError.invalidResponse, articleID: articleID)
+				self.handleStreamFailure(AIClientError.invalidResponse, articleID: articleID, restoreQuote: restoreQuote)
 			} catch {
-				self.handleStreamFailure(error, articleID: articleID)
+				self.handleStreamFailure(error, articleID: articleID, restoreQuote: restoreQuote)
 			}
 		}
 	}
 
-	func finishStreaming(articleID: String, message: ChatMessage) async {
+	func finishStreaming(articleID: String, message: ChatMessage, restoreQuote: String?) async {
 		defer {
 			streamTask = nil
 		}
@@ -362,6 +495,7 @@ private extension AIChatViewController {
 			guard messages.contains(where: { $0.id == message.id }) else {
 				isSending = false
 				receivedDelta = false
+				restoreQuoteIfNeeded(restoreQuote)
 				updateSendingState()
 				showError("发送失败：回复未保存到本地。")
 				return
@@ -381,12 +515,13 @@ private extension AIChatViewController {
 			}
 			isSending = false
 			receivedDelta = false
+			restoreQuoteIfNeeded(restoreQuote)
 			updateSendingState()
 			showError("读取对话失败：\(error.localizedDescription)")
 		}
 	}
 
-	func handleStreamFailure(_ error: Error, articleID: String) {
+	func handleStreamFailure(_ error: Error, articleID: String, restoreQuote: String?) {
 		defer {
 			streamTask = nil
 		}
@@ -403,6 +538,9 @@ private extension AIChatViewController {
 		streamingRow = nil
 		isSending = false
 		receivedDelta = false
+		if !cancelled {
+			restoreQuoteIfNeeded(restoreQuote)
+		}
 		updateSendingState()
 		rebuildMessages()
 
@@ -429,11 +567,21 @@ private extension AIChatViewController {
 		streamingRow = nil
 
 		if storedMessages.isEmpty, pendingUserMessage == nil, pendingAssistantText == nil {
-			let hint = NSTextField(wrappingLabelWithString: "选择下方的阅读任务，或输入问题开始对话。")
+			let hint = NSTextField(wrappingLabelWithString: "选择阅读任务，或输入问题开始对话。")
 			hint.font = .systemFont(ofSize: 12)
 			hint.textColor = .secondaryLabelColor
 			hint.alignment = .center
-			addMessageRow(hint)
+
+			let subHint = NSTextField(wrappingLabelWithString: "任务在输入框上方，随时呼出，不占对话空间。")
+			subHint.font = .systemFont(ofSize: 11)
+			subHint.textColor = .tertiaryLabelColor
+			subHint.alignment = .center
+
+			let emptyStack = NSStackView(views: [hint, subHint])
+			emptyStack.orientation = .vertical
+			emptyStack.alignment = .centerX
+			emptyStack.spacing = 7
+			addMessageRow(emptyStack)
 		} else {
 			for message in storedMessages {
 				addMessageRow(AIMessageRowView(message: message))
@@ -497,10 +645,18 @@ private extension AIChatViewController {
 	}
 
 	func updateSendingState() {
-		sendButton.isEnabled = !isSending && article != nil
-		let showsThinking = isSending && !receivedDelta
-		statusLabel.stringValue = showsThinking ? Self.thinkingPlaceholder : ""
-		statusLabel.isHidden = !showsThinking
+		sendButton.isEnabled = !isSending && article != nil && hasSendableInput
+		taskButton.isEnabled = !isSending
+		if isSending {
+			closeTray()
+		}
+	}
+
+	var hasSendableInput: Bool {
+		if pendingQuote != nil {
+			return true
+		}
+		return !inputTextView.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 	}
 
 	func updateInputState() {
@@ -508,6 +664,45 @@ private extension AIChatViewController {
 		inputTextView.isEditable = hasArticle
 		quoteButton.isEnabled = hasArticle
 		updateSendingState()
+	}
+
+	func updateQuoteChip() {
+		guard let pendingQuote else {
+			quoteLabel.stringValue = ""
+			quoteChipView.isHidden = true
+			return
+		}
+		quoteLabel.stringValue = pendingQuote
+			.split(separator: "\n", omittingEmptySubsequences: false)
+			.joined(separator: " ")
+		quoteChipView.isHidden = false
+	}
+
+	func updateQuoteLabelWidth() {
+		guard !quoteChipView.isHidden else {
+			return
+		}
+		let width = max(60, quoteChipView.bounds.width - 70)
+		guard abs(quoteLabel.preferredMaxLayoutWidth - width) > 0.5 else {
+			return
+		}
+		quoteLabel.preferredMaxLayoutWidth = width
+		quoteLabel.invalidateIntrinsicContentSize()
+	}
+
+	func restoreQuoteIfNeeded(_ quote: String?) {
+		guard let quote, pendingQuote == nil else {
+			return
+		}
+		pendingQuote = quote
+		updateQuoteChip()
+	}
+
+	func makeQuoteBlock(_ text: String) -> String {
+		text
+			.split(separator: "\n", omittingEmptySubsequences: false)
+			.map { "> \($0)" }
+			.joined(separator: "\n")
 	}
 
 	func showError(_ message: String) {
@@ -521,7 +716,27 @@ private extension AIChatViewController {
 private extension AIChatViewController {
 
 	@objc func sendFromInput() {
+		guard hasSendableInput else {
+			return
+		}
 		send(prompt: inputTextView.string)
+	}
+
+	@objc func removeQuote() {
+		pendingQuote = nil
+		updateQuoteChip()
+		updateSendingState()
+	}
+
+	@objc func toggleTaskTray() {
+		guard !isSending else {
+			return
+		}
+		if isTrayOpen {
+			closeTray()
+		} else {
+			openTray()
+		}
 	}
 
 	@objc func quoteSelection() {
@@ -544,55 +759,247 @@ private extension AIChatViewController {
 	}
 
 	func insertQuote(_ text: String) {
-		let quoted = text
-			.split(separator: "\n", omittingEmptySubsequences: false)
-			.map { "> \($0)" }
-			.joined(separator: "\n")
-		let existing = inputTextView.string
-		let prefix = existing.isEmpty ? "" : existing + "\n\n"
-		inputTextView.string = prefix + quoted + "\n\n"
-		let end = inputTextView.string.utf16.count
-		inputTextView.setSelectedRange(NSRange(location: end, length: 0))
+		pendingQuote = text
+		updateQuoteChip()
+		updateSendingState()
 		view.window?.makeFirstResponder(inputTextView)
 	}
 
-	func promptForCustomPrompt() {
-		let alert = NSAlert()
-		alert.messageText = "新增自定义提示词"
-		alert.informativeText = "保存后出现在「自定义」分组，最多 \(AICustomPromptStore.maximumCount) 条。"
-		let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
-		field.placeholderString = "输入提示词"
-		alert.accessoryView = field
-		alert.addButton(withTitle: "保存")
-		alert.addButton(withTitle: "取消")
-
-		guard alert.runModal() == .alertFirstButtonReturn else {
+	func promptForNewCustomPrompt() {
+		let dialog = AICustomPromptDialog(name: "", prompt: "")
+		let alert = makeCustomPromptAlert(
+			messageText: "新增自定义提示词",
+			informativeText: "保存后出现在「自定义」分组，最多 \(AICustomPromptStore.maximumCount) 条。",
+			dialog: dialog
+		)
+		guard runCustomPromptAlert(alert) == .alertFirstButtonReturn else {
 			return
 		}
-		addCustomPrompt(field.stringValue)
+		let name = dialog.nameField.stringValue
+		let prompt = dialog.promptTextView.string
+		guard customPromptStore.add(name: name, prompt: prompt) else {
+			showError(customPromptErrorMessage(name: name, prompt: prompt))
+			return
+		}
+		finishCustomPromptChange()
 	}
 
-	func addCustomPrompt(_ text: String) {
-		guard customPromptStore.add(text) else {
-			let message = customPromptStore.prompts.count >= AICustomPromptStore.maximumCount
-				? "自定义提示词已达上限（\(AICustomPromptStore.maximumCount) 条）。"
-				: "提示词为空或已存在。"
-			showError(message)
+	func promptForEditingCustomPrompt(at index: Int) {
+		guard customPromptStore.prompts.indices.contains(index) else {
 			return
 		}
+		let existing = customPromptStore.prompts[index]
+		let dialog = AICustomPromptDialog(name: existing.name, prompt: existing.prompt)
+		let alert = makeCustomPromptAlert(
+			messageText: "编辑自定义提示词",
+			informativeText: "修改后立即生效。",
+			dialog: dialog
+		)
+		guard runCustomPromptAlert(alert) == .alertFirstButtonReturn else {
+			return
+		}
+		let name = dialog.nameField.stringValue
+		let prompt = dialog.promptTextView.string
+		guard customPromptStore.update(at: index, name: name, prompt: prompt) else {
+			showError(customPromptErrorMessage(name: name, prompt: prompt))
+			return
+		}
+		finishCustomPromptChange()
+	}
+
+	func makeCustomPromptAlert(messageText: String, informativeText: String, dialog: AICustomPromptDialog) -> NSAlert {
+		let alert = NSAlert()
+		alert.messageText = messageText
+		alert.informativeText = informativeText
+		alert.accessoryView = dialog.accessoryView
+		alert.addButton(withTitle: "保存")
+		alert.addButton(withTitle: "取消")
+		dialog.saveButton = alert.buttons.first
+		dialog.updateSaveButton()
+		alert.window.initialFirstResponder = dialog.nameField
+		positionCustomPromptAlert(alert)
+		return alert
+	}
+
+	/// Centers the alert over the AI pane instead of the whole window. NSAlert centers
+	/// itself when the modal loop starts, so the move is queued to run after it does.
+	func positionCustomPromptAlert(_ alert: NSAlert) {
+		guard let hostWindow = view.window else {
+			return
+		}
+		let alertWindow = alert.window
+		let paneFrame = hostWindow.convertToScreen(view.convert(view.bounds, to: nil))
+		DispatchQueue.main.async {
+			let alertSize = alertWindow.frame.size
+			var origin = NSPoint(x: paneFrame.midX - alertSize.width / 2, y: paneFrame.midY - alertSize.height / 2)
+			if let screen = hostWindow.screen {
+				let visibleFrame = screen.visibleFrame
+				origin.x = min(max(origin.x, visibleFrame.minX), visibleFrame.maxX - alertSize.width)
+				origin.y = min(max(origin.y, visibleFrame.minY), visibleFrame.maxY - alertSize.height)
+			}
+			alertWindow.setFrameOrigin(origin)
+		}
+	}
+
+	/// Runs the alert modally and restores the tray's outside-click monitors afterwards.
+	func runCustomPromptAlert(_ alert: NSAlert) -> NSApplication.ModalResponse {
+		removeEventMonitors()
+		let response = alert.runModal()
+		if isTrayOpen {
+			installEventMonitors()
+		}
+		return response
+	}
+
+	func customPromptErrorMessage(name: String, prompt: String) -> String {
+		let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+		let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+		if trimmedName.isEmpty || trimmedPrompt.isEmpty {
+			return "名称和提示词都不能为空。"
+		}
+		if trimmedName.count > AICustomPromptStore.maximumNameLength || trimmedPrompt.count > AICustomPromptStore.maximumPromptLength {
+			return "名称最多 \(AICustomPromptStore.maximumNameLength) 字，提示词最多 \(AICustomPromptStore.maximumPromptLength) 字。"
+		}
+		if customPromptStore.prompts.contains(where: { $0.name == trimmedName }) {
+			return "名称「\(trimmedName)」已存在，请换一个。"
+		}
+		return "自定义提示词已达上限（\(AICustomPromptStore.maximumCount) 条）。"
+	}
+
+	func finishCustomPromptChange() {
 		errorLabel.isHidden = true
-		taskListView.reload(customPrompts: customPromptStore.prompts)
+		updateTaskButtonCount()
+		refreshTaskTray()
 	}
 
 	func deleteCustomPrompt(at index: Int) {
 		customPromptStore.remove(at: index)
-		taskListView.reload(customPrompts: customPromptStore.prompts)
+		updateTaskButtonCount()
+		refreshTaskTray()
+	}
+
+	func updateTaskButtonCount() {
+		taskButton.count = AIPrompts.readingTasks.count + customPromptStore.prompts.count
+	}
+
+	func refreshTaskTray() {
+		guard isTrayOpen else {
+			return
+		}
+		taskTray.reload(customPrompts: customPromptStore.prompts)
+		view.needsLayout = true
+		updateTrayHeight()
+	}
+
+	func openTray() {
+		guard !isSending else {
+			return
+		}
+		taskTray.reload(customPrompts: customPromptStore.prompts)
+		isTrayOpen = true
+		taskButton.isOpen = true
+		taskTray.isHidden = false
+		view.layoutSubtreeIfNeeded()
+		updateTrayHeight()
+		installEventMonitors()
+	}
+
+	func closeTray() {
+		guard isTrayOpen else {
+			return
+		}
+		isTrayOpen = false
+		taskButton.isOpen = false
+		taskTray.isHidden = true
+		removeEventMonitors()
+	}
+
+	func updateTrayHeight() {
+		guard let trayHeightConstraint, !taskTray.isHidden else {
+			return
+		}
+		let buttonFrame = view.convert(taskButton.bounds, from: taskButton)
+		let messagesFrame = view.convert(messagesScrollView.bounds, from: messagesScrollView)
+		let trayBottom = buttonFrame.maxY - 9
+		let availableHeight = messagesFrame.maxY - trayBottom - 4
+		let contentHeight = taskTray.contentHeight
+		let height = min(AITaskTrayView.maximumHeight, max(0, availableHeight), max(0, contentHeight))
+		guard abs(trayHeightConstraint.constant - height) > 0.5 else {
+			return
+		}
+		trayHeightConstraint.constant = height
+	}
+
+	func installEventMonitors() {
+		removeEventMonitors()
+
+		localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+			MainActor.assumeIsolated {
+				guard let self, self.isTrayOpen else {
+					return
+				}
+				guard !self.isPointInsideTrayOrButton(event.locationInWindow, eventWindow: event.window) else {
+					return
+				}
+				self.closeTray()
+			}
+			return event
+		}
+
+		globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+			Task { @MainActor in
+				self?.closeTray()
+			}
+		}
+
+		escapeKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+			let closesTray = MainActor.assumeIsolated {
+				guard let self, self.isTrayOpen, event.window === self.view.window, event.keyCode == 53 else {
+					return false
+				}
+				self.closeTray()
+				return true
+			}
+			return closesTray ? nil : event
+		}
+	}
+
+	func removeEventMonitors() {
+		if let localMouseMonitor {
+			NSEvent.removeMonitor(localMouseMonitor)
+			self.localMouseMonitor = nil
+		}
+		if let globalMouseMonitor {
+			NSEvent.removeMonitor(globalMouseMonitor)
+			self.globalMouseMonitor = nil
+		}
+		if let escapeKeyMonitor {
+			NSEvent.removeMonitor(escapeKeyMonitor)
+			self.escapeKeyMonitor = nil
+		}
+	}
+
+	func isPointInsideTrayOrButton(_ locationInWindow: NSPoint, eventWindow: NSWindow?) -> Bool {
+		guard eventWindow === view.window else {
+			return false
+		}
+		let point = view.convert(locationInWindow, from: nil)
+		let trayPoint = taskTray.convert(point, from: view)
+		if taskTray.bounds.contains(trayPoint) {
+			return true
+		}
+		let buttonPoint = taskButton.convert(point, from: view)
+		return taskButton.bounds.contains(buttonPoint)
 	}
 }
 
 // MARK: - NSTextViewDelegate
 
 extension AIChatViewController: NSTextViewDelegate {
+
+	func textDidChange(_ notification: Notification) {
+		updateSendingState()
+	}
 
 	func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
 		if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
@@ -607,5 +1014,194 @@ extension AIChatViewController: NSTextViewDelegate {
 		}
 		sendFromInput()
 		return true
+	}
+}
+
+// MARK: - Composer chrome
+
+private final class AIQuoteChipView: NSView {
+
+	override init(frame frameRect: NSRect) {
+		super.init(frame: frameRect)
+		wantsLayer = true
+		layer?.cornerRadius = 5
+		applyColors()
+	}
+
+	@available(*, unavailable)
+	required init?(coder: NSCoder) {
+		fatalError("init(coder:) has not been implemented")
+	}
+
+	override func viewDidChangeEffectiveAppearance() {
+		super.viewDidChangeEffectiveAppearance()
+		applyColors()
+	}
+
+	private func applyColors() {
+		effectiveAppearance.performAsCurrentDrawingAppearance {
+			layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.06).cgColor
+		}
+	}
+}
+
+/// Accessory view for the add/edit custom-prompt alert: a name field and a prompt text view,
+/// each with a live character count. The save button is disabled while the name is empty.
+@MainActor
+private final class AICustomPromptDialog: NSObject, NSTextFieldDelegate, NSTextViewDelegate {
+
+	let accessoryView: NSView
+	let nameField = NSTextField()
+	let promptTextView = NSTextView()
+	weak var saveButton: NSButton?
+
+	private let nameCountLabel = NSTextField(labelWithString: "")
+	private let promptCountLabel = NSTextField(labelWithString: "")
+
+	init(name: String, prompt: String) {
+		accessoryView = NSView(frame: NSRect(x: 0, y: 0, width: 280, height: 150))
+		super.init()
+		buildContent()
+		nameField.stringValue = name
+		promptTextView.string = prompt
+		clampName()
+		clampPrompt()
+	}
+
+	@available(*, unavailable)
+	required init?(coder: NSCoder) {
+		fatalError("init(coder:) has not been implemented")
+	}
+
+	func updateSaveButton() {
+		let trimmedName = nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+		saveButton?.isEnabled = !trimmedName.isEmpty
+	}
+
+	func controlTextDidChange(_ notification: Notification) {
+		clampName()
+		updateSaveButton()
+	}
+
+	func textDidChange(_ notification: Notification) {
+		clampPrompt()
+	}
+}
+
+private extension AICustomPromptDialog {
+
+	func buildContent() {
+		nameField.placeholderString = "例如：一句话概括"
+		nameField.font = .systemFont(ofSize: 12)
+		nameField.delegate = self
+		nameField.translatesAutoresizingMaskIntoConstraints = false
+		nameField.heightAnchor.constraint(equalToConstant: 24).isActive = true
+
+		promptTextView.isRichText = false
+		promptTextView.font = .systemFont(ofSize: 12)
+		promptTextView.textContainerInset = NSSize(width: 4, height: 4)
+		promptTextView.isAutomaticQuoteSubstitutionEnabled = false
+		promptTextView.isVerticallyResizable = true
+		promptTextView.isHorizontallyResizable = false
+		promptTextView.autoresizingMask = [.width]
+		promptTextView.textContainer?.widthTracksTextView = true
+		promptTextView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+		promptTextView.delegate = self
+
+		let promptScrollView = NSScrollView()
+		promptScrollView.hasVerticalScroller = true
+		promptScrollView.autohidesScrollers = true
+		promptScrollView.borderType = .bezelBorder
+		promptScrollView.documentView = promptTextView
+		promptScrollView.translatesAutoresizingMaskIntoConstraints = false
+		promptScrollView.heightAnchor.constraint(equalToConstant: 78).isActive = true
+
+		let stack = NSStackView(views: [
+			makeFieldHead("名称", countLabel: nameCountLabel),
+			nameField,
+			makeFieldHead("提示词", countLabel: promptCountLabel),
+			promptScrollView
+		])
+		stack.orientation = .vertical
+		stack.alignment = .width
+		stack.spacing = 0
+		stack.translatesAutoresizingMaskIntoConstraints = false
+		stack.setCustomSpacing(4, after: stack.arrangedSubviews[0])
+		stack.setCustomSpacing(12, after: nameField)
+		stack.setCustomSpacing(4, after: stack.arrangedSubviews[2])
+		accessoryView.addSubview(stack)
+
+		NSLayoutConstraint.activate([
+			stack.topAnchor.constraint(equalTo: accessoryView.topAnchor),
+			stack.leadingAnchor.constraint(equalTo: accessoryView.leadingAnchor),
+			stack.trailingAnchor.constraint(equalTo: accessoryView.trailingAnchor)
+		])
+	}
+
+	func makeFieldHead(_ title: String, countLabel: NSTextField) -> NSView {
+		let titleLabel = NSTextField(labelWithString: title)
+		titleLabel.font = .systemFont(ofSize: 11, weight: .medium)
+		titleLabel.textColor = .secondaryLabelColor
+
+		countLabel.font = .systemFont(ofSize: 10)
+		countLabel.textColor = .tertiaryLabelColor
+
+		let spacer = NSView()
+		spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+		let row = NSStackView(views: [titleLabel, spacer, countLabel])
+		row.orientation = .horizontal
+		row.alignment = .firstBaseline
+		row.spacing = 6
+		return row
+	}
+
+	func clampName() {
+		let text = nameField.stringValue
+		if text.count > AICustomPromptStore.maximumNameLength {
+			nameField.stringValue = String(text.prefix(AICustomPromptStore.maximumNameLength))
+			if let editor = nameField.currentEditor() {
+				editor.selectedRange = NSRange(location: (nameField.stringValue as NSString).length, length: 0)
+			}
+		}
+		nameCountLabel.stringValue = "\(nameField.stringValue.count) / \(AICustomPromptStore.maximumNameLength)"
+	}
+
+	func clampPrompt() {
+		let text = promptTextView.string
+		if text.count > AICustomPromptStore.maximumPromptLength {
+			let clamped = String(text.prefix(AICustomPromptStore.maximumPromptLength))
+			promptTextView.string = clamped
+			promptTextView.setSelectedRange(NSRange(location: (clamped as NSString).length, length: 0))
+		}
+		promptCountLabel.stringValue = "\(promptTextView.string.count) / \(AICustomPromptStore.maximumPromptLength)"
+	}
+}
+
+private final class AIComposerBoxView: NSView {
+
+	override init(frame frameRect: NSRect) {
+		super.init(frame: frameRect)
+		wantsLayer = true
+		layer?.cornerRadius = 6
+		layer?.borderWidth = 1
+		applyColors()
+	}
+
+	@available(*, unavailable)
+	required init?(coder: NSCoder) {
+		fatalError("init(coder:) has not been implemented")
+	}
+
+	override func viewDidChangeEffectiveAppearance() {
+		super.viewDidChangeEffectiveAppearance()
+		applyColors()
+	}
+
+	private func applyColors() {
+		effectiveAppearance.performAsCurrentDrawingAppearance {
+			layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
+			layer?.borderColor = NSColor.separatorColor.cgColor
+		}
 	}
 }

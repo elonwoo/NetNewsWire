@@ -39,8 +39,8 @@ final class AIMessageRowView: NSView {
 
 	override func layout() {
 		super.layout()
-		let maximumBubbleWidth = max(80, bounds.width - 36)
-		let horizontalInset: CGFloat = isUser ? 9 : 11
+		let maximumBubbleWidth = max(80, bounds.width - (isUser ? 36 : 20))
+		let horizontalInset: CGFloat = isUser ? 9 : 0
 		let maximumLabelWidth = maximumBubbleWidth - horizontalInset * 2
 		if abs(label.preferredMaxLayoutWidth - maximumLabelWidth) > 0.5 {
 			label.preferredMaxLayoutWidth = maximumLabelWidth
@@ -57,12 +57,12 @@ private extension AIMessageRowView {
 
 		bubble.translatesAutoresizingMaskIntoConstraints = false
 		bubble.wantsLayer = true
-		bubble.layer?.cornerRadius = 10
+		bubble.layer?.cornerRadius = isUser ? 10 : 0
 		bubble.layer?.masksToBounds = true
 		if isUser {
 			bubble.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
 		} else {
-			bubble.layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.18).cgColor
+			bubble.layer?.backgroundColor = NSColor.clear.cgColor
 		}
 
 		label.translatesAutoresizingMaskIntoConstraints = false
@@ -75,11 +75,15 @@ private extension AIMessageRowView {
 		label.drawsBackground = false
 		label.textColor = isUser ? .white : .labelColor
 
+		// Selectable labels hand clicks to the window's field editor. Without
+		// this, the field editor shows a plain-string copy and drops Markdown.
+		label.allowsEditingTextAttributes = !isUser
+
 		addSubview(bubble)
 		bubble.addSubview(label)
 
-		let verticalInset: CGFloat = isUser ? 7 : 9
-		let horizontalInset: CGFloat = isUser ? 9 : 11
+		let verticalInset: CGFloat = isUser ? 7 : 3
+		let horizontalInset: CGFloat = isUser ? 9 : 0
 		NSLayoutConstraint.activate([
 			bubble.topAnchor.constraint(equalTo: topAnchor, constant: 3),
 			bubble.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -3),
@@ -96,8 +100,8 @@ private extension AIMessageRowView {
 			])
 		} else {
 			NSLayoutConstraint.activate([
-				bubble.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
-				bubble.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -28)
+				bubble.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+				bubble.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12)
 			])
 		}
 	}
