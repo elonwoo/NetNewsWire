@@ -447,7 +447,7 @@ final class AIJobExecutorEnqueueTests {
 		#expect(events.first?.reason == nil)
 	}
 
-	@Test func shortFeedThatThePageDoesNotExtendUsesTheFeedBody() async throws {
+	@Test func feedBodyAboveTheSummaryLimitUsesTheFeedBodyWithoutFetching() async throws {
 		let body = String(repeating: "a", count: 889)
 		let article = AIArticle(
 			id: "short-complete",
@@ -473,7 +473,7 @@ final class AIJobExecutorEnqueueTests {
 		let claimed = try #require(try await executor.claimNextJob())
 		await executor.runJob(claimed)
 
-		#expect(loader.callCount == 1)
+		#expect(loader.callCount == 0)
 		#expect(client.callCount == 1)
 		let stored = try #require(try await store.rewrite(for: article.id))
 		#expect(stored.contentHash == AIContentHash.rewrite(for: article))
@@ -1228,7 +1228,7 @@ private extension AIJobExecutorEnqueueTests {
 		AIArticle(
 			id: id,
 			title: "English title",
-			contentText: String(repeating: "a", count: 816),
+			contentText: String(repeating: "a", count: 300),
 			url: "https://example.com/\(id)",
 			feedID: "feed",
 			publishedAt: publishedAt
@@ -1398,7 +1398,7 @@ private final class RecordingFullTextFetcher: AIFullTextFetching, @unchecked Sen
 		let count = (article.contentText ?? "").reduce(0) { count, character in
 			character.isWhitespace ? count : count + 1
 		}
-		return count < 1500
+		return count < 400
 	}
 
 	@concurrent nonisolated func enrichedArticle(for article: AIArticle) async -> AIFullTextOutcome {

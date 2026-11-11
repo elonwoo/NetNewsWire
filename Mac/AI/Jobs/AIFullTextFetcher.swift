@@ -27,7 +27,7 @@ struct AIFullTextFetcher: AIFullTextFetching, Sendable {
 
 	/// Below this many non-whitespace characters a feed body is treated as a
 	/// summary worth expanding.
-	static let summaryCharacterLimit = 1500
+	static let summaryCharacterLimit = 400
 	static let minimumFeedBodyCharacterCount = 5
 	static let minimumExtractedCharacterCount = 600
 	static let extractionGrowthFactor = 1.5

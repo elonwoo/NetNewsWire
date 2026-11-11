@@ -287,13 +287,11 @@ final class AIFullTextFetcherTests: XCTestCase {
 		}
 		let fetcher = AIFullTextFetcher(loader: loader)
 
-		let eightHundred = await fetcher.isLikelySummary(feedArticle(id: "800", contentText: String(repeating: "a", count: 800)))
-		let fourteenNinetyNine = await fetcher.isLikelySummary(feedArticle(id: "1499", contentText: String(repeating: "a", count: 1499)))
-		let fifteenHundred = await fetcher.isLikelySummary(feedArticle(id: "1500", contentText: String(repeating: "a", count: 1500)))
+		let threeNinetyNine = await fetcher.isLikelySummary(feedArticle(id: "399", contentText: String(repeating: "a", count: 399)))
+		let fourHundred = await fetcher.isLikelySummary(feedArticle(id: "400", contentText: String(repeating: "a", count: 400)))
 
-		XCTAssertTrue(eightHundred)
-		XCTAssertTrue(fourteenNinetyNine)
-		XCTAssertFalse(fifteenHundred)
+		XCTAssertTrue(threeNinetyNine)
+		XCTAssertFalse(fourHundred)
 	}
 }
 
