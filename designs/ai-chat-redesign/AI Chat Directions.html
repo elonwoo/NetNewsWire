@@ -26,6 +26,7 @@
   --code-bg: rgba(0, 0, 0, 0.06);
   --red: #d70015;
   --shadow-popover: 0 14px 36px rgba(0, 0, 0, 0.16), 0 2px 6px rgba(0, 0, 0, 0.08);
+  --shadow-dialog: 0 24px 64px rgba(0, 0, 0, 0.22), 0 4px 12px rgba(0, 0, 0, 0.1);
   --shadow-panel: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 
@@ -50,6 +51,7 @@
     --code-bg: rgba(255, 255, 255, 0.08);
     --red: #ff6961;
     --shadow-popover: 0 16px 40px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
+    --shadow-dialog: 0 26px 70px rgba(0, 0, 0, 0.6), 0 4px 14px rgba(0, 0, 0, 0.4);
     --shadow-panel: 0 1px 2px rgba(0, 0, 0, 0.3);
   }
 }
@@ -693,7 +695,7 @@ button {
 }
 
 .popover-scroll {
-  max-height: 400px;
+  max-height: 470px;
   overflow-y: auto;
 }
 
@@ -739,31 +741,27 @@ button {
 .custom-rows {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
   margin-top: 5px;
 }
 
 .custom-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
 }
 
 .custom-prompt {
   appearance: none;
-  flex: 1;
   min-width: 0;
-  height: 26px;
-  padding: 0 7px;
+  margin-left: -6px;
+  padding: 4px 6px;
   border: 1px solid transparent;
   border-radius: 5px;
   background: transparent;
   color: var(--label);
-  font-size: 11px;
   text-align: left;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   cursor: pointer;
 }
 
@@ -772,24 +770,58 @@ button {
   border-color: var(--separator);
 }
 
-.row-delete {
+.custom-name {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.35;
+}
+
+.custom-body {
+  display: block;
+  max-width: 100%;
+  margin-top: 1px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--label-2);
+}
+
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.row-act {
   appearance: none;
-  flex: 0 0 auto;
-  width: 20px;
-  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
   padding: 0;
   border: 0;
   border-radius: 4px;
   background: transparent;
   color: var(--label-3);
-  font-size: 13px;
-  line-height: 1;
   cursor: pointer;
 }
 
-.row-delete:hover {
+.row-act:hover {
   background: var(--fill-2);
   color: var(--label);
+}
+
+.row-act.row-delete {
+  font-size: 13px;
+  line-height: 1;
 }
 
 .popover-hint {
@@ -798,6 +830,155 @@ button {
   border-top: 1px solid var(--separator);
   font-size: 10.5px;
   color: var(--label-3);
+}
+
+/* ---------- Direction B: in-pane prompt dialog ---------- */
+
+.dialog-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+[data-dialog="add"] .dialog-layer,
+[data-dialog="edit"] .dialog-layer {
+  display: flex;
+}
+
+.prompt-dialog {
+  display: none;
+  width: 320px;
+  max-width: 100%;
+  padding: 16px 16px 14px;
+  background: var(--popover-bg);
+  border: 1px solid var(--separator-strong);
+  border-radius: 11px;
+  box-shadow: var(--shadow-dialog);
+}
+
+[data-dialog="add"] .dialog-add,
+[data-dialog="edit"] .dialog-edit {
+  display: block;
+}
+
+.dialog-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.dialog-desc {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--label-2);
+  text-wrap: pretty;
+}
+
+.field {
+  margin-top: 12px;
+}
+
+.field-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.field-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--label-2);
+}
+
+.field-count {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--label-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.field-input,
+.field-textarea {
+  display: block;
+  width: 100%;
+  padding: 5px 7px;
+  border: 1px solid var(--separator-strong);
+  border-radius: 5px;
+  background: var(--field-bg);
+  color: var(--label);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.field-input {
+  height: 26px;
+}
+
+.field-textarea {
+  height: 78px;
+  resize: none;
+  overflow-y: auto;
+}
+
+.field-input::placeholder,
+.field-textarea::placeholder {
+  color: var(--label-3);
+}
+
+.field-input:focus,
+.field-textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  margin-top: 14px;
+}
+
+.dialog-btn {
+  appearance: none;
+  height: 25px;
+  padding: 0 13px;
+  border: 1px solid var(--separator-strong);
+  border-radius: 5px;
+  background: var(--field-bg);
+  color: var(--label);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.dialog-btn:hover {
+  background: var(--fill-1);
+}
+
+.dialog-btn.primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: #ffffff;
+  font-weight: 500;
+}
+
+.dialog-btn.primary:hover {
+  filter: brightness(1.06);
+}
+
+.dialog-btn.primary:disabled {
+  background: var(--fill-2);
+  color: var(--label-3);
+  cursor: default;
+  filter: none;
 }
 
 /* ---------- Composer ---------- */
@@ -1240,11 +1421,13 @@ borg check --verify-data ::backup-{now}</code></pre>
     <div class="state-switch" data-panel="panel-b" role="group" aria-label="B 方向状态">
       <button type="button" class="is-active" data-scene="conversation" data-tray="closed" title="收起，已有对话">收起</button>
       <button type="button" data-scene="conversation" data-tray="open" title="展开托盘，消息流不位移">展开</button>
+      <button type="button" data-scene="conversation" data-tray="open" data-dialog="none" title="展开托盘，已有三条自定义提示词">自定义</button>
+      <button type="button" data-scene="conversation" data-tray="open" data-dialog="edit" title="打开编辑自定义提示词弹窗">编辑弹窗</button>
       <button type="button" data-scene="empty" data-tray="closed" title="收起，空对话">空对话</button>
       <button type="button" data-scene="streaming" data-tray="closed" title="回复流式中">流式</button>
     </div>
 
-    <div class="artboard" id="panel-b" data-scene="conversation" data-tray="closed" data-screen-label="B 任务托盘">
+    <div class="artboard" id="panel-b" data-scene="conversation" data-tray="closed" data-dialog="none" data-screen-label="B 任务托盘">
 
       <div class="tray-backdrop" aria-hidden="true"></div>
 
@@ -1393,20 +1576,50 @@ borg check --verify-data ::backup-{now}</code></pre>
                 <span class="group-label">自定义</span>
                 <span class="count">3 / 24</span>
                 <span class="spacer"></span>
-                <button class="add-btn" type="button">+ 新增</button>
+                <button class="add-btn" type="button" data-add-prompt>+ 新增</button>
               </div>
               <div class="custom-rows">
                 <div class="custom-row">
-                  <button class="custom-prompt" type="button" data-label="用一句话概括">用一句话概括</button>
-                  <button class="row-delete" type="button" aria-label="删除此提示词">×</button>
+                  <button class="custom-prompt" type="button" data-label="用一句话概括这篇文章的核心结论，不要超过三十个字。">
+                    <span class="custom-name">一句话概括</span>
+                    <span class="custom-body">用一句话概括这篇文章的核心结论，不要超过三十个字。</span>
+                  </button>
+                  <div class="row-actions">
+                    <button class="row-act" type="button" data-edit-prompt aria-label="编辑「一句话概括」">
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                        <path d="M8.3 1.9l1.8 1.8-6.2 6.2-2.3.5.5-2.3 6.2-6.2Z" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"></path>
+                      </svg>
+                    </button>
+                    <button class="row-act row-delete" type="button" data-delete-prompt aria-label="删除「一句话概括」">×</button>
+                  </div>
                 </div>
                 <div class="custom-row">
-                  <button class="custom-prompt" type="button" data-label="列出文中的数字和出处">列出文中的数字和出处</button>
-                  <button class="row-delete" type="button" aria-label="删除此提示词">×</button>
+                  <button class="custom-prompt" type="button" data-label="列出文中出现的关键数字，逐条标明它在原文中的出处。">
+                    <span class="custom-name">列出数字</span>
+                    <span class="custom-body">列出文中出现的关键数字，逐条标明它在原文中的出处。</span>
+                  </button>
+                  <div class="row-actions">
+                    <button class="row-act" type="button" data-edit-prompt aria-label="编辑「列出数字」">
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                        <path d="M8.3 1.9l1.8 1.8-6.2 6.2-2.3.5.5-2.3 6.2-6.2Z" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"></path>
+                      </svg>
+                    </button>
+                    <button class="row-act row-delete" type="button" data-delete-prompt aria-label="删除「列出数字」">×</button>
+                  </div>
                 </div>
                 <div class="custom-row">
-                  <button class="custom-prompt" type="button" data-label="把最后一段翻译成中文">把最后一段翻译成中文</button>
-                  <button class="row-delete" type="button" aria-label="删除此提示词">×</button>
+                  <button class="custom-prompt" type="button" data-label="把文章最后一段翻译成中文，保留术语和原文语气。">
+                    <span class="custom-name">翻译末段</span>
+                    <span class="custom-body">把文章最后一段翻译成中文，保留术语和原文语气。</span>
+                  </button>
+                  <div class="row-actions">
+                    <button class="row-act" type="button" data-edit-prompt aria-label="编辑「翻译末段」">
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                        <path d="M8.3 1.9l1.8 1.8-6.2 6.2-2.3.5.5-2.3 6.2-6.2Z" stroke="currentColor" stroke-width="1.1" stroke-linejoin="round"></path>
+                      </svg>
+                    </button>
+                    <button class="row-act row-delete" type="button" data-delete-prompt aria-label="删除「翻译末段」">×</button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1428,6 +1641,54 @@ borg check --verify-data ::backup-{now}</code></pre>
           <button class="send" type="button">发送</button>
         </div>
       </footer>
+
+      <div class="dialog-layer">
+        <div class="prompt-dialog dialog-add" role="dialog" aria-modal="true" aria-labelledby="dialog-add-title">
+          <h3 class="dialog-title" id="dialog-add-title">新增自定义提示词</h3>
+          <p class="dialog-desc">保存后出现在「自定义」分组，最多 24 条。</p>
+          <div class="field">
+            <div class="field-head">
+              <label class="field-label" for="prompt-name-add">名称</label>
+              <span class="field-count">0 / 20</span>
+            </div>
+            <input class="field-input" id="prompt-name-add" type="text" maxlength="20" placeholder="例如：一句话概括" autocomplete="off">
+          </div>
+          <div class="field">
+            <div class="field-head">
+              <label class="field-label" for="prompt-body-add">提示词</label>
+              <span class="field-count">0 / 1000</span>
+            </div>
+            <textarea class="field-textarea" id="prompt-body-add" maxlength="1000" placeholder="输入完整提示词内容…"></textarea>
+          </div>
+          <div class="dialog-actions">
+            <button class="dialog-btn" type="button" data-dialog-cancel>取消</button>
+            <button class="dialog-btn primary" type="button" data-dialog-save disabled>保存</button>
+          </div>
+        </div>
+
+        <div class="prompt-dialog dialog-edit" role="dialog" aria-modal="true" aria-labelledby="dialog-edit-title">
+          <h3 class="dialog-title" id="dialog-edit-title">编辑自定义提示词</h3>
+          <p class="dialog-desc">保存后出现在「自定义」分组，最多 24 条。</p>
+          <div class="field">
+            <div class="field-head">
+              <label class="field-label" for="prompt-name-edit">名称</label>
+              <span class="field-count">5 / 20</span>
+            </div>
+            <input class="field-input" id="prompt-name-edit" type="text" maxlength="20" value="一句话概括" autocomplete="off">
+          </div>
+          <div class="field">
+            <div class="field-head">
+              <label class="field-label" for="prompt-body-edit">提示词</label>
+              <span class="field-count">25 / 1000</span>
+            </div>
+            <textarea class="field-textarea" id="prompt-body-edit" maxlength="1000">用一句话概括这篇文章的核心结论，不要超过三十个字。</textarea>
+          </div>
+          <div class="dialog-actions">
+            <button class="dialog-btn" type="button" data-dialog-cancel>取消</button>
+            <button class="dialog-btn primary" type="button" data-dialog-save>保存</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <section class="assumptions" aria-label="B 方向设计假设">
@@ -1435,7 +1696,9 @@ borg check --verify-data ::backup-{now}</code></pre>
       <ul>
         <li>任务不参与消息流布局，收起态只保留输入框上方一枚「任务」按钮。</li>
         <li>展开为覆盖消息流的托盘，背景不压暗，消息位置完全不动。</li>
-        <li>托盘内按「组名 + 芯片」单行排列；自定义提示词就地增删，并显示 n / 24。</li>
+        <li>托盘内按「组名 + 芯片」单行排列；自定义提示词就地增删改，并显示 n / 24。</li>
+        <li>自定义提示词由「名称 + 内容」组成，列表按名称展示，正文作为单行截断预览；编辑与删除两枚操作常驻行尾。</li>
+        <li>新增与编辑共用栏内模态弹窗：名称、提示词两个字段，名称为空时保存置灰；弹窗不压暗消息流，托盘仍在后面。</li>
         <li>选中任务即收起并发送；点击托盘外任意位置关闭；流式中发送禁用，但托盘仍可浏览。</li>
       </ul>
     </section>
@@ -1480,6 +1743,7 @@ borg check --verify-data ::backup-{now}</code></pre>
     if (opts.tray) {
       panel.dataset.tray = opts.tray;
     }
+    panel.dataset.dialog = opts.dialog || "none";
 
     var messages = panel.querySelector(".messages");
     if (messages) {
@@ -1511,7 +1775,8 @@ borg check --verify-data ::backup-{now}</code></pre>
         });
         setScene(panel, button.dataset.scene, {
           tasks: button.dataset.tasks,
-          tray: button.dataset.tray
+          tray: button.dataset.tray,
+          dialog: button.dataset.dialog
         });
       });
     });
@@ -1546,6 +1811,7 @@ borg check --verify-data ::backup-{now}</code></pre>
         return;
       }
       panel.dataset.tray = "closed";
+      panel.dataset.dialog = "none";
       var taskButton = panel.querySelector(".task-button");
       if (taskButton) {
         taskButton.setAttribute("aria-expanded", "false");
@@ -1560,10 +1826,101 @@ borg check --verify-data ::backup-{now}</code></pre>
         return;
       }
       panel.dataset.tray = "closed";
+      panel.dataset.dialog = "none";
       var taskButton = panel.querySelector(".task-button");
       if (taskButton) {
         taskButton.setAttribute("aria-expanded", "false");
       }
+    });
+  });
+
+  all(".prompt-dialog").forEach(function (dialog) {
+    var inputs = all(".field-input, .field-textarea", dialog);
+    var save = dialog.querySelector("[data-dialog-save]");
+
+    function sync() {
+      var counts = all(".field-count", dialog);
+      inputs.forEach(function (input, index) {
+        if (counts[index]) {
+          counts[index].textContent = input.value.length + " / " + input.maxLength;
+        }
+      });
+      if (save && dialog.classList.contains("dialog-add")) {
+        var nameField = dialog.querySelector(".field-input");
+        save.disabled = !nameField || nameField.value.trim().length === 0;
+      }
+    }
+
+    inputs.forEach(function (input) {
+      input.addEventListener("input", sync);
+    });
+  });
+
+  all("[data-add-prompt]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      var panel = button.closest(".artboard");
+      if (!panel) {
+        return;
+      }
+      panel.dataset.tray = "open";
+      panel.dataset.dialog = "add";
+    });
+  });
+
+  all("[data-edit-prompt]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      var panel = button.closest(".artboard");
+      if (!panel) {
+        return;
+      }
+      var row = button.closest(".custom-row");
+      var nameInput = panel.querySelector("#prompt-name-edit");
+      var bodyInput = panel.querySelector("#prompt-body-edit");
+      var nameText = row ? row.querySelector(".custom-name") : null;
+      var bodyText = row ? row.querySelector(".custom-body") : null;
+      if (nameInput && nameText) {
+        nameInput.value = nameText.textContent.trim();
+      }
+      if (bodyInput && bodyText) {
+        bodyInput.value = bodyText.textContent.trim();
+      }
+      var editDialog = panel.querySelector(".dialog-edit");
+      if (editDialog) {
+        var counts = all(".field-count", editDialog);
+        if (nameInput && counts[0]) {
+          counts[0].textContent = nameInput.value.length + " / " + nameInput.maxLength;
+        }
+        if (bodyInput && counts[1]) {
+          counts[1].textContent = bodyInput.value.length + " / " + bodyInput.maxLength;
+        }
+      }
+      panel.dataset.tray = "open";
+      panel.dataset.dialog = "edit";
+    });
+  });
+
+  all("[data-delete-prompt]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      var panel = button.closest(".artboard");
+      var row = button.closest(".custom-row");
+      if (!panel || !row) {
+        return;
+      }
+      row.remove();
+      var count = panel.querySelector(".custom-head .count");
+      if (count) {
+        count.textContent = all(".custom-row", panel).length + " / 24";
+      }
+    });
+  });
+
+  all("[data-dialog-cancel], [data-dialog-save]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      var panel = button.closest(".artboard");
+      if (!panel) {
+        return;
+      }
+      panel.dataset.dialog = "none";
     });
   });
 
