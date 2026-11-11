@@ -149,12 +149,8 @@ struct AIJobCoverageRow: Equatable, Sendable {
 	let rewritten: Int
 	let original: Int
 
-	var translationProgress: Double {
-		total > 0 ? Double(translated) / Double(total) : 0
-	}
-
-	var rewriteProgress: Double {
-		total > 0 ? Double(rewritten) / Double(total) : 0
+	var translatedOnly: Int {
+		total - rewritten - original
 	}
 }
 
@@ -163,6 +159,7 @@ struct AIJobCoverage: Equatable, Sendable {
 	let total: Int
 	let translated: Int
 	let rewritten: Int
+	let translatedOnly: Int
 	let original: Int
 
 	var feedCount: Int {
@@ -238,6 +235,7 @@ enum AIJobCoverageBuilder {
 			total: visible.count,
 			translated: translatedCount,
 			rewritten: rewrittenCount,
+			translatedOnly: rows.reduce(0) { $0 + $1.translatedOnly },
 			original: originalCount
 		)
 	}
@@ -304,6 +302,7 @@ struct AIJobStatusViewModel: Equatable, Sendable {
 	let tiles: [AIJobTile]
 	let showsGatewayBanner: Bool
 	let coverage: AIJobCoverage?
+	let coverageUnavailable: Bool
 	let coverageEmptyMessage: String?
 	let anomalies: AIJobAnomalySection?
 	let activity: AIJobActivitySection?
@@ -401,6 +400,7 @@ enum AIJobStatusModel {
 			tiles: tiles,
 			showsGatewayBanner: !input.hasAPIKey,
 			coverage: coverage,
+			coverageUnavailable: input.coverageQueryFailed,
 			coverageEmptyMessage: coverage?.total == 0 ? "列表内没有文章" : nil,
 			anomalies: anomalies,
 			activity: activity,

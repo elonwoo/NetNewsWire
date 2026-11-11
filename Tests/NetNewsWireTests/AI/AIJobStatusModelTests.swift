@@ -678,9 +678,42 @@ import Testing
 		#expect(row.translated == 1)
 		#expect(row.rewritten == 2)
 		#expect(row.original == 1)
+		#expect(row.translatedOnly == 0)
+		#expect(row.translatedOnly + row.rewritten + row.original == row.total)
 		#expect(coverage.translated == 1)
 		#expect(coverage.rewritten == 2)
 		#expect(coverage.original == 1)
+		#expect(coverage.translatedOnly == 0)
+		#expect(coverage.translatedOnly == coverage.rows.reduce(0) { $0 + $1.translatedOnly })
+		#expect(coverage.translatedOnly == coverage.total - coverage.rewritten - coverage.original)
+		#expect(coverage.rows.allSatisfy { $0.translatedOnly >= 0 })
+	}
+
+	@Test func coverageTranslatedOnlySplitsOverlapAndAggregatesRows() {
+		let articles = [
+			info("a1", feedID: "feed-1"),
+			info("a2", feedID: "feed-1"),
+			info("a3", feedID: "feed-1"),
+			info("a4", feedID: "feed-1"),
+			info("b1", feedID: "feed-2"),
+			info("b2", feedID: "feed-2")
+		]
+		let coverage = AIJobCoverageBuilder.build(
+			articles: articles,
+			unreadOnly: false,
+			feedDisplayNames: ["feed-1": "Feed 1", "feed-2": "Feed 2"],
+			translatedArticleIDs: ["a1", "a2", "b1"],
+			rewrittenArticleIDs: ["a2", "a3"]
+		)
+
+		for row in coverage.rows {
+			#expect(row.translatedOnly >= 0)
+			#expect(row.translatedOnly + row.rewritten + row.original == row.total)
+		}
+		#expect(coverage.rows.map(\.translatedOnly) == [1, 1])
+		#expect(coverage.translatedOnly == coverage.rows.reduce(0) { $0 + $1.translatedOnly })
+		#expect(coverage.translatedOnly == coverage.total - coverage.rewritten - coverage.original)
+		#expect(coverage.translatedOnly == 2)
 	}
 
 	@Test func coverageHonoursUnreadOnly() {
@@ -757,6 +790,7 @@ import Testing
 		))
 
 		#expect(model.coverage == nil)
+		#expect(model.coverageUnavailable)
 		#expect(model.headline.text == "1 项排队中")
 		#expect(tile(model, "排队")?.count == 1)
 		#expect(model.footerLines.isEmpty == false)
@@ -774,6 +808,7 @@ import Testing
 		let model = AIJobStatusModel.build(makeInput(scope: scope, coverage: coverage))
 
 		#expect(model.coverage?.total == 0)
+		#expect(model.coverageUnavailable == false)
 		#expect(model.coverageEmptyMessage == "列表内没有文章")
 	}
 

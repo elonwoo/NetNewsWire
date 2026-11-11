@@ -186,8 +186,15 @@ private extension AIJobStatusView {
 
 		addFullWidth(makeStatusZone(model), spacingAfter: 14)
 
-		if let coverage = model.coverage {
-			addFullWidth(makeCoverageZone(coverage, emptyMessage: model.coverageEmptyMessage), spacingAfter: 14)
+		if model.coverage != nil || model.coverageUnavailable {
+			addFullWidth(
+				makeCoverageZone(
+					coverage: model.coverage,
+					unavailable: model.coverageUnavailable,
+					emptyMessage: model.coverageEmptyMessage
+				),
+				spacingAfter: 14
+			)
 		}
 
 		if let anomalies = model.anomalies {
@@ -353,22 +360,47 @@ private extension AIJobStatusView {
 
 	// MARK: Coverage
 
-	func makeCoverageZone(_ coverage: AIJobCoverage, emptyMessage: String?) -> NSView {
+	func makeCoverageZone(coverage: AIJobCoverage?, unavailable: Bool, emptyMessage: String?) -> NSView {
 		let zone = NSStackView()
 		zone.orientation = .vertical
 		zone.alignment = .leading
 		zone.spacing = 7
-		let trailing = coverage.rows.isEmpty ? nil : "\(coverage.feedCount) 个订阅源"
-		zone.addArrangedSubview(makeZoneHeader("AI 覆盖", trailing: trailing))
-		if coverage.rows.isEmpty {
-			zone.addArrangedSubview(makeFootnote(emptyMessage ?? "列表内没有文章"))
-		} else {
+
+		let showsTable = !unavailable && coverage?.rows.isEmpty == false
+		let trailing: String? = {
+			guard showsTable, let coverage else {
+				return nil
+			}
+			return "\(coverage.total) 篇 · 译文 \(coverage.translated) · \(coverage.feedCount) 个订阅源"
+		}()
+		zone.addArrangedSubview(makeZoneHeader("覆盖率", trailing: trailing))
+
+		if showsTable, let coverage {
+			zone.addArrangedSubview(makeCoverageDefinition())
 			zone.addArrangedSubview(AIJobCoverageTableView(coverage: coverage))
+		} else if unavailable {
+			zone.addArrangedSubview(makeLabel("覆盖率暂时不可用", font: .systemFont(ofSize: 11), color: .secondaryLabelColor))
+		} else {
+			zone.addArrangedSubview(makeLabel(emptyMessage ?? "列表内没有文章", font: .systemFont(ofSize: 11), color: .secondaryLabelColor))
 		}
 		for view in zone.arrangedSubviews {
 			view.widthAnchor.constraint(equalTo: zone.widthAnchor).isActive = true
 		}
 		return zone
+	}
+
+	func makeCoverageDefinition() -> NSView {
+		let stack = NSStackView()
+		stack.orientation = .vertical
+		stack.alignment = .leading
+		stack.spacing = 4
+
+		let main = makeLabel("已翻译、已改写可重叠；未处理 = 两者都没完成的原文数", font: .systemFont(ofSize: 11), color: .secondaryLabelColor)
+		main.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+		let sub = makeLabel("条：改写 / 仅译 / 原文", font: .systemFont(ofSize: 10.5), color: .tertiaryLabelColor)
+		stack.addArrangedSubview(main)
+		stack.addArrangedSubview(sub)
+		return stack
 	}
 
 	// MARK: Anomalies
@@ -709,12 +741,74 @@ private extension AIJobStatusView {
 
 // MARK: - Coverage table
 
+private enum AIJobCoverageMetrics {
+
+	static let headerHeight: CGFloat = 20
+	static let wideRowHeight: CGFloat = 40
+	static let narrowRowHeight: CGFloat = 60
+	static let wideTotalRowHeight: CGFloat = 46
+	static let narrowTotalRowHeight: CGFloat = 66
+	static let hairlineHeight: CGFloat = 1
+	static let numberColumnWidth: CGFloat = 40
+	static let columnGap: CGFloat = 12
+	static let barHeight: CGFloat = 4
+	static let barCornerRadius: CGFloat = 2
+	static let barMaxWidth: CGFloat = 150
+	static let totalPaddingTop: CGFloat = 12
+	static let wideNameTop: CGFloat = 5
+	static let narrowNameTop: CGFloat = 4
+	static let nameHeight: CGFloat = 18
+	static let barTopSpacing: CGFloat = 4
+	static let inlineTopSpacing: CGFloat = 4
+	static let inlineHeight: CGFloat = 15
+	static let inlineGap: CGFloat = 12
+	static let narrowTotalLabelWidth: CGFloat = 54
+}
+
+private struct AIJobCoverageDisplayRow {
+
+	let name: String
+	let total: Int
+	let rewritten: Int
+	let translatedOnly: Int
+	let original: Int
+
+	init(name: String, total: Int, rewritten: Int, translatedOnly: Int, original: Int) {
+		self.name = name
+		self.total = max(0, total)
+		self.rewritten = max(0, rewritten)
+		self.translatedOnly = max(0, translatedOnly)
+		self.original = max(0, original)
+	}
+
+	init(row: AIJobCoverageRow) {
+		self.init(
+			name: row.feedName,
+			total: row.total,
+			rewritten: row.rewritten,
+			translatedOnly: row.translatedOnly,
+			original: row.original
+		)
+	}
+
+	init(summary coverage: AIJobCoverage) {
+		self.init(
+			name: "合计",
+			total: coverage.total,
+			rewritten: coverage.rewritten,
+			translatedOnly: coverage.translatedOnly,
+			original: coverage.original
+		)
+	}
+}
+
 private final class AIJobCoverageTableView: NSView {
 
 	private let coverage: AIJobCoverage
 	private let headerView = AIJobCoverageHeaderView()
 	private var rowViews: [AIJobCoverageRowView] = []
-	private var separators: [AIJobHairlineView] = []
+	private let totalRowView = AIJobCoverageRowView(isTotal: true)
+	private let totalSeparator = AIJobHairlineView()
 	private var lastNarrow = false
 	private var measuredHeight: CGFloat = 0
 
@@ -722,20 +816,20 @@ private final class AIJobCoverageTableView: NSView {
 		self.coverage = coverage
 		super.init(frame: .zero)
 		translatesAutoresizingMaskIntoConstraints = false
-		for _ in coverage.rows {
-			rowViews.append(AIJobCoverageRowView())
+
+		for row in coverage.rows {
+			let rowView = AIJobCoverageRowView(isTotal: false)
+			rowView.configure(AIJobCoverageDisplayRow(row: row))
+			rowViews.append(rowView)
 		}
-		for _ in 0..<(rowViews.count + 1) {
-			separators.append(AIJobHairlineView())
-		}
+		totalRowView.configure(AIJobCoverageDisplayRow(summary: coverage))
+
 		addSubview(headerView)
-		for (index, row) in rowViews.enumerated() {
-			row.configure(coverage.rows[index])
-			addSubview(row)
+		for rowView in rowViews {
+			addSubview(rowView)
 		}
-		for separator in separators {
-			addSubview(separator)
-		}
+		addSubview(totalSeparator)
+		addSubview(totalRowView)
 	}
 
 	@available(*, unavailable)
@@ -761,27 +855,25 @@ private final class AIJobCoverageTableView: NSView {
 		}
 
 		let width = bounds.width
-		let headerHeight: CGFloat = narrow ? 0 : 20
-		let rowHeight: CGFloat = narrow ? 50 : 34
 		var y: CGFloat = 0
 
+		let headerHeight = narrow ? 0 : AIJobCoverageMetrics.headerHeight
 		headerView.isHidden = narrow
 		headerView.frame = NSRect(x: 0, y: y, width: width, height: headerHeight)
 		y += headerHeight
 
-		if !narrow {
-			separators[0].frame = NSRect(x: 0, y: y, width: width, height: 1)
-			y += 1
+		let rowHeight = narrow ? AIJobCoverageMetrics.narrowRowHeight : AIJobCoverageMetrics.wideRowHeight
+		for rowView in rowViews {
+			rowView.frame = NSRect(x: 0, y: y, width: width, height: rowHeight)
+			y += rowHeight
 		}
 
-		for (index, row) in rowViews.enumerated() {
-			row.frame = NSRect(x: 0, y: y, width: width, height: rowHeight)
-			y += rowHeight
-			if index < rowViews.count - 1 {
-				separators[index + 1].frame = NSRect(x: 0, y: y, width: width, height: 1)
-				y += 1
-			}
-		}
+		totalSeparator.frame = NSRect(x: 0, y: y, width: width, height: AIJobCoverageMetrics.hairlineHeight)
+		y += AIJobCoverageMetrics.hairlineHeight
+
+		let totalRowHeight = narrow ? AIJobCoverageMetrics.narrowTotalRowHeight : AIJobCoverageMetrics.wideTotalRowHeight
+		totalRowView.frame = NSRect(x: 0, y: y, width: width, height: totalRowHeight)
+		y += totalRowHeight
 
 		if abs(measuredHeight - y) > 0.5 {
 			measuredHeight = y
@@ -790,29 +882,27 @@ private final class AIJobCoverageTableView: NSView {
 	}
 
 	private func height(narrow: Bool) -> CGFloat {
-		let rowCount = max(1, coverage.rows.count)
-		let rowHeight: CGFloat = narrow ? 50 : 34
-		let headerHeight: CGFloat = narrow ? 0 : 20
-		let headerSeparator: CGFloat = narrow ? 0 : 1
-		let interRowSeparators = CGFloat(max(0, rowCount - 1))
-		return headerHeight + headerSeparator + CGFloat(rowCount) * rowHeight + interRowSeparators
+		let headerHeight = narrow ? 0 : AIJobCoverageMetrics.headerHeight
+		let rowHeight = narrow ? AIJobCoverageMetrics.narrowRowHeight : AIJobCoverageMetrics.wideRowHeight
+		let totalRowHeight = narrow ? AIJobCoverageMetrics.narrowTotalRowHeight : AIJobCoverageMetrics.wideTotalRowHeight
+		return headerHeight
+			+ CGFloat(coverage.rows.count) * rowHeight
+			+ AIJobCoverageMetrics.hairlineHeight
+			+ totalRowHeight
 	}
 }
 
 private final class AIJobCoverageHeaderView: NSView {
 
-	private let nameLabel = AIJobStatusViewMake.label("订阅源", font: .systemFont(ofSize: 10), color: .tertiaryLabelColor)
-	private let totalLabel = AIJobStatusViewMake.label("篇数", font: .systemFont(ofSize: 10), color: .tertiaryLabelColor)
-	private let translatedLabel = AIJobStatusViewMake.label("", font: .systemFont(ofSize: 10), color: .tertiaryLabelColor)
-	private let rewrittenLabel = AIJobStatusViewMake.label("", font: .systemFont(ofSize: 10), color: .tertiaryLabelColor)
-	private let originalLabel = AIJobStatusViewMake.label("", font: .systemFont(ofSize: 10), color: .tertiaryLabelColor)
+	private let nameLabel = AIJobStatusViewMake.label("订阅源", font: .systemFont(ofSize: 10.5), color: .tertiaryLabelColor)
+	private let totalLabel = AIJobStatusViewMake.label("总数", font: .systemFont(ofSize: 10.5), color: .tertiaryLabelColor)
+	private let rewrittenLabel = AIJobStatusViewMake.label("改写", font: .systemFont(ofSize: 10.5), color: .tertiaryLabelColor)
+	private let translatedOnlyLabel = AIJobStatusViewMake.label("仅译", font: .systemFont(ofSize: 10.5), color: .tertiaryLabelColor)
+	private let originalLabel = AIJobStatusViewMake.label("原文", font: .systemFont(ofSize: 10.5), color: .tertiaryLabelColor)
 
 	override init(frame frameRect: NSRect) {
 		super.init(frame: frameRect)
-		translatedLabel.attributedStringValue = AIJobStatusViewMake.metricText(dot: .systemTeal, text: "译文", font: .systemFont(ofSize: 10))
-		rewrittenLabel.attributedStringValue = AIJobStatusViewMake.metricText(dot: .systemPurple, text: "改写", font: .systemFont(ofSize: 10))
-		originalLabel.attributedStringValue = AIJobStatusViewMake.metricText(dot: .tertiaryLabelColor, text: "原文", font: .systemFont(ofSize: 10))
-		for label in [nameLabel, totalLabel, translatedLabel, rewrittenLabel, originalLabel] {
+		for label in [nameLabel, totalLabel, rewrittenLabel, translatedOnlyLabel, originalLabel] {
 			label.alignment = .right
 			addSubview(label)
 		}
@@ -831,40 +921,57 @@ private final class AIJobCoverageHeaderView: NSView {
 	override func layout() {
 		super.layout()
 		let frames = AIJobCoverageLayout.frames(width: bounds.width)
-		nameLabel.frame = NSRect(x: 0, y: 2, width: max(0, frames.total.minX - 9), height: 16)
-		totalLabel.frame = NSRect(x: frames.total.minX, y: 2, width: frames.total.width, height: 16)
-		translatedLabel.frame = NSRect(x: frames.translated.minX, y: 2, width: frames.translated.width, height: 16)
-		rewrittenLabel.frame = NSRect(x: frames.rewritten.minX, y: 2, width: frames.rewritten.width, height: 16)
-		originalLabel.frame = NSRect(x: frames.original.minX, y: 2, width: frames.original.width, height: 16)
+		let labelHeight: CGFloat = 16
+		nameLabel.frame = NSRect(x: 0, y: 0, width: max(0, frames.total.minX - AIJobCoverageMetrics.columnGap), height: labelHeight)
+		totalLabel.frame = NSRect(x: frames.total.minX, y: 0, width: frames.total.width, height: labelHeight)
+		rewrittenLabel.frame = NSRect(x: frames.rewritten.minX, y: 0, width: frames.rewritten.width, height: labelHeight)
+		translatedOnlyLabel.frame = NSRect(x: frames.translatedOnly.minX, y: 0, width: frames.translatedOnly.width, height: labelHeight)
+		originalLabel.frame = NSRect(x: frames.original.minX, y: 0, width: frames.original.width, height: labelHeight)
 	}
 }
 
 private final class AIJobCoverageRowView: NSView {
 
-	private let nameLabel = AIJobStatusViewMake.label("", font: .systemFont(ofSize: 12.5, weight: .medium), color: .labelColor)
-	private let totalLabel = AIJobStatusViewMake.label("", font: .monospacedDigitSystemFont(ofSize: 12, weight: .semibold), color: .labelColor)
-	private let translatedLabel = AIJobStatusViewMake.label("", font: .monospacedDigitSystemFont(ofSize: 12, weight: .regular), color: .labelColor)
-	private let rewrittenLabel = AIJobStatusViewMake.label("", font: .monospacedDigitSystemFont(ofSize: 12, weight: .regular), color: .labelColor)
-	private let originalLabel = AIJobStatusViewMake.label("", font: .monospacedDigitSystemFont(ofSize: 12, weight: .regular), color: .tertiaryLabelColor)
-	private let translatedNarrowLabel = AIJobStatusViewMake.label("", font: .systemFont(ofSize: 11), color: .labelColor)
-	private let rewrittenNarrowLabel = AIJobStatusViewMake.label("", font: .systemFont(ofSize: 11), color: .labelColor)
-	private let originalNarrowLabel = AIJobStatusViewMake.label("", font: .systemFont(ofSize: 11), color: .tertiaryLabelColor)
-	private let translationBar = AIJobProgressBarView(tint: .systemTeal)
-	private let rewriteBar = AIJobProgressBarView(tint: .systemPurple)
-	private var row: AIJobCoverageRow?
+	private let isTotal: Bool
+	private let nameLabel = AIJobStatusViewMake.label("", font: .systemFont(ofSize: 13, weight: .medium), color: .labelColor)
+	private let totalValueLabel = AIJobStatusViewMake.label("", font: .monospacedDigitSystemFont(ofSize: 11, weight: .regular), color: .secondaryLabelColor)
+	private let rewrittenValueLabel = AIJobStatusViewMake.label("", font: .monospacedDigitSystemFont(ofSize: 11, weight: .regular), color: .secondaryLabelColor)
+	private let translatedOnlyValueLabel = AIJobStatusViewMake.label("", font: .monospacedDigitSystemFont(ofSize: 11, weight: .regular), color: .secondaryLabelColor)
+	private let originalValueLabel = AIJobStatusViewMake.label("", font: .monospacedDigitSystemFont(ofSize: 11, weight: .regular), color: .secondaryLabelColor)
+	private let totalCountLabel = AIJobStatusViewMake.label("", font: .systemFont(ofSize: 10.5), color: .tertiaryLabelColor)
+	private let inlineRewriteLabel = AIJobStatusViewMake.label("", font: .systemFont(ofSize: 10.5), color: .secondaryLabelColor)
+	private let inlineTranslatedOnlyLabel = AIJobStatusViewMake.label("", font: .systemFont(ofSize: 10.5), color: .secondaryLabelColor)
+	private let inlineOriginalLabel = AIJobStatusViewMake.label("", font: .systemFont(ofSize: 10.5), color: .secondaryLabelColor)
+	private let barView = AIJobSegmentedBarView()
 
-	override init(frame frameRect: NSRect) {
-		super.init(frame: frameRect)
-		for label in [nameLabel, totalLabel, translatedLabel, rewrittenLabel, originalLabel, translatedNarrowLabel, rewrittenNarrowLabel, originalNarrowLabel] {
+	init(isTotal: Bool) {
+		self.isTotal = isTotal
+		super.init(frame: .zero)
+		if isTotal {
+			nameLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+			for label in [totalValueLabel, rewrittenValueLabel, translatedOnlyValueLabel, originalValueLabel] {
+				label.font = .monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
+				label.textColor = .labelColor
+			}
+		}
+		for label in [
+			nameLabel,
+			totalValueLabel,
+			rewrittenValueLabel,
+			translatedOnlyValueLabel,
+			originalValueLabel,
+			totalCountLabel,
+			inlineRewriteLabel,
+			inlineTranslatedOnlyLabel,
+			inlineOriginalLabel
+		] {
 			addSubview(label)
 		}
-		nameLabel.lineBreakMode = .byTruncatingTail
-		translatedLabel.alignment = .right
-		rewrittenLabel.alignment = .right
-		originalLabel.alignment = .right
-		totalLabel.alignment = .right
-		addSubview(translationBar)
-		addSubview(rewriteBar)
+		for label in [totalValueLabel, rewrittenValueLabel, translatedOnlyValueLabel, originalValueLabel] {
+			label.alignment = .right
+		}
+		totalCountLabel.alignment = .right
+		addSubview(barView)
 	}
 
 	@available(*, unavailable)
@@ -876,69 +983,89 @@ private final class AIJobCoverageRowView: NSView {
 		true
 	}
 
-	func configure(_ row: AIJobCoverageRow) {
-		self.row = row
-		nameLabel.stringValue = row.feedName
-		totalLabel.stringValue = "\(row.total)"
-		translatedLabel.stringValue = "\(row.translated)"
-		rewrittenLabel.stringValue = "\(row.rewritten)"
-		originalLabel.stringValue = "\(row.original)"
-		nameLabel.toolTip = row.feedName
-		translationBar.progress = row.translationProgress
-		rewriteBar.progress = row.rewriteProgress
-		translationBar.toolTip = "译文覆盖率 \(Int((row.translationProgress * 100).rounded()))%"
-		rewriteBar.toolTip = "改写覆盖率 \(Int((row.rewriteProgress * 100).rounded()))%"
+	func configure(_ row: AIJobCoverageDisplayRow) {
+		nameLabel.stringValue = row.name
+		nameLabel.toolTip = row.name
+		totalValueLabel.stringValue = "\(row.total)"
+		rewrittenValueLabel.stringValue = "\(row.rewritten)"
+		translatedOnlyValueLabel.stringValue = "\(row.translatedOnly)"
+		originalValueLabel.stringValue = "\(row.original)"
+		totalCountLabel.stringValue = "\(row.total) 篇"
+
+		let font = isTotal ? NSFont.systemFont(ofSize: 10.5, weight: .semibold) : NSFont.systemFont(ofSize: 10.5)
+		let color: NSColor = isTotal ? .labelColor : .secondaryLabelColor
+		inlineRewriteLabel.attributedStringValue = AIJobStatusViewMake.metricText(dot: .systemPurple, text: "改写 \(row.rewritten)", font: font, color: color)
+		inlineTranslatedOnlyLabel.attributedStringValue = AIJobStatusViewMake.metricText(dot: .systemTeal, text: "仅译 \(row.translatedOnly)", font: font, color: color)
+		inlineOriginalLabel.attributedStringValue = AIJobStatusViewMake.metricText(dot: .tertiaryLabelColor, text: "原文 \(row.original)", font: font, color: color)
+
+		barView.configure(rewritten: row.rewritten, translatedOnly: row.translatedOnly, original: row.original)
+		let summary = "改写 \(row.rewritten) · 仅译 \(row.translatedOnly) · 原文 \(row.original)"
+		barView.toolTip = summary
+		barView.setAccessibilityLabel(summary)
 	}
 
 	override func layout() {
 		super.layout()
 		let narrow = bounds.width < AIJobStatusView.wideLayoutThreshold
-		translatedLabel.isHidden = narrow
-		rewrittenLabel.isHidden = narrow
-		originalLabel.isHidden = narrow
-		translatedNarrowLabel.isHidden = !narrow
-		rewrittenNarrowLabel.isHidden = !narrow
-		originalNarrowLabel.isHidden = !narrow
+		for label in [totalValueLabel, rewrittenValueLabel, translatedOnlyValueLabel, originalValueLabel] {
+			label.isHidden = narrow
+		}
+		totalCountLabel.isHidden = !narrow
+		for label in [inlineRewriteLabel, inlineTranslatedOnlyLabel, inlineOriginalLabel] {
+			label.isHidden = !narrow
+		}
 
 		if narrow {
-			let total = row?.total ?? 0
-			let barWidth = min(max(0, bounds.width - 54), 300)
-			nameLabel.frame = NSRect(x: 0, y: 2, width: max(0, bounds.width - 54), height: 18)
-			totalLabel.stringValue = "\(total) 篇"
-			totalLabel.frame = NSRect(x: max(0, bounds.width - 54), y: 2, width: 54, height: 18)
-			layoutNarrowMetrics()
-			rewriteBar.frame = NSRect(x: 0, y: 38, width: barWidth, height: 4)
-			translationBar.frame = NSRect(x: 0, y: 43, width: barWidth, height: 4)
+			layoutNarrow()
 		} else {
-			let frames = AIJobCoverageLayout.frames(width: bounds.width)
-			let barWidth = min(frames.total.minX - 9, 300)
-			nameLabel.frame = NSRect(x: 0, y: 2, width: max(0, frames.total.minX - 9), height: 18)
-			totalLabel.frame = NSRect(x: frames.total.minX, y: 2, width: frames.total.width, height: 18)
-			translatedLabel.frame = NSRect(x: frames.translated.minX, y: 2, width: frames.translated.width, height: 18)
-			rewrittenLabel.frame = NSRect(x: frames.rewritten.minX, y: 2, width: frames.rewritten.width, height: 18)
-			originalLabel.frame = NSRect(x: frames.original.minX, y: 2, width: frames.original.width, height: 18)
-			rewriteBar.frame = NSRect(x: 0, y: 22, width: barWidth, height: 4)
-			translationBar.frame = NSRect(x: 0, y: 27, width: barWidth, height: 4)
+			layoutWide()
 		}
 	}
 
-	private func layoutNarrowMetrics() {
-		let metrics: [(label: NSTextField, dot: NSColor, title: String, value: String)] = [
-			(rewrittenNarrowLabel, .systemPurple, "改写", "\(row?.rewritten ?? 0)"),
-			(translatedNarrowLabel, .systemTeal, "译文", "\(row?.translated ?? 0)"),
-			(originalNarrowLabel, .tertiaryLabelColor, "原文", "\(row?.original ?? 0)")
-		]
+	private func layoutWide() {
+		let frames = AIJobCoverageLayout.frames(width: bounds.width)
+		let nameWidth = max(0, frames.total.minX - AIJobCoverageMetrics.columnGap)
+		let nameTop = isTotal ? AIJobCoverageMetrics.totalPaddingTop : AIJobCoverageMetrics.wideNameTop
+		nameLabel.frame = NSRect(x: 0, y: nameTop, width: nameWidth, height: AIJobCoverageMetrics.nameHeight)
+
+		let barTop = nameTop + AIJobCoverageMetrics.nameHeight + AIJobCoverageMetrics.barTopSpacing
+		barView.frame = NSRect(
+			x: 0,
+			y: barTop,
+			width: min(nameWidth, AIJobCoverageMetrics.barMaxWidth),
+			height: AIJobCoverageMetrics.barHeight
+		)
+
+		let numberHeight: CGFloat = 16
+		let numberY = max(0, (bounds.height - numberHeight) / 2)
+		totalValueLabel.frame = NSRect(x: frames.total.minX, y: numberY, width: frames.total.width, height: numberHeight)
+		rewrittenValueLabel.frame = NSRect(x: frames.rewritten.minX, y: numberY, width: frames.rewritten.width, height: numberHeight)
+		translatedOnlyValueLabel.frame = NSRect(x: frames.translatedOnly.minX, y: numberY, width: frames.translatedOnly.width, height: numberHeight)
+		originalValueLabel.frame = NSRect(x: frames.original.minX, y: numberY, width: frames.original.width, height: numberHeight)
+	}
+
+	private func layoutNarrow() {
+		let nameTop = isTotal ? AIJobCoverageMetrics.totalPaddingTop : AIJobCoverageMetrics.narrowNameTop
+		let countGap: CGFloat = 8
+		let countWidth = AIJobCoverageMetrics.narrowTotalLabelWidth
+		let nameWidth = max(0, bounds.width - countWidth - countGap)
+		nameLabel.frame = NSRect(x: 0, y: nameTop, width: nameWidth, height: AIJobCoverageMetrics.nameHeight)
+		totalCountLabel.frame = NSRect(x: max(0, bounds.width - countWidth), y: nameTop, width: countWidth, height: AIJobCoverageMetrics.nameHeight)
+
+		let barTop = nameTop + AIJobCoverageMetrics.nameHeight + AIJobCoverageMetrics.barTopSpacing
+		barView.frame = NSRect(x: 0, y: barTop, width: bounds.width, height: AIJobCoverageMetrics.barHeight)
+
 		var x: CGFloat = 0
-		for metric in metrics {
-			metric.label.attributedStringValue = AIJobStatusViewMake.metricText(
-				dot: metric.dot,
-				text: "\(metric.title) \(metric.value)",
-				font: .systemFont(ofSize: 11),
-				color: metric.dot == .tertiaryLabelColor ? .tertiaryLabelColor : .labelColor
-			)
-			metric.label.sizeToFit()
-			metric.label.frame = NSRect(x: x, y: 21, width: metric.label.frame.width, height: 16)
-			x += metric.label.frame.width + 14
+		var y = barView.frame.maxY + AIJobCoverageMetrics.inlineTopSpacing
+		for label in [inlineRewriteLabel, inlineTranslatedOnlyLabel, inlineOriginalLabel] {
+			label.sizeToFit()
+			let width = ceil(label.frame.width)
+			if x > 0, x + width > bounds.width {
+				x = 0
+				y += AIJobCoverageMetrics.inlineHeight
+			}
+			label.frame = NSRect(x: x, y: y, width: min(width, bounds.width), height: AIJobCoverageMetrics.inlineHeight)
+			x += width + AIJobCoverageMetrics.inlineGap
 		}
 	}
 }
@@ -947,21 +1074,19 @@ private enum AIJobCoverageLayout {
 
 	struct Frames {
 		let total: NSRect
-		let translated: NSRect
 		let rewritten: NSRect
+		let translatedOnly: NSRect
 		let original: NSRect
 	}
 
 	static func frames(width: CGFloat) -> Frames {
-		let totalWidth: CGFloat = 44
-		let metricWidth: CGFloat = 38
-		let originalWidth: CGFloat = 44
-		let gap: CGFloat = 9
-		let original = NSRect(x: width - originalWidth, y: 0, width: originalWidth, height: 0)
-		let translated = NSRect(x: original.minX - gap - metricWidth, y: 0, width: metricWidth, height: 0)
-		let rewritten = NSRect(x: translated.minX - gap - metricWidth, y: 0, width: metricWidth, height: 0)
-		let total = NSRect(x: rewritten.minX - gap - totalWidth, y: 0, width: totalWidth, height: 0)
-		return Frames(total: total, translated: translated, rewritten: rewritten, original: original)
+		let columnWidth = AIJobCoverageMetrics.numberColumnWidth
+		let gap = AIJobCoverageMetrics.columnGap
+		let original = NSRect(x: max(0, width - columnWidth), y: 0, width: columnWidth, height: 0)
+		let translatedOnly = NSRect(x: max(0, original.minX - gap - columnWidth), y: 0, width: columnWidth, height: 0)
+		let rewritten = NSRect(x: max(0, translatedOnly.minX - gap - columnWidth), y: 0, width: columnWidth, height: 0)
+		let total = NSRect(x: max(0, rewritten.minX - gap - columnWidth), y: 0, width: columnWidth, height: 0)
+		return Frames(total: total, rewritten: rewritten, translatedOnly: translatedOnly, original: original)
 	}
 }
 
@@ -1089,18 +1214,14 @@ private final class AIJobHairlineView: NSView {
 	}
 }
 
-private final class AIJobProgressBarView: NSView {
+private final class AIJobSegmentedBarView: NSView {
 
-	var progress: Double = 0 {
-		didSet {
-			needsDisplay = true
-		}
-	}
-	private let tint: NSColor
+	private var rewritten = 0
+	private var translatedOnly = 0
+	private var original = 0
 
-	init(tint: NSColor) {
-		self.tint = tint
-		super.init(frame: .zero)
+	override init(frame frameRect: NSRect) {
+		super.init(frame: frameRect)
 		translatesAutoresizingMaskIntoConstraints = false
 	}
 
@@ -1109,19 +1230,42 @@ private final class AIJobProgressBarView: NSView {
 		fatalError("init(coder:) has not been implemented")
 	}
 
+	func configure(rewritten: Int, translatedOnly: Int, original: Int) {
+		self.rewritten = max(0, rewritten)
+		self.translatedOnly = max(0, translatedOnly)
+		self.original = max(0, original)
+		needsDisplay = true
+	}
+
 	override func draw(_ dirtyRect: NSRect) {
-		let track = NSBezierPath(roundedRect: bounds, xRadius: bounds.height / 2, yRadius: bounds.height / 2)
+		let track = NSBezierPath(
+			roundedRect: bounds,
+			xRadius: AIJobCoverageMetrics.barCornerRadius,
+			yRadius: AIJobCoverageMetrics.barCornerRadius
+		)
 		NSColor.quaternaryLabelColor.withAlphaComponent(0.12).setFill()
 		track.fill()
 
-		guard progress > 0 else {
+		let total = rewritten + translatedOnly + original
+		guard total > 0, bounds.width > 0, bounds.height > 0 else {
 			return
 		}
-		let clamped = min(1, max(0, progress))
-		let fillRect = NSRect(x: 0, y: 0, width: bounds.width * clamped, height: bounds.height)
-		let fill = NSBezierPath(roundedRect: fillRect, xRadius: bounds.height / 2, yRadius: bounds.height / 2)
-		tint.setFill()
-		fill.fill()
+
+		let segments: [(count: Int, color: NSColor)] = [
+			(rewritten, .systemPurple),
+			(translatedOnly, .systemTeal),
+			(original, .tertiaryLabelColor)
+		]
+		NSGraphicsContext.saveGraphicsState()
+		track.addClip()
+		var x: CGFloat = 0
+		for segment in segments where segment.count > 0 {
+			let width = bounds.width * CGFloat(segment.count) / CGFloat(total)
+			segment.color.setFill()
+			NSRect(x: x, y: 0, width: width, height: bounds.height).fill()
+			x += width
+		}
+		NSGraphicsContext.restoreGraphicsState()
 	}
 }
 
