@@ -56,6 +56,7 @@ enum AICatchUpPlanner {
 			let chineseAllowed = AIArticleLanguageGate.allows(article, chineseAllowedFeedIDs: chineseAllowedFeedIDs)
 			if AutoWorkPolicy.shouldRewrite(article, now: now, chineseAllowed: chineseAllowed),
 			   !rewriteExcludedArticleIDs.contains(article.id),
+			   hasUsableRewriteBody(article),
 			   !isRewriteUpToDate(article, cachedRewrites: cachedRewrites),
 			   plan.rewriteArticleIDs.count + plan.titleTranslationArticleIDs.count < limit {
 				plan.rewriteArticleIDs.append(article.id)
@@ -72,6 +73,15 @@ enum AICatchUpPlanner {
 }
 
 private extension AICatchUpPlanner {
+
+	/// An article whose feed body cannot be rewritten would be skipped at
+	/// execution time, so catch-up never queues it in the first place.
+	static func hasUsableRewriteBody(_ article: AIArticle) -> Bool {
+		guard AIRewriteKindSelector.kind(for: article) == .article else {
+			return true
+		}
+		return AIFullTextFetcher.hasUsableFeedBody(article)
+	}
 
 	static func isRewriteUpToDate(_ article: AIArticle, cachedRewrites: [String: String]) -> Bool {
 		guard let cachedHash = cachedRewrites[article.id] else {

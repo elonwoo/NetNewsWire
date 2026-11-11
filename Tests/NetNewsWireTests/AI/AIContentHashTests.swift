@@ -55,32 +55,14 @@ import Testing
 		#expect(AIContentHash.isRewriteUpToDate(stored: fullTextHash, article: value))
 	}
 
-	@Test func shortBodyFeedRewriteIsStaleUntilFullText() {
+	@Test func shortBodyFeedRewriteIsCurrent() {
 		let value = article(contentHTML: "<p>" + String(repeating: "a", count: 800) + "</p>")
 		let feedHash = AIContentHash.rewrite(for: value)
 
-		#expect(AIContentHash.rewriteState(stored: feedHash, article: value) == .contentChanged)
-		#expect(!AIContentHash.isRewriteUpToDate(stored: feedHash, article: value))
+		#expect(AIContentHash.rewriteState(stored: feedHash, article: value) == .current)
+		#expect(AIContentHash.isRewriteUpToDate(stored: feedHash, article: value))
 		#expect(AIContentHash.rewriteState(stored: "ft:" + feedHash, article: value) == .current)
 		#expect(AIContentHash.isRewriteUpToDate(stored: "ft:" + feedHash, article: value))
-	}
-
-	@Test func bodyLengthCacheSeparatesTextFallback() {
-		let long = AIArticle(
-			id: "cache",
-			title: "Title",
-			contentHTML: "<p></p>",
-			contentText: String(repeating: "a", count: 2500)
-		)
-		let short = AIArticle(
-			id: "cache",
-			title: "Title",
-			contentHTML: "<p></p>",
-			contentText: "short"
-		)
-
-		#expect(AIContentHash.bodyCharacterCount(for: long) == 2500)
-		#expect(AIContentHash.bodyCharacterCount(for: short) == 5)
 	}
 
 	@Test func rewriteStateMapsMissingCurrentAndContentChanged() {

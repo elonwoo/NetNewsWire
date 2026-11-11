@@ -398,57 +398,93 @@ final class AIJobExecutorEnqueueTests {
 
 	// MARK: - Summary rewrites
 
-	@Test func summaryRewriteWithoutFullTextFailsPermanentlyWithoutRetry() async throws {
-		let article = summaryArticle(id: "summary-missing", publishedAt: Date())
-		try await store.saveRewrite(rewrite(article: article, hash: AIContentHash.rewrite(for: article)))
-		let job = AIJob(
+	@Test func summaryRewriteFallsBackToFeedBodyWhenFullTextFails() async throws {
+		let article = summaryArticle(id: "summary-fallback", publishedAt: Date())
+		try await store.enqueue(AIJob(
 			id: "rewrite:\(article.id)",
 			articleID: article.id,
 			kind: .rewrite,
 			priority: 100,
 			availableAt: Date(),
 			createdAt: Date()
-		)
-		try await store.enqueue(job)
-		let client = CountingClient()
+		))
+		let client = RewriteRecordingClient()
 		let fetcher = RecordingFullTextFetcher(outcome: .unavailable("网页返回状态码 500"))
 		let notificationCenter = NotificationCenter()
 		let failureCounter = FailureCounter()
-		let rewriteRemovedCounter = FailureCounter()
 		let failureToken = notificationCenter.addObserver(forName: .aiJobFailed, object: nil, queue: nil) { _ in
 			failureCounter.increment()
 		}
-		let removedToken = notificationCenter.addObserver(forName: .aiRewriteRemoved, object: nil, queue: nil) { _ in
-			rewriteRemovedCounter.increment()
-		}
 		defer {
 			notificationCenter.removeObserver(failureToken)
-			notificationCenter.removeObserver(removedToken)
 		}
+		let log = MemoryTaskLog()
 		let executor = makeExecutor(
 			source: AICatchUpSource(),
 			resolver: FixedResolver(article: article),
 			client: client,
 			fullTextFetcher: fetcher,
-			notificationCenter: notificationCenter
+			notificationCenter: notificationCenter,
+			taskLog: log
 		)
 
 		let claimed = try #require(try await executor.claimNextJob())
 		await executor.runJob(claimed)
 
 		#expect(fetcher.fetchCount == 1)
-		#expect(client.callCount == 0)
-		#expect(failureCounter.value == 1)
-		#expect(rewriteRemovedCounter.value == 1)
+		#expect(client.callCount == 1)
+		#expect(failureCounter.value == 0)
 		#expect(try await store.activeJobArticleIDs(kinds: [.rewrite]).isEmpty)
-		#expect(try await store.rewrite(for: article.id) == nil)
+		let stored = try #require(try await store.rewrite(for: article.id))
+		#expect(stored.contentHash == AIContentHash.rewrite(for: article))
+		#expect(!stored.contentHash.hasPrefix("ft:"))
 
-		let failed = try await store.recentJobs(status: .failed, since: .distantPast, limit: 10)
-		#expect(failed.first?.articleID == article.id)
-		#expect(failed.first?.lastError == "原文为摘要，未获取到全文，已跳过改写：网页返回状态码 500")
+		let events = await log.terminalEvents
+		#expect(events.count == 1)
+		#expect(events.first?.outcome == .stored)
+		#expect(events.first?.fullText == false)
+		#expect(events.first?.error == nil)
+		#expect(events.first?.reason == nil)
 	}
 
-	@Test func rejectedSummaryRewriteDoesNotRestoreTheOldTeaserText() async throws {
+	@Test func shortFeedThatThePageDoesNotExtendUsesTheFeedBody() async throws {
+		let body = String(repeating: "a", count: 889)
+		let article = AIArticle(
+			id: "short-complete",
+			title: "English title",
+			contentText: body,
+			url: "https://example.com/short-complete",
+			feedID: "feed",
+			publishedAt: Date()
+		)
+		let loader = PageCountingLoader(html: Self.singleParagraphPage(body: body))
+		let fetcher = AIFullTextFetcher(loader: loader)
+		let client = RewriteRecordingClient()
+		let log = MemoryTaskLog()
+		let executor = makeExecutor(
+			source: AICatchUpSource(),
+			resolver: FixedResolver(article: article),
+			client: client,
+			fullTextFetcher: fetcher,
+			taskLog: log
+		)
+
+		await executor.enqueueRewrite(articleID: article.id)
+		let claimed = try #require(try await executor.claimNextJob())
+		await executor.runJob(claimed)
+
+		#expect(loader.callCount == 1)
+		#expect(client.callCount == 1)
+		let stored = try #require(try await store.rewrite(for: article.id))
+		#expect(stored.contentHash == AIContentHash.rewrite(for: article))
+		#expect(!stored.contentHash.hasPrefix("ft:"))
+		let events = await log.terminalEvents
+		#expect(events.count == 1)
+		#expect(events.first?.outcome == .stored)
+		#expect(events.first?.fullText == false)
+	}
+
+	@Test func rejectedFullTextRewriteRestoresTheOldTeaserText() async throws {
 		let article = summaryArticle(id: "summary-quality", publishedAt: Date())
 		let old = rewrite(article: article, hash: AIContentHash.rewrite(for: article))
 		try await store.saveRewrite(old)
@@ -475,10 +511,12 @@ final class AIJobExecutorEnqueueTests {
 
 		#expect(fetcher.fetchCount == 1)
 		#expect(client.callCount == 1)
-		#expect(try await store.rewrite(for: article.id) == nil)
+		let stored = try #require(try await store.rewrite(for: article.id))
+		#expect(stored.bodyMarkdown == old.bodyMarkdown)
+		#expect(stored.contentHash == AIContentHash.rewrite(for: article))
 	}
 
-	@Test func failedSummaryRewriteKeepsTheFullTextRewrite() async throws {
+	@Test func rejectedFallbackRewriteRestoresTheFullTextRewrite() async throws {
 		let article = shortEnglishArticle(id: "summary-ft-fetch", publishedAt: Date())
 		let fullTextHash = "ft:" + AIContentHash.rewrite(for: article)
 		let old = rewrite(article: article, hash: fullTextHash, body: "已有全文改写")
@@ -493,10 +531,11 @@ final class AIJobExecutorEnqueueTests {
 			notificationCenter.removeObserver(removedToken)
 		}
 		let fetcher = RecordingFullTextFetcher(outcome: .unavailable("网页返回状态码 500"))
+		let client = ShortRewriteClient()
 		let executor = makeExecutor(
 			source: AICatchUpSource(),
 			resolver: FixedResolver(article: article),
-			client: NoCallClient(),
+			client: client,
 			fullTextFetcher: fetcher,
 			notificationCenter: notificationCenter
 		)
@@ -504,12 +543,12 @@ final class AIJobExecutorEnqueueTests {
 		let claimed = try #require(try await executor.claimNextJob())
 		await executor.runJob(claimed)
 
+		#expect(fetcher.fetchCount == 1)
+		#expect(client.callCount == 1)
+		#expect(removedCounter.value == 0)
 		let stored = try #require(try await store.rewrite(for: article.id))
 		#expect(stored.bodyMarkdown == "已有全文改写")
 		#expect(stored.contentHash == fullTextHash)
-		#expect(removedCounter.value == 0)
-		let failed = try await store.recentJobs(status: .failed, since: .distantPast, limit: 10)
-		#expect(failed.first(where: { $0.articleID == article.id })?.lastError == "原文为摘要，未获取到全文，已跳过改写：网页返回状态码 500")
 	}
 
 	@Test func rejectedSummaryRewriteRestoresTheFullTextRewrite() async throws {
@@ -700,7 +739,7 @@ final class AIJobExecutorEnqueueTests {
 		#expect(stored.contentHash == "ft:" + AIContentHash.rewrite(for: article))
 	}
 
-	@Test func catchUpRequeuesShortOldRewriteForMigration() async throws {
+	@Test func catchUpDoesNotRequeueShortFeedRewrite() async throws {
 		let previous = AppDefaults.aiAutoRewriteEnabled
 		AppDefaults.aiAutoRewriteEnabled = true
 		defer {
@@ -718,7 +757,52 @@ final class AIJobExecutorEnqueueTests {
 
 		await executor.catchUpMissedWork()
 
-		#expect(try await store.activeJobArticleIDs(kinds: [.rewrite]).contains(article.id))
+		#expect(try await store.activeJobArticleIDs(kinds: [.rewrite]).isEmpty)
+	}
+
+	@Test func catchUpRequeuesAfterArticleContentChanges() async throws {
+		let previous = AppDefaults.aiAutoRewriteEnabled
+		AppDefaults.aiAutoRewriteEnabled = true
+		defer {
+			AppDefaults.aiAutoRewriteEnabled = previous
+		}
+		let original = AIArticle(
+			id: "content-change",
+			title: "English title",
+			contentText: String(repeating: "a", count: 2500),
+			publishedAt: Date()
+		)
+		try await store.saveRewrite(rewrite(article: original, hash: AIContentHash.rewrite(for: original)))
+		let changed = AIArticle(
+			id: original.id,
+			title: original.title,
+			contentText: String(repeating: "b", count: 2500),
+			publishedAt: original.publishedAt
+		)
+		let executor = makeExecutor(source: AICatchUpSource(articles: [changed]))
+
+		await executor.catchUpMissedWork()
+
+		#expect(try await store.activeJobArticleIDs(kinds: [.rewrite]).contains(changed.id))
+	}
+
+	@Test func catchUpSkipsArticlesWithoutAUsableFeedBody() async throws {
+		let previous = AppDefaults.aiAutoRewriteEnabled
+		AppDefaults.aiAutoRewriteEnabled = true
+		defer {
+			AppDefaults.aiAutoRewriteEnabled = previous
+		}
+		let article = AIArticle(
+			id: "no-usable-body",
+			title: "English title",
+			contentText: String(repeating: "。", count: 300),
+			publishedAt: Date()
+		)
+		let executor = makeExecutor(source: AICatchUpSource(articles: [article]))
+
+		await executor.catchUpMissedWork()
+
+		#expect(try await store.activeJobArticleIDs(kinds: [.rewrite]).isEmpty)
 	}
 
 	@Test(arguments: ["News", "Hi"])
@@ -883,8 +967,63 @@ final class AIJobExecutorEnqueueTests {
 		#expect(events.first?.reason == .bodyTooShort)
 	}
 
-	@Test func taskLogRecordsFullTextUnavailableAsSkipped() async throws {
+	@Test func tooShortBodyDeletesTheStoredTeaserRewrite() async throws {
+		let article = AIArticle(
+			id: "log-too-short-stored",
+			title: "English title",
+			contentText: "News",
+			url: "https://example.com/log-too-short-stored",
+			feedID: "feed",
+			publishedAt: Date()
+		)
+		try await store.saveRewrite(rewrite(article: article, hash: AIContentHash.rewrite(for: article)))
+		let log = MemoryTaskLog()
+		let executor = makeExecutor(
+			source: AICatchUpSource(),
+			resolver: FixedResolver(article: article),
+			client: NoCallClient(),
+			fullTextFetcher: AIFullTextFetcher(loader: PageCountingLoader(html: Self.siteInfoPage())),
+			taskLog: log
+		)
+
+		await executor.enqueueRewrite(articleID: article.id)
+		let claimed = try #require(try await executor.claimNextJob())
+		await executor.runJob(claimed)
+
+		#expect(try await store.rewrite(for: article.id) == nil)
+		let events = await log.terminalEvents
+		#expect(events.count == 1)
+		#expect(events.first?.outcome == .skipped)
+		#expect(events.first?.reason == .bodyTooShort)
+	}
+
+	@Test func taskLogRecordsFallbackRewriteAsStoredWithoutFullText() async throws {
 		let article = summaryArticle(id: "log-full-text", publishedAt: Date())
+		let log = MemoryTaskLog()
+		let executor = makeExecutor(
+			source: AICatchUpSource(),
+			resolver: FixedResolver(article: article),
+			client: RewriteRecordingClient(),
+			fullTextFetcher: RecordingFullTextFetcher(outcome: .unavailable("网页返回状态码 500")),
+			taskLog: log
+		)
+
+		await executor.enqueueRewrite(articleID: article.id)
+		let claimed = try #require(try await executor.claimNextJob())
+		await executor.runJob(claimed)
+
+		let events = await log.terminalEvents
+		#expect(events.count == 1)
+		#expect(events.first?.outcome == .stored)
+		#expect(events.first?.fullText == false)
+		#expect(events.first?.error == nil)
+		#expect(events.first?.reason == nil)
+	}
+
+	@Test func taskLogRecordsCachedFallbackRewriteWithoutFullText() async throws {
+		let article = summaryArticle(id: "log-cached-fallback", publishedAt: Date())
+		let feedHash = AIContentHash.rewrite(for: article)
+		try await store.saveRewrite(rewrite(article: article, hash: feedHash))
 		let log = MemoryTaskLog()
 		let executor = makeExecutor(
 			source: AICatchUpSource(),
@@ -898,10 +1037,14 @@ final class AIJobExecutorEnqueueTests {
 		let claimed = try #require(try await executor.claimNextJob())
 		await executor.runJob(claimed)
 
+		let stored = try #require(try await store.rewrite(for: article.id))
+		#expect(stored.contentHash == feedHash)
 		let events = await log.terminalEvents
 		#expect(events.count == 1)
-		#expect(events.first?.outcome == .skipped)
-		#expect(events.first?.reason == .fullTextUnavailable)
+		#expect(events.first?.outcome == .cached)
+		#expect(events.first?.fullText == false)
+		#expect(events.first?.error == nil)
+		#expect(events.first?.reason == nil)
 	}
 
 	@Test func taskLogRecordsStoredRewriteWithOutputLength() async throws {
@@ -1116,6 +1259,10 @@ private extension AIJobExecutorEnqueueTests {
 
 	static func siteInfoPage() -> String {
 		"<html><body><div id=\"siteinfo\"><p>\(String(repeating: "Site footer ", count: 200))</p></div></body></html>"
+	}
+
+	static func singleParagraphPage(body: String) -> String {
+		"<html><body><article><p>\(body)</p></article></body></html>"
 	}
 
 	static func articlePage() -> String {

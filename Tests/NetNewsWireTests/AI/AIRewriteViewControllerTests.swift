@@ -34,11 +34,11 @@ struct AIRewriteViewControllerTests {
 		)
 	}
 
-	@Test func shortFeedRewriteIsStaleButFullTextRewriteIsCurrent() {
+	@Test func shortFeedRewriteAndFullTextRewriteAreCurrent() {
 		let value = article(contentLength: 800)
 		let feedHash = AIContentHash.rewrite(for: value)
 
-		#expect(AIRewriteViewController.isStale(rewrite: rewrite(article: value, hash: feedHash), article: value))
+		#expect(!AIRewriteViewController.isStale(rewrite: rewrite(article: value, hash: feedHash), article: value))
 		#expect(!AIRewriteViewController.isStale(rewrite: rewrite(article: value, hash: "ft:" + feedHash), article: value))
 	}
 

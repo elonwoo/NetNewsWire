@@ -105,7 +105,7 @@ import Testing
 		#expect(plan.titleTranslationArticleIDs.isEmpty)
 	}
 
-	@Test func shortBodyRewriteWithoutFullTextProvenanceIsQueuedOnce() {
+	@Test func shortBodyFeedRewriteStaysCurrent() {
 		let article = shortEnglishArticle(id: "short", publishedAt: now)
 		let plan = AICatchUpPlanner.plan(
 			articles: [article],
@@ -115,7 +115,25 @@ import Testing
 			limit: 200
 		)
 
-		#expect(plan.rewriteArticleIDs == ["short"])
+		#expect(plan.rewriteArticleIDs.isEmpty)
+	}
+
+	@Test func unusableFeedBodyIsNeverPlannedForRewrite() {
+		let article = AIArticle(
+			id: "punctuation",
+			title: "English title",
+			contentText: String(repeating: "。", count: 300),
+			publishedAt: now
+		)
+		let plan = AICatchUpPlanner.plan(
+			articles: [article],
+			now: now,
+			cachedRewrites: [:],
+			cachedTitleHashes: [:],
+			limit: 200
+		)
+
+		#expect(plan.rewriteArticleIDs.isEmpty)
 	}
 
 	@Test func shortBodyFullTextRewriteStaysCurrent() {

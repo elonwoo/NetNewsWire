@@ -865,34 +865,17 @@ private extension AIJobExecutor {
 				var rewriteArticle = article
 				var usedFullText = false
 				if await fullTextFetcher.isLikelySummary(article) {
-					// A teaser-based rewrite is not trusted as full text. A valid
-					// full-text rewrite (`ft:`) stays as `previous` so a failed fetch
-					// or rejected model output can keep or restore it.
-					if AIRewriteKindSelector.kind(for: article) == .article {
-						await deleteNonFullTextRewrite(articleID: article.id)
-					}
 					switch await fullTextFetcher.enrichedArticle(for: article) {
 					case .notApplicable:
 						break
 					case .enriched(let enriched):
 						rewriteArticle = enriched
 						usedFullText = true
-					case .unavailable(let reason):
-						let message = "原文为摘要，未获取到全文，已跳过改写：\(reason)"
-						try? await store.failJobPermanently(id: job.id, error: message)
-						await recordTerminal(terminalEvent(
-							job: job,
-							article: article,
-							trigger: trigger,
-							model: model,
-							startedAt: startedAt,
-							outcome: .skipped,
-							reason: .fullTextUnavailable,
-							error: message,
-							fullText: false
-						))
-						postFailure(articleID: article.id, error: message)
-						return
+					case .unavailable:
+						// Fetching or validating a longer page failed, or the page
+						// was no longer than the feed. The feed body is still a
+						// usable source, so rewrite from it instead of skipping.
+						break
 					}
 				}
 				let result = try await jobServices.rewrite.rewrite(rewriteArticle, fingerprintArticle: article, fullText: usedFullText, force: usedFullText)
@@ -1086,8 +1069,8 @@ private extension AIJobExecutor {
 		)
 	}
 
-	/// Removes a stored teaser-based rewrite before a full-text attempt. A
-	/// full-text rewrite (`ft:`) is left in place as the previous result.
+	/// Removes a stored teaser-based rewrite when the feed body is too short to
+	/// rewrite. A full-text rewrite (`ft:`) is left in place.
 	func deleteNonFullTextRewrite(articleID: String) async {
 		guard let stored = try? await store.rewrite(for: articleID),
 		      !stored.contentHash.hasPrefix("ft:") else {
