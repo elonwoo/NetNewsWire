@@ -26,6 +26,10 @@ final class AIDetailPaneViewController: NSViewController {
 		}
 	}
 
+	/// Supplied by the main window. Called when the reader clicks a feed row in
+	/// the coverage table so the window can switch the sidebar and timeline.
+	var onSelectFeed: ((String) -> Void)?
+
 	var article: Article? {
 		didSet {
 			updateTabBarVisibility()
@@ -172,6 +176,9 @@ final class AIDetailPaneViewController: NSViewController {
 		contentView.addSubview(jobStatusView)
 		jobStatusView.onOpenSettings = { [weak self] in
 			self?.openAISettings()
+		}
+		jobStatusView.onSelectFeed = { [weak self] feedID in
+			self?.onSelectFeed?(feedID)
 		}
 		jobStatusView.onToggleFailureGroup = { [weak self] key in
 			self?.toggleFailureGroup(key)

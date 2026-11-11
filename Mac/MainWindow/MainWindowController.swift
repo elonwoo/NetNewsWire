@@ -138,6 +138,9 @@ final class MainWindowController: NSWindowController, NSUserInterfaceValidations
 		detailPaneViewController.jobPanelContextProvider = { [weak self] in
 			self?.currentAIJobPanelContext()
 		}
+		detailPaneViewController.onSelectFeed = { [weak self] feedID in
+			self?.selectFeedInSidebar(feedID: feedID)
+		}
 		self.detailPaneViewController = detailPaneViewController
 		installTimelineRefreshObservation()
 
@@ -273,6 +276,24 @@ final class MainWindowController: NSWindowController, NSUserInterfaceValidations
 
 	func selectFeedInSidebar(_ feed: Feed) {
 		sidebarViewController?.selectFeed(feed)
+	}
+
+	/// Switches the window to a feed chosen in the AI task board. Unknown feeds
+	/// are ignored so a stale row cannot produce an error.
+	func selectFeedInSidebar(feedID: String) {
+		guard let feed = feed(withFeedID: feedID) else {
+			return
+		}
+		selectFeedInSidebar(feed)
+	}
+
+	private func feed(withFeedID feedID: String) -> Feed? {
+		for account in AccountManager.shared.accounts {
+			if let feed = account.existingFeed(withFeedID: feedID) {
+				return feed
+			}
+		}
+		return nil
 	}
 
 	func handle(_ response: UNNotificationResponse) {

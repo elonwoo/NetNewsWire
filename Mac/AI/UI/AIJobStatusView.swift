@@ -15,6 +15,7 @@ final class AIJobStatusView: NSView {
 	var onToggleFailureGroup: ((AIJobFailureGroupKey) -> Void)?
 	var onRetryFailureGroup: ((AIJobFailureGroupKey, [AIJobRequeueRequest]) -> Void)?
 	var onOpenSettings: (() -> Void)?
+	var onSelectFeed: ((String) -> Void)?
 
 	private let scopeIconView = NSImageView()
 	private let scopeTitleLabel = NSTextField(labelWithString: "")
@@ -377,7 +378,7 @@ private extension AIJobStatusView {
 
 		if showsTable, let coverage {
 			zone.addArrangedSubview(makeCoverageDefinition())
-			zone.addArrangedSubview(AIJobCoverageTableView(coverage: coverage))
+			zone.addArrangedSubview(AIJobCoverageTableView(coverage: coverage, onSelectFeed: onSelectFeed))
 		} else if unavailable {
 			zone.addArrangedSubview(makeLabel("覆盖率暂时不可用", font: .systemFont(ofSize: 11), color: .secondaryLabelColor))
 		} else {
@@ -767,13 +768,15 @@ private enum AIJobCoverageMetrics {
 
 private struct AIJobCoverageDisplayRow {
 
+	let feedID: String?
 	let name: String
 	let total: Int
 	let rewritten: Int
 	let translatedOnly: Int
 	let original: Int
 
-	init(name: String, total: Int, rewritten: Int, translatedOnly: Int, original: Int) {
+	init(feedID: String?, name: String, total: Int, rewritten: Int, translatedOnly: Int, original: Int) {
+		self.feedID = feedID
 		self.name = name
 		self.total = max(0, total)
 		self.rewritten = max(0, rewritten)
@@ -783,6 +786,7 @@ private struct AIJobCoverageDisplayRow {
 
 	init(row: AIJobCoverageRow) {
 		self.init(
+			feedID: row.feedID,
 			name: row.feedName,
 			total: row.total,
 			rewritten: row.rewritten,
@@ -793,6 +797,7 @@ private struct AIJobCoverageDisplayRow {
 
 	init(summary coverage: AIJobCoverage) {
 		self.init(
+			feedID: nil,
 			name: "合计",
 			total: coverage.total,
 			rewritten: coverage.rewritten,
@@ -812,13 +817,13 @@ private final class AIJobCoverageTableView: NSView {
 	private var lastNarrow = false
 	private var measuredHeight: CGFloat = 0
 
-	init(coverage: AIJobCoverage) {
+	init(coverage: AIJobCoverage, onSelectFeed: ((String) -> Void)?) {
 		self.coverage = coverage
 		super.init(frame: .zero)
 		translatesAutoresizingMaskIntoConstraints = false
 
 		for row in coverage.rows {
-			let rowView = AIJobCoverageRowView(isTotal: false)
+			let rowView = AIJobCoverageRowView(isTotal: false, onSelectFeed: onSelectFeed)
 			rowView.configure(AIJobCoverageDisplayRow(row: row))
 			rowViews.append(rowView)
 		}
@@ -933,6 +938,8 @@ private final class AIJobCoverageHeaderView: NSView {
 private final class AIJobCoverageRowView: NSView {
 
 	private let isTotal: Bool
+	private let onSelectFeed: ((String) -> Void)?
+	private var feedID: String?
 	private let nameLabel = AIJobStatusViewMake.label("", font: .systemFont(ofSize: 13, weight: .medium), color: .labelColor)
 	private let totalValueLabel = AIJobStatusViewMake.label("", font: .monospacedDigitSystemFont(ofSize: 11, weight: .regular), color: .secondaryLabelColor)
 	private let rewrittenValueLabel = AIJobStatusViewMake.label("", font: .monospacedDigitSystemFont(ofSize: 11, weight: .regular), color: .secondaryLabelColor)
@@ -944,8 +951,9 @@ private final class AIJobCoverageRowView: NSView {
 	private let inlineOriginalLabel = AIJobStatusViewMake.label("", font: .systemFont(ofSize: 10.5), color: .secondaryLabelColor)
 	private let barView = AIJobSegmentedBarView()
 
-	init(isTotal: Bool) {
+	init(isTotal: Bool, onSelectFeed: ((String) -> Void)? = nil) {
 		self.isTotal = isTotal
+		self.onSelectFeed = onSelectFeed
 		super.init(frame: .zero)
 		if isTotal {
 			nameLabel.font = .systemFont(ofSize: 13, weight: .semibold)
@@ -983,7 +991,32 @@ private final class AIJobCoverageRowView: NSView {
 		true
 	}
 
+	override func hitTest(_ point: NSPoint) -> NSView? {
+		let hit = super.hitTest(point)
+		guard !isTotal, hit != nil else {
+			return hit
+		}
+		return self
+	}
+
+	override func mouseDown(with event: NSEvent) {
+		guard !isTotal, let feedID, let onSelectFeed else {
+			super.mouseDown(with: event)
+			return
+		}
+		onSelectFeed(feedID)
+	}
+
+	override func resetCursorRects() {
+		super.resetCursorRects()
+		guard !isTotal, feedID != nil else {
+			return
+		}
+		addCursorRect(bounds, cursor: .pointingHand)
+	}
+
 	func configure(_ row: AIJobCoverageDisplayRow) {
+		feedID = row.feedID
 		nameLabel.stringValue = row.name
 		nameLabel.toolTip = row.name
 		totalValueLabel.stringValue = "\(row.total)"
