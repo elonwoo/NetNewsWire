@@ -44,8 +44,11 @@ final class MainWindowController: NSWindowController, NSUserInterfaceValidations
 	private static let detailViewMinimumWidth = 384
 	private static let detailViewMinimumHeight: CGFloat = 200
 	private static let timelineMinimumHeight: CGFloat = 120
+	// threshold 250pt measured: below this the toolbar tracking separator disappears.
+	private static let timelineMinimumWidth: CGFloat = 250
 	private static let sidebarMinimumWidth: CGFloat = 96
 	private static let aiPaneMinimumWidth: CGFloat = 280
+	private static let aiPaneAbsoluteMinimumWidth: CGFloat = 160
 	private static let aiPaneDefaultWidth = 340
 	// Used for the timeline when column layout has no saved height.
 	private static let defaultColumnLayoutTimelineHeightFraction: CGFloat = 0.4
@@ -1451,6 +1454,7 @@ private extension MainWindowController {
 
 		let timelineItem = NSSplitViewItem(contentListWithViewController: timeline)
 		timelineItem.holdingPriority = NSLayoutConstraint.Priority(Self.timelineHoldingPriority)
+		timelineItem.minimumThickness = Self.timelineMinimumWidth
 		if #available(macOS 26.0, *) {
 			timelineItem.automaticallyAdjustsSafeAreaInsets = true
 		}
@@ -1463,7 +1467,7 @@ private extension MainWindowController {
 
 		var splitViewItems = [sidebarItem, timelineItem, detailItem]
 		if isAIPaneVisible {
-			let aiItem = makeAIPaneSplitViewItem(viewController: ai)
+			let aiItem = makeAIPaneSplitViewItem(viewController: ai, availableWidth: availableWidthForAIPane(in: splitViewController.splitView, subtractsTimeline: true))
 			aiSplitViewItem = aiItem
 			splitViewItems.append(aiItem)
 		}
@@ -1503,7 +1507,7 @@ private extension MainWindowController {
 
 		var splitViewItems = [sidebarItem, contentItem]
 		if isAIPaneVisible {
-			let aiItem = makeAIPaneSplitViewItem(viewController: ai)
+			let aiItem = makeAIPaneSplitViewItem(viewController: ai, availableWidth: availableWidthForAIPane(in: splitViewController.splitView, subtractsTimeline: false))
 			aiSplitViewItem = aiItem
 			splitViewItems.append(aiItem)
 		}
@@ -1513,17 +1517,48 @@ private extension MainWindowController {
 		return (splitViewController, contentSplitViewController)
 	}
 
-	func makeAIPaneSplitViewItem(viewController: AIChatViewController) -> NSSplitViewItem {
+	func makeAIPaneSplitViewItem(viewController: AIChatViewController, availableWidth: CGFloat) -> NSSplitViewItem {
 		let item = NSSplitViewItem(viewController: viewController)
-		// Start at the remembered width: a required minimum is the one constraint
-		// the split view controller honors when a pane is added to a live split view.
-		item.minimumThickness = CGFloat(max(rememberedAIPaneWidth, Int(Self.aiPaneMinimumWidth)))
+		// A required minimum is the one constraint the split view controller honors when
+		// a pane is added to a live split view. Keep it within the space the window already
+		// has, so showing the pane narrows the other panes instead of growing the window.
+		let preferredWidth = CGFloat(max(rememberedAIPaneWidth, Int(Self.aiPaneMinimumWidth)))
+		item.minimumThickness = min(preferredWidth, max(Self.aiPaneAbsoluteMinimumWidth, availableWidth))
+		// The split view controller ignores a divider position for a pane added to a live
+		// split view, so the fraction gives the new pane its width on the first layout.
+		if let contentWidth = window?.contentView?.bounds.width, contentWidth > 0 {
+			item.preferredThicknessFraction = item.minimumThickness / contentWidth
+		}
 		item.canCollapse = false
 		item.holdingPriority = NSLayoutConstraint.Priority(Self.aiPaneHoldingPriority)
 		if #unavailable(macOS 26.0) {
 			item.titlebarSeparatorStyle = .line
 		}
 		return item
+	}
+
+	/// Space the AI pane can take by narrowing the panes already in the split view, without growing the window.
+	/// Dividers are counted with the AI pane added. The standard layout also subtracts the timeline and the
+	/// detail view's required minimum; the column layout stacks those two, so only the sidebar counts.
+	func availableWidthForAIPane(in splitView: NSSplitView, subtractsTimeline: Bool) -> CGFloat {
+		let contentWidth = window?.contentView?.bounds.width ?? splitView.bounds.width
+		let isSidebarHidden = sidebarSplitViewItem?.isCollapsed ?? false
+		let dividerCount = CGFloat((subtractsTimeline ? 3 : 2) - (isSidebarHidden ? 1 : 0))
+		var available = contentWidth - (dividerCount * splitView.dividerThickness)
+		if let sidebarWidth = splitView.arrangedSubviews.first?.frame.width, sidebarWidth > 0 {
+			available -= sidebarWidth
+		} else if let rememberedSidebarWidth = rememberedStandardLayoutWidths.first, rememberedSidebarWidth > 0 {
+			available -= CGFloat(rememberedSidebarWidth)
+		}
+		guard subtractsTimeline else {
+			return available
+		}
+		if splitView.arrangedSubviews.count > 1 {
+			available -= splitView.arrangedSubviews[1].frame.width
+		} else if rememberedStandardLayoutWidths.count > 1 {
+			available -= CGFloat(rememberedStandardLayoutWidths[1])
+		}
+		return available - CGFloat(Self.detailViewMinimumWidth)
 	}
 
 	func makeEmptySplitViewController(isVertical: Bool, splitView: NSSplitView = MainWindowSplitView()) -> NSSplitViewController {
@@ -1707,13 +1742,19 @@ private extension MainWindowController {
 		}
 
 		if visible {
-			ensureWindowWideEnoughForAIPane()
-			let aiItem = makeAIPaneSplitViewItem(viewController: aiViewController)
+			let availableWidth = availableWidthForAIPane(in: splitViewController.splitView, subtractsTimeline: timelineLayout == .standard)
+			let aiItem = makeAIPaneSplitViewItem(viewController: aiViewController, availableWidth: availableWidth)
 			isAIPaneVisible = true
 			aiSplitViewItem = aiItem
 			splitViewController.addSplitViewItem(aiItem)
 			splitViewController.view.layoutSubtreeIfNeeded()
 			applyAIPaneWidth()
+			// The split view controller ignores a divider position for a pane added to a
+			// live split view. Applying it on the next run loop turn keeps the width the
+			// reader expects without touching the window frame.
+			Task { @MainActor in
+				self.applyAIPaneWidth()
+			}
 			updateAIPaneArticle()
 			if focus {
 				aiViewController.focusInput()
@@ -1733,27 +1774,6 @@ private extension MainWindowController {
 		makeToolbarValidate()
 		invalidateRestorableState()
 		window?.recalculateKeyViewLoop()
-	}
-
-	func ensureWindowWideEnoughForAIPane() {
-		guard let window, let splitView = splitViewController?.splitView else {
-			return
-		}
-		let isSidebarHidden = sidebarSplitViewItem?.isCollapsed ?? false
-		let sidebarWidth = isSidebarHidden ? 0.0 : (splitView.arrangedSubviews.first?.frame.width ?? 0)
-		let timelineMinimumWidth: CGFloat = 200
-		let timelineWidth = splitView.arrangedSubviews.count > 1 ? splitView.arrangedSubviews[1].frame.width : timelineMinimumWidth
-		// Grow for the remembered width, not just the minimum, so reopening the pane
-		// keeps the width the reader chose instead of squeezing it to its minimum.
-		let requestedAIWidth = CGFloat(max(rememberedAIPaneWidth, Int(Self.aiPaneMinimumWidth)))
-		let requiredWidth = sidebarWidth + max(timelineWidth, timelineMinimumWidth) + CGFloat(Self.detailViewMinimumWidth) + requestedAIWidth + (3 * splitView.dividerThickness) + 16
-		guard window.frame.width < requiredWidth else {
-			return
-		}
-		let maximumWidth = window.screen?.visibleFrame.width ?? requiredWidth
-		var frame = window.frame
-		frame.size.width = min(requiredWidth, maximumWidth)
-		window.setFrame(frame, display: true)
 	}
 
 	func updateAIPaneArticle() {
