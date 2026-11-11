@@ -1,0 +1,2022 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light" data-scenario="normal">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI 任务看板 · NetNewsWire 右侧栏重设计</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #efeff2;
+  --panel-bg: #fcfcfd;
+  --toolbar-bg: #f7f7f9;
+  --label: #1d1d1f;
+  --label-2: rgba(29, 29, 31, 0.62);
+  --label-3: rgba(29, 29, 31, 0.38);
+  --hairline: rgba(0, 0, 0, 0.1);
+  --fill-1: rgba(0, 0, 0, 0.035);
+  --fill-2: rgba(0, 0, 0, 0.065);
+  --track: rgba(0, 0, 0, 0.08);
+  --accent: #007aff;
+  --teal: #30b0c7;
+  --purple: #af52de;
+  --orange: #ff9500;
+  --red: #ff3b30;
+  --green: #34c759;
+  --green-text: #248a3d;
+  --red-text: #c4160c;
+  --orange-text: #a34d00;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #171718;
+  --panel-bg: #1e1e1e;
+  --toolbar-bg: #1c1c1d;
+  --label: #f5f5f7;
+  --label-2: rgba(245, 245, 247, 0.62);
+  --label-3: rgba(245, 245, 247, 0.38);
+  --hairline: rgba(255, 255, 255, 0.11);
+  --fill-1: rgba(255, 255, 255, 0.045);
+  --fill-2: rgba(255, 255, 255, 0.075);
+  --track: rgba(255, 255, 255, 0.12);
+  --accent: #0a84ff;
+  --teal: #5ac8fa;
+  --purple: #af52de;
+  --orange: #ff9500;
+  --red: #ff453a;
+  --green: #30d158;
+  --green-text: #30d158;
+  --red-text: #ff6961;
+  --orange-text: #ffb340;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--bg);
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--label);
+  font-family: -apple-system, "SF Pro Text", "PingFang SC", "Noto Sans SC", sans-serif;
+  font-size: 13px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+select {
+  font-family: inherit;
+}
+
+button {
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  height: 52px;
+  background: var(--toolbar-bg);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.toolbar-inner {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  max-width: 1120px;
+  height: 100%;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.brand-title {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.brand-sub {
+  font-size: 10.5px;
+  color: var(--label-3);
+  white-space: nowrap;
+}
+
+.dir-nav {
+  display: flex;
+  gap: 4px;
+  margin: 0 auto;
+}
+
+.dir-nav a {
+  padding: 4px 8px;
+  border-radius: 5px;
+  color: var(--label-2);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.dir-nav a:hover {
+  background: var(--fill-1);
+  color: var(--label);
+}
+
+.dir-nav a.is-active {
+  background: var(--fill-2);
+  color: var(--label);
+  font-weight: 600;
+}
+
+.toolbar-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.segmented {
+  display: flex;
+  padding: 1px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+}
+
+.seg-btn {
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--label-2);
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.seg-btn.is-active {
+  background: var(--fill-2);
+  color: var(--label);
+  font-weight: 600;
+}
+
+.scenario-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.scenario-label {
+  font-size: 10.5px;
+  color: var(--label-3);
+}
+
+#scenario-select {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  background: var(--panel-bg);
+  color: var(--label);
+  font-size: 11px;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 12px 24px 0;
+  color: var(--label-2);
+  font-size: 11px;
+}
+
+.legend-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+}
+
+.legend-label {
+  margin-right: 4px;
+  color: var(--label-3);
+  font-size: 10.5px;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.legend-item svg {
+  display: block;
+  color: var(--label-2);
+}
+
+.page {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 16px 24px 16px;
+}
+
+section[data-direction] {
+  margin-top: 36px;
+  scroll-margin-top: 68px;
+}
+
+.dir-head h2 {
+  margin: 0 0 8px;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.dir-head p {
+  max-width: 760px;
+  margin: 0;
+  color: var(--label-2);
+  font-size: 13px;
+  line-height: 1.7;
+  text-wrap: pretty;
+}
+
+.panel-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 24px;
+  margin-top: 16px;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  width: 400px;
+  max-width: 100%;
+  height: 700px;
+  overflow: hidden;
+  background: var(--panel-bg);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+}
+
+.panel[data-width="wide"] {
+  width: 620px;
+}
+
+.panel-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.scope-icon {
+  display: flex;
+  flex: none;
+  color: var(--accent);
+}
+
+.scope-name {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.scope-sub {
+  color: var(--label-3);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+}
+
+.panel-scroll {
+  flex: 1;
+  min-height: 0;
+  padding: 16px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.panel-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.panel-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.panel-scroll::-webkit-scrollbar-thumb {
+  background: var(--fill-2);
+  border-radius: 4px;
+}
+
+.headline {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.45;
+  letter-spacing: 0.005em;
+}
+
+.headline.green {
+  color: var(--green-text);
+}
+
+.headline.red {
+  color: var(--red-text);
+}
+
+.headline.gray {
+  color: var(--label-2);
+}
+
+.dot {
+  display: inline-block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.tone-accent {
+  background: var(--accent);
+}
+
+.tone-neutral {
+  background: var(--label-3);
+}
+
+.tone-retry {
+  background: var(--orange);
+}
+
+.tone-danger {
+  background: var(--red);
+}
+
+.tone-teal {
+  background: var(--teal);
+}
+
+.tone-purple {
+  background: var(--purple);
+}
+
+.danger-text {
+  color: var(--red-text);
+  font-weight: 600;
+}
+
+/* Direction A: metrics */
+
+.metrics {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.panel[data-width="narrow"] .metrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.panel[data-width="wide"] .metrics {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.metric {
+  padding: 12px 12px 8px;
+  border-radius: 6px;
+  background: var(--fill-1);
+}
+
+.metric-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--label-2);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.metric-num {
+  margin-top: 4px;
+  font-size: 25px;
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.metric-num.is-danger {
+  color: var(--red-text);
+}
+
+.metric-num.is-retry {
+  color: var(--orange-text);
+}
+
+/* Direction B: rhythm */
+
+.rhythm {
+  margin-top: 16px;
+}
+
+.rhythm-track {
+  display: flex;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 1px;
+  background: var(--track);
+}
+
+.rhythm-seg {
+  display: block;
+  height: 100%;
+}
+
+.rhythm-seg.accent {
+  background: var(--accent);
+}
+
+.rhythm-seg.queued {
+  background: var(--label-3);
+}
+
+.rhythm-seg.retrying {
+  background: var(--orange);
+}
+
+.rhythm-labels {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 16px;
+  margin-top: 8px;
+}
+
+.rhythm-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--label-2);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.rhythm-num {
+  color: var(--label);
+  font-weight: 600;
+}
+
+.rhythm-num.is-danger {
+  color: var(--red-text);
+}
+
+.rhythm-fail {
+  margin-left: auto;
+}
+
+/* Shared section blocks */
+
+.block {
+  margin-top: 20px;
+}
+
+.sec-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sec-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sec-meta {
+  color: var(--label-3);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.def {
+  margin: 4px 0 8px;
+  color: var(--label-2);
+  font-size: 11px;
+  line-height: 1.6em;
+}
+
+.def-line {
+  display: block;
+}
+
+.def-sub {
+  color: var(--label-3);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.empty-line {
+  margin: 12px 0 0;
+  color: var(--label-2);
+  font-size: 11px;
+}
+
+/* Coverage */
+
+.cov-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) repeat(4, 40px);
+  column-gap: 12px;
+  align-items: center;
+}
+
+.cov-head {
+  padding-bottom: 8px;
+  color: var(--label-3);
+  font-size: 10.5px;
+}
+
+.cov-head .num {
+  text-align: right;
+}
+
+.cov-row {
+  padding: 6px 0;
+}
+
+.cov-row.is-total {
+  padding-top: 12px;
+  border-top: 1px solid var(--hairline);
+}
+
+.cov-row.is-total .cov-name,
+.cov-row.is-total .num {
+  color: var(--label);
+  font-weight: 600;
+}
+
+.cov-name-cell {
+  min-width: 0;
+}
+
+.cov-name {
+  display: block;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cov-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 150px;
+  margin-top: 4px;
+}
+
+.bar {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--track);
+}
+
+.bar > i {
+  display: block;
+  height: 100%;
+}
+
+.bar-segmented {
+  display: flex;
+}
+
+.bar-segmented > i {
+  flex: none;
+}
+
+.seg-rewrite {
+  background: var(--purple);
+}
+
+.seg-translated {
+  background: var(--teal);
+}
+
+.seg-original {
+  background: var(--label-3);
+}
+
+.bar-teal > i {
+  background: var(--teal);
+}
+
+.bar-purple > i {
+  background: var(--purple);
+}
+
+.num {
+  color: var(--label-2);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.cov-nrow {
+  padding: 6px 0;
+}
+
+.cov-nrow.is-total {
+  padding-top: 12px;
+  border-top: 1px solid var(--hairline);
+}
+
+.cov-nrow.is-total .cov-name,
+.cov-nrow.is-total .cov-inline b {
+  color: var(--label);
+  font-weight: 600;
+}
+
+.cov-nrow-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.cov-nrow .cov-bars {
+  max-width: none;
+  margin-top: 4px;
+}
+
+.cov-total {
+  flex: none;
+  color: var(--label-3);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cov-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 4px;
+  color: var(--label-2);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cov-inline span {
+  display: inline-flex;
+  align-items: center;
+}
+
+.cov-inline .dot {
+  width: 5px;
+  height: 5px;
+  margin-right: 4px;
+}
+
+.cov-inline b {
+  font-weight: 400;
+}
+
+.cov-compact .cov-head {
+  padding-bottom: 4px;
+  font-size: 10.5px;
+}
+
+.cov-compact .cov-row {
+  min-height: 0;
+  padding: 6px 0;
+}
+
+.cov-compact .cov-name {
+  font-size: 11px;
+}
+
+.cov-compact .cov-bars {
+  max-width: 120px;
+  margin-top: 4px;
+  gap: 4px;
+}
+
+.cov-compact .num {
+  font-size: 10.5px;
+}
+
+.cov-compact .cov-nrow {
+  padding: 6px 0;
+}
+
+.cov-compact .cov-inline {
+  font-size: 10.5px;
+}
+
+.cov-block-compact .def {
+  margin: 4px 0 8px;
+  font-size: 10.5px;
+}
+
+/* Failures */
+
+.anomaly {
+  margin-top: 20px;
+}
+
+.fail-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.fail-group {
+  padding: 8px 0 8px 12px;
+  border-left: 2px solid var(--red);
+}
+
+.fail-toggle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.fail-type {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  color: var(--label-2);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.fail-chevron {
+  flex: none;
+  color: var(--label-3);
+  transition: transform 120ms ease;
+}
+
+.fail-toggle[aria-expanded="true"] .fail-chevron {
+  transform: rotate(90deg);
+}
+
+.fail-source {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.fail-reason {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--label-2);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fail-count {
+  flex: none;
+  margin-left: auto;
+  color: var(--label-3);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.fail-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.fail-body[hidden],
+.c-fail-body[hidden] {
+  display: none;
+}
+
+.fail-meta {
+  color: var(--label-2);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.retry-btn {
+  margin-top: 8px;
+  padding: 4px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  background: var(--fill-1);
+  color: var(--label);
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.retry-btn:hover {
+  background: var(--fill-2);
+}
+
+.retry-btn:disabled {
+  background: var(--fill-1);
+  color: var(--label-2);
+  cursor: default;
+}
+
+.retry-done {
+  margin-top: 4px;
+  color: var(--green-text);
+  font-size: 11px;
+}
+
+/* Notices */
+
+.notice-danger {
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid rgba(255, 59, 48, 0.18);
+  border-radius: 6px;
+  background: rgba(255, 59, 48, 0.07);
+}
+
+[data-theme="dark"] .notice-danger {
+  border-color: rgba(255, 69, 58, 0.22);
+  background: rgba(255, 69, 58, 0.08);
+}
+
+.notice-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.notice-text {
+  flex: 1;
+  min-width: 140px;
+  color: var(--label);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.ghost-btn {
+  padding: 4px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  background: var(--panel-bg);
+  color: var(--label);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ghost-btn:hover {
+  background: var(--fill-1);
+}
+
+.empty-note {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 12px;
+  color: var(--label-2);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.empty-note p {
+  margin: 0;
+}
+
+/* Activity */
+
+.activity-foot {
+  margin-top: 20px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hairline);
+  color: var(--label-3);
+  font-size: 10.5px;
+  line-height: 1.6;
+  font-variant-numeric: tabular-nums;
+}
+
+.activity-card {
+  margin-top: 20px;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--fill-1);
+}
+
+.activity-big {
+  margin-top: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.activity-break {
+  margin-top: 2px;
+  color: var(--label-2);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Direction C */
+
+.c-scroll {
+  padding: 0;
+}
+
+.c-summary {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 16px 16px 12px;
+  background: var(--panel-bg);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.c-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-top: 12px;
+}
+
+.c-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--label-2);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.c-count b {
+  color: var(--label);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.c-count b.is-danger {
+  color: var(--red-text);
+}
+
+.c-count b.is-retry {
+  color: var(--orange-text);
+}
+
+.c-content {
+  padding: 16px;
+}
+
+.c-list-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.c-source {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.c-source:first-of-type {
+  border-top: 1px solid var(--hairline);
+}
+
+.c-src-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.c-src-name {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.c-src-total {
+  flex: none;
+  color: var(--label-3);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.c-source .cov-bars {
+  max-width: none;
+  margin-top: 8px;
+}
+
+.c-source .bar {
+  height: 3px;
+}
+
+.c-src-nums {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 4px;
+  color: var(--label-2);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.c-src-nums span {
+  display: inline-flex;
+  align-items: center;
+}
+
+.c-src-nums .dot {
+  width: 5px;
+  height: 5px;
+  margin-right: 4px;
+}
+
+.c-src-nums b {
+  font-weight: 500;
+}
+
+.c-fail {
+  margin-top: 8px;
+  padding-left: 8px;
+  border-left: 2px solid var(--red);
+}
+
+.c-fail-body {
+  margin-top: 4px;
+}
+
+.def-c {
+  margin-bottom: 4px;
+}
+
+.page-footer {
+  max-width: 1120px;
+  margin: 8px auto 0;
+  padding: 20px 24px 40px;
+  border-top: 1px solid var(--hairline);
+  color: var(--label-3);
+  font-size: 10.5px;
+}
+
+@media (max-width: 900px) {
+  .nav-text {
+    display: none;
+  }
+
+  .dir-nav a {
+    padding: 4px 12px;
+  }
+}
+
+@media (max-width: 780px) {
+  .brand-sub,
+  .scenario-label {
+    display: none;
+  }
+
+  .toolbar-inner {
+    gap: 12px;
+    padding: 0 16px;
+  }
+
+  .legend,
+  .page,
+  .page-footer {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+}
+
+@media (max-width: 560px) {
+  .dir-nav {
+    display: none;
+  }
+}
+</style>
+</head>
+<body>
+
+<header class="toolbar">
+  <div class="toolbar-inner">
+    <div class="brand">
+      <span class="brand-title">AI 任务看板</span>
+      <span class="brand-sub">NetNewsWire · 右侧栏重设计</span>
+    </div>
+    <nav class="dir-nav" aria-label="方向跳转">
+      <a href="#dir-A" data-target="A" class="is-active"><span class="nav-letter">A</span><span class="nav-text"> 数字总览</span></a>
+      <a href="#dir-B" data-target="B"><span class="nav-letter">B</span><span class="nav-text"> 节奏与异常</span></a>
+      <a href="#dir-C" data-target="C"><span class="nav-letter">C</span><span class="nav-text"> 订阅源优先</span></a>
+    </nav>
+    <div class="toolbar-controls">
+      <div class="segmented" role="group" aria-label="外观">
+        <button type="button" id="theme-light" class="seg-btn is-active" aria-pressed="true">浅色</button>
+        <button type="button" id="theme-dark" class="seg-btn" aria-pressed="false">深色</button>
+      </div>
+      <div class="scenario-field">
+        <label class="scenario-label" for="scenario-select">场景</label>
+        <select id="scenario-select" aria-label="场景">
+          <option value="normal" selected>正常</option>
+          <option value="failure">有失败</option>
+          <option value="retrying">失败重试中</option>
+          <option value="gateway">网关未配置</option>
+          <option value="empty-list">空列表</option>
+          <option value="idle">空闲零任务</option>
+          <option value="coverage-unavailable">覆盖不可用</option>
+        </select>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="legend" aria-label="图例">
+  <div class="legend-group">
+    <span class="legend-label">作用域</span>
+    <span class="legend-item">
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="2.8" cy="9.2" r="1" fill="currentColor" stroke="none"></circle><path d="M4.1 6.9a3.3 3.3 0 0 1 1.7 1.7"></path><path d="M3.2 4.3a5.9 5.9 0 0 1 4.5 4.5"></path></svg>
+      订阅源
+    </span>
+    <span class="legend-item">
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 3.2h3.1l1.1 1.3h4.8v5.2a.8.8 0 0 1-.8.8H2.3a.8.8 0 0 1-.8-.8V3.2Z"></path></svg>
+      文件夹
+    </span>
+    <span class="legend-item">
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="6" cy="6" r="4.5"></circle><path d="M6 3.6v2.5l1.7 1.1"></path></svg>
+      今天
+    </span>
+    <span class="legend-item">
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="6" cy="6" r="4.5"></circle></svg>
+      全部未读
+    </span>
+    <span class="legend-item">
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M6 1.5l1.35 2.74 3.02.44-2.18 2.13.51 3.01L6 8.4l-2.7 1.42.51-3.01L1.63 4.68l3.02-.44L6 1.5Z"></path></svg>
+      已加星
+    </span>
+  </div>
+  <div class="legend-group">
+    <span class="legend-label">任务类型</span>
+    <span class="legend-item"><span class="dot tone-teal" aria-hidden="true"></span>正文翻译</span>
+    <span class="legend-item"><span class="dot tone-accent" aria-hidden="true"></span>标题翻译</span>
+    <span class="legend-item"><span class="dot tone-purple" aria-hidden="true"></span>改写</span>
+  </div>
+  <div class="legend-group">
+    <span class="legend-label">数字</span>
+    <span class="legend-item"><span class="dot tone-accent" aria-hidden="true"></span>强调</span>
+    <span class="legend-item"><span class="dot tone-neutral" aria-hidden="true"></span>中性</span>
+    <span class="legend-item"><span class="dot tone-retry" aria-hidden="true"></span>重试</span>
+    <span class="legend-item"><span class="dot tone-danger" aria-hidden="true"></span>失败</span>
+  </div>
+</div>
+
+<main class="page">
+
+  <section data-direction="A" id="dir-A" aria-labelledby="dir-A-title">
+    <div class="dir-head">
+      <h2 id="dir-A-title">A · 数字总览</h2>
+      <p>先给总量，再给分布。四格把当前压力一眼说完；覆盖率表逐源回答哪些源拖后腿，异常紧随其后，用红边线截住视线。</p>
+    </div>
+    <div class="panel-row">
+      <article class="panel" data-width="narrow" data-dir="A" aria-label="方向 A 窄档面板"></article>
+      <article class="panel" data-width="wide" data-dir="A" aria-label="方向 A 宽档面板"></article>
+    </div>
+  </section>
+
+  <section data-direction="B" id="dir-B" aria-labelledby="dir-B-title">
+    <div class="dir-head">
+      <h2 id="dir-B-title">B · 节奏与异常</h2>
+      <p>先给节奏，再给异常。节奏条把 8 / 12 / 1 读成一句话，失败区紧接其后；覆盖率退到下方做参考，活动收成一行脚注。</p>
+    </div>
+    <div class="panel-row">
+      <article class="panel" data-width="narrow" data-dir="B" aria-label="方向 B 窄档面板"></article>
+      <article class="panel" data-width="wide" data-dir="B" aria-label="方向 B 宽档面板"></article>
+    </div>
+  </section>
+
+  <section data-direction="C" id="dir-C" aria-labelledby="dir-C-title">
+    <div class="dir-head">
+      <h2 id="dir-C-title">C · 订阅源优先</h2>
+      <p>以订阅源为第一公民。每行一个源、两条进度，异常就地标红并汇总到顶部；摘要常驻，活动单独成卡。</p>
+    </div>
+    <div class="panel-row">
+      <article class="panel" data-width="narrow" data-dir="C" aria-label="方向 C 窄档面板"></article>
+      <article class="panel" data-width="wide" data-dir="C" aria-label="方向 C 宽档面板"></article>
+    </div>
+  </section>
+
+</main>
+
+<footer class="page-footer">任务数字按任务条目计，头部篇数来自当前时间线。</footer>
+
+<script>
+(function () {
+  'use strict';
+
+  var DATA = {
+    scope: {
+      name: '全部未读',
+      subtitlePrefix: '智能订阅 · 全部未读',
+      articleCount: 128
+    },
+    tasks: {
+      running: 8,
+      queued: 12,
+      retrying: 1,
+      failed: 3,
+      rewriteRunning: 3,
+      translationRunning: 5
+    },
+    coverage: {
+      overlap: 90,
+      definition: '已翻译、已改写可重叠；未处理 = 两者都没完成的原文数',
+      barDefinition: '条：改写 / 仅译 / 原文',
+      definitionC: '已翻译、已改写可重叠；未处理 = 两者都没完成的原文数。',
+      rows: [
+        { source: '少数派', total: 24, translated: 22, rewritten: 20, untranslated: 0 },
+        { source: '阮一峰的网络日志', total: 18, translated: 17, rewritten: 16, untranslated: 1 },
+        { source: '机器之心', total: 22, translated: 20, rewritten: 19, untranslated: 1 },
+        { source: '36氪', total: 28, translated: 24, rewritten: 20, untranslated: 3 },
+        { source: '爱范儿', total: 20, translated: 16, rewritten: 13, untranslated: 2 },
+        { source: 'Hacker News', total: 16, translated: 10, rewritten: 10, untranslated: 4 }
+      ],
+      summary: { source: '合计', total: 128, translated: 109, rewritten: 98, untranslated: 11 }
+    },
+    failures: [
+      { source: '少数派', type: 'rewrite', reason: '请求超时（60 秒）', items: 1 },
+      { source: '36氪', type: 'body', reason: '网关返回 429 限流', items: 1 },
+      { source: '爱范儿', type: 'title', reason: '返回内容为空', items: 1 }
+    ],
+    activity: {
+      completed: 87,
+      body: 42,
+      title: 18,
+      rewrite: 27,
+      lastAgo: '3 分钟前'
+    }
+  };
+
+  var SCENARIOS = {
+    normal: {
+      headline: 'active',
+      tone: 'green',
+      counts: 'data',
+      failures: 'compact',
+      coverage: 'full',
+      notice: null,
+      articleCount: 128
+    },
+    failure: {
+      headline: 'active',
+      tone: 'green',
+      counts: 'data',
+      failures: 'first',
+      coverage: 'full',
+      notice: null,
+      articleCount: 128
+    },
+    retrying: {
+      headline: 'active',
+      tone: 'green',
+      counts: 'data',
+      failures: 'retrying',
+      coverage: 'full',
+      notice: null,
+      articleCount: 128
+    },
+    gateway: {
+      headline: 'gateway',
+      tone: 'red',
+      counts: 'zero',
+      failures: 'hidden',
+      coverage: 'full',
+      notice: 'gateway',
+      articleCount: 128
+    },
+    'empty-list': {
+      headline: 'none',
+      tone: 'gray',
+      counts: 'zero',
+      failures: 'hidden',
+      coverage: 'empty',
+      notice: 'idle',
+      articleCount: 0
+    },
+    idle: {
+      headline: 'none',
+      tone: 'gray',
+      counts: 'zero',
+      failures: 'hidden',
+      coverage: 'full',
+      notice: 'idle',
+      articleCount: 128
+    },
+    'coverage-unavailable': {
+      headline: 'active',
+      tone: 'green',
+      counts: 'data',
+      failures: 'compact',
+      coverage: 'unavailable',
+      notice: null,
+      articleCount: 128
+    }
+  };
+
+  var METRIC_DEFS = [
+    { key: 'running', label: '进行中', tone: 'tone-accent' },
+    { key: 'queued', label: '排队', tone: 'tone-neutral' },
+    { key: 'retrying', label: '等待重试', tone: 'tone-retry' },
+    { key: 'failed', label: '失败', tone: 'tone-danger' }
+  ];
+
+  var FAILURE_TYPES = {
+    rewrite: { label: '改写失败', tone: 'tone-purple' },
+    body: { label: '正文翻译失败', tone: 'tone-teal' },
+    title: { label: '标题翻译失败', tone: 'tone-accent' }
+  };
+
+  var ICONS = {
+    circle16: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="6"></circle></svg>',
+    chevron8: '<svg class="fail-chevron" width="8" height="8" viewBox="0 0 8 8" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 1.5 5.5 4 2.5 6.5"></path></svg>'
+  };
+
+  var retryState = {};
+  var expandedFailures = {};
+  var retryTimer = null;
+
+  function esc(value) {
+    return String(value).replace(/[&<>"']/g, function (character) {
+      return {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      }[character];
+    });
+  }
+
+  function widthPct(part, whole) {
+    if (!whole) {
+      return '0%';
+    }
+    return (Math.round((part / whole) * 1000) / 10) + '%';
+  }
+
+  function toneClass(key, value) {
+    if (key === 'failed' && value > 0) {
+      return 'is-danger';
+    }
+    if (key === 'retrying' && value > 0) {
+      return 'is-retry';
+    }
+    return '';
+  }
+
+  function buildView(key) {
+    var scenario = SCENARIOS[key] || SCENARIOS.normal;
+    var headline;
+    if (scenario.headline === 'active') {
+      headline = '正在改写 ' + DATA.tasks.rewriteRunning + ' 篇、翻译 ' + DATA.tasks.translationRunning + ' 篇';
+    } else if (scenario.headline === 'gateway') {
+      headline = 'AI 网关未配置';
+    } else {
+      headline = '没有正在进行中的任务';
+    }
+    var counts = scenario.counts === 'zero'
+      ? { running: 0, queued: 0, retrying: 0, failed: 0 }
+      : {
+          running: DATA.tasks.running,
+          queued: DATA.tasks.queued,
+          retrying: DATA.tasks.retrying,
+          failed: DATA.tasks.failed
+        };
+    return {
+      scenario: key,
+      headline: headline,
+      tone: scenario.tone,
+      counts: counts,
+      failures: scenario.failures === 'hidden' ? [] : DATA.failures,
+      failureMode: scenario.failures,
+      coverageMode: scenario.coverage,
+      notice: scenario.notice,
+      articleCount: scenario.articleCount
+    };
+  }
+
+  function coverageMeta() {
+    return DATA.coverage.summary.total + ' 篇 · 译文 ' + DATA.coverage.summary.translated + ' · ' + DATA.coverage.rows.length + ' 个订阅源';
+  }
+
+  function coverageDefinition() {
+    return '<div class="def">' +
+      '<span class="def-line">' + esc(DATA.coverage.definition) + '</span>' +
+      '<span class="def-line def-sub">' + esc(DATA.coverage.barDefinition) + '</span>' +
+    '</div>';
+  }
+
+  function getFailureStatus(view, index) {
+    if (Object.prototype.hasOwnProperty.call(retryState, index)) {
+      return retryState[index];
+    }
+    if (view.failureMode === 'first' && index === 0) {
+      return 'idle';
+    }
+    if (view.failureMode === 'retrying') {
+      if (index === 0) {
+        return 'retrying';
+      }
+      if (index === 1) {
+        return 'queued';
+      }
+    }
+    return null;
+  }
+
+  function isFailureExpanded(view, index) {
+    if (Object.prototype.hasOwnProperty.call(expandedFailures, index)) {
+      return expandedFailures[index];
+    }
+    if (view.scenario === 'failure') {
+      return index === 0;
+    }
+    if (view.scenario === 'retrying') {
+      return index < 2;
+    }
+    return false;
+  }
+
+  function scopeHeader(view) {
+    return '<div class="panel-head">' +
+      '<span class="scope-icon">' + ICONS.circle16 + '</span>' +
+      '<div class="scope-text">' +
+        '<div class="scope-name">' + esc(DATA.scope.name) + '</div>' +
+        '<div class="scope-sub">' + esc(DATA.scope.subtitlePrefix) + ' · ' + view.articleCount + ' 篇</div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  function headlineHTML(view) {
+    return '<div class="headline ' + view.tone + '" data-role="headline">' + esc(view.headline) + '</div>';
+  }
+
+  function metricsGrid(view) {
+    return '<div class="metrics">' + METRIC_DEFS.map(function (definition) {
+      var value = view.counts[definition.key];
+      var extra = toneClass(definition.key, value);
+      return '<div class="metric" data-metric="' + definition.key + '">' +
+        '<div class="metric-label"><span class="dot ' + definition.tone + '" aria-hidden="true"></span>' + definition.label + '</div>' +
+        '<div class="metric-num' + (extra ? ' ' + extra : '') + '"><span data-value="' + value + '">' + value + '</span></div>' +
+      '</div>';
+    }).join('') + '</div>';
+  }
+
+  function rhythmStrip(view) {
+    var total = view.counts.running + view.counts.queued + view.counts.retrying;
+    var segments = [
+      { key: 'running', label: '进行中', tone: 'tone-accent', segment: 'accent' },
+      { key: 'queued', label: '排队', tone: 'tone-neutral', segment: 'queued' },
+      { key: 'retrying', label: '等待重试', tone: 'tone-retry', segment: 'retrying' }
+    ];
+    var track = segments.map(function (segment) {
+      return '<span class="rhythm-seg ' + segment.segment + '" style="width:' + widthPct(view.counts[segment.key], total) + '"></span>';
+    }).join('');
+    var labels = segments.map(function (segment) {
+      var value = view.counts[segment.key];
+      return '<span class="rhythm-item" data-metric="' + segment.key + '">' +
+        '<span class="dot ' + segment.tone + '" aria-hidden="true"></span>' + segment.label + ' ' +
+        '<span class="rhythm-num" data-value="' + value + '">' + value + '</span>' +
+      '</span>';
+    }).join('');
+    var failed = view.counts.failed;
+    labels += '<span class="rhythm-item rhythm-fail" data-metric="failed">' +
+      '<span class="dot tone-danger" aria-hidden="true"></span>失败 ' +
+      '<span class="rhythm-num' + (failed > 0 ? ' is-danger' : '') + '" data-value="' + failed + '">' + failed + '</span>' +
+    '</span>';
+    return '<div class="rhythm">' +
+      '<div class="rhythm-track">' + track + '</div>' +
+      '<div class="rhythm-labels">' + labels + '</div>' +
+    '</div>';
+  }
+
+  function coverageOverlap(row) {
+    return row.translated + row.rewritten + row.untranslated - row.total;
+  }
+
+  function onlyTranslated(row) {
+    return row.translated - coverageOverlap(row);
+  }
+
+  function barGroup(row) {
+    var segments = [
+      { key: 'rewrite', cls: 'seg-rewrite', value: row.rewritten },
+      { key: 'translated', cls: 'seg-translated', value: onlyTranslated(row) },
+      { key: 'original', cls: 'seg-original', value: row.untranslated }
+    ];
+    var parts = segments.map(function (segment) {
+      var width = row.total ? (segment.value / row.total) * 100 : 0;
+      return '<i class="' + segment.cls + '" data-seg="' + segment.key + '" data-value="' + segment.value + '" style="width:' + width.toFixed(4) + '%"></i>';
+    }).join('');
+    return '<div class="cov-bars"><div class="bar bar-segmented">' + parts + '</div></div>';
+  }
+
+  function dualBarGroup(row) {
+    return '<div class="cov-bars">' +
+      '<div class="bar bar-teal"><i style="width:' + widthPct(row.translated, row.total) + '"></i></div>' +
+      '<div class="bar bar-purple"><i style="width:' + widthPct(row.rewritten, row.total) + '"></i></div>' +
+    '</div>';
+  }
+
+  function covWideHead() {
+    return '<div class="cov-head cov-grid">' +
+      '<span>订阅源</span>' +
+      '<span class="num">总数</span>' +
+      '<span class="num">改写</span>' +
+      '<span class="num">仅译</span>' +
+      '<span class="num">原文</span>' +
+    '</div>';
+  }
+
+  function covWideRow(row, isTotal) {
+    return '<div class="cov-row cov-grid' + (isTotal ? ' is-total' : '') + '"' + (isTotal ? '' : ' data-source="' + esc(row.source) + '"') + '>' +
+      '<div class="cov-name-cell">' +
+        '<span class="cov-name">' + esc(row.source) + '</span>' +
+        barGroup(row) +
+      '</div>' +
+      '<span class="num">' + row.total + '</span>' +
+      '<span class="num">' + row.rewritten + '</span>' +
+      '<span class="num">' + onlyTranslated(row) + '</span>' +
+      '<span class="num">' + row.untranslated + '</span>' +
+    '</div>';
+  }
+
+  function covNarrowRow(row, isTotal) {
+    return '<div class="cov-nrow' + (isTotal ? ' is-total' : '') + '"' + (isTotal ? '' : ' data-source="' + esc(row.source) + '"') + '>' +
+      '<div class="cov-nrow-top">' +
+        '<span class="cov-name">' + esc(row.source) + '</span>' +
+        '<span class="cov-total">' + row.total + ' 篇</span>' +
+      '</div>' +
+      barGroup(row) +
+      '<div class="cov-inline">' +
+        '<span><i class="dot tone-purple" aria-hidden="true"></i>改写 <b>' + row.rewritten + '</b></span>' +
+        '<span><i class="dot tone-teal" aria-hidden="true"></i>仅译 <b>' + onlyTranslated(row) + '</b></span>' +
+        '<span><i class="dot tone-neutral" aria-hidden="true"></i>原文 <b>' + row.untranslated + '</b></span>' +
+      '</div>' +
+    '</div>';
+  }
+
+  function coverageBody(view, width, compact) {
+    if (view.coverageMode === 'empty') {
+      return '<p class="empty-line">列表内没有文章</p>';
+    }
+    if (view.coverageMode === 'unavailable') {
+      return '<p class="empty-line">覆盖率暂时不可用</p>';
+    }
+    var classes = compact ? ' cov-compact' : '';
+    if (width === 'wide') {
+      return '<div class="cov-wide' + classes + '">' +
+        covWideHead() +
+        DATA.coverage.rows.map(function (row) {
+          return covWideRow(row, false);
+        }).join('') +
+        covWideRow(DATA.coverage.summary, true) +
+      '</div>';
+    }
+    return '<div class="cov-narrow' + classes + '">' +
+      DATA.coverage.rows.map(function (row) {
+        return covNarrowRow(row, false);
+      }).join('') +
+      covNarrowRow(DATA.coverage.summary, true) +
+    '</div>';
+  }
+
+  function coverageA(view, width) {
+    var full = view.coverageMode === 'full';
+    return '<section class="block" data-role="coverage">' +
+      '<div class="sec-head">' +
+        '<span class="sec-title">覆盖率</span>' +
+        (full ? '<span class="sec-meta">' + coverageMeta() + '</span>' : '') +
+      '</div>' +
+      (full ? coverageDefinition() : '') +
+      coverageBody(view, width, false) +
+    '</section>';
+  }
+
+  function coverageB(view, width) {
+    var full = view.coverageMode === 'full';
+    return '<section class="block cov-block-compact" data-role="coverage">' +
+      '<div class="sec-head">' +
+        '<span class="sec-title">覆盖率</span>' +
+        (full ? '<span class="sec-meta">' + coverageMeta() + '</span>' : '') +
+      '</div>' +
+      (full ? coverageDefinition() : '') +
+      coverageBody(view, width, true) +
+    '</section>';
+  }
+
+  function failureTypeHTML(failure) {
+    var type = FAILURE_TYPES[failure.type];
+    if (!type) {
+      return '';
+    }
+    return '<span class="fail-type">' +
+      '<span class="dot ' + type.tone + '" aria-hidden="true"></span>' + esc(type.label) +
+    '</span>';
+  }
+
+  function failureActionHTML(failure, index, view) {
+    var status = getFailureStatus(view, index);
+    if (status === 'retrying') {
+      return '<button type="button" class="retry-btn" disabled>正在重试…</button>';
+    }
+    if (status === 'queued') {
+      return '<div class="retry-done">已重新排队 ' + failure.items + ' 项</div>';
+    }
+    return '<button type="button" class="retry-btn" data-fail-index="' + index + '">重试全部</button>';
+  }
+
+  function failToggleHTML(failure, index, view, extraClass) {
+    var expanded = isFailureExpanded(view, index);
+    return '<button type="button" class="fail-toggle' + (extraClass ? ' ' + extraClass : '') + '"' +
+      ' data-fail-toggle="' + index + '" aria-expanded="' + expanded + '">' +
+      '<span class="fail-source">' + esc(failure.source) + '</span>' +
+      failureTypeHTML(failure) +
+      '<span class="fail-reason">' + esc(failure.reason) + '</span>' +
+      '<span class="fail-count">' + failure.items + ' 项</span>' +
+      ICONS.chevron8 +
+    '</button>';
+  }
+
+  function failGroupHTML(failure, index, view) {
+    var expanded = isFailureExpanded(view, index);
+    return '<div class="fail-group' + (expanded ? ' is-expanded' : '') + '" data-role="failure-group">' +
+      failToggleHTML(failure, index, view) +
+      '<div class="fail-body"' + (expanded ? '' : ' hidden') + '>' +
+        '<div class="fail-meta">涉及订阅源：' + esc(failure.source) + '</div>' +
+        failureActionHTML(failure, index, view) +
+      '</div>' +
+    '</div>';
+  }
+
+  function anomalySection(view) {
+    if (!view.failures.length) {
+      return '';
+    }
+    var items = DATA.failures.reduce(function (sum, failure) {
+      return sum + failure.items;
+    }, 0);
+    return '<section class="block anomaly">' +
+      '<div class="sec-head">' +
+        '<span class="sec-title">异常</span>' +
+        '<span class="sec-meta">' + DATA.failures.length + ' 组 · ' + items + ' 项</span>' +
+      '</div>' +
+      '<div class="fail-list">' + DATA.failures.map(function (failure, index) {
+        return failGroupHTML(failure, index, view);
+      }).join('') + '</div>' +
+    '</section>';
+  }
+
+  function noticeHTML(view) {
+    if (view.notice === 'gateway') {
+      return '<div class="notice-danger">' +
+        '<div class="notice-row">' +
+          '<span class="dot tone-danger" aria-hidden="true"></span>' +
+          '<span class="notice-text">AI 网关没有配置，任务不会开始。</span>' +
+          '<button type="button" class="ghost-btn">打开 AI 设置</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="empty-note">' +
+        '<p>打开 AI 设置，填入网关地址与密钥。</p>' +
+        '<p>配置完成后，任务才会开始排队。</p>' +
+      '</div>';
+    }
+    if (view.notice === 'idle') {
+      return '<div class="empty-note">' +
+        '<p>新文章：改写、标题翻译自动排队</p>' +
+        '<p>正文翻译：打开「翻译」标签时开始</p>' +
+      '</div>';
+    }
+    return '';
+  }
+
+  function activityFoot() {
+    var activity = DATA.activity;
+    return '<div class="activity-foot" data-role="activity">最近活动 · 今日完成 ' + activity.completed + ' 项：正文翻译 ' + activity.body + ' · 标题翻译 ' + activity.title + ' · 改写 ' + activity.rewrite + ' · 最后活动 ' + activity.lastAgo + '</div>';
+  }
+
+  function activityCard() {
+    var activity = DATA.activity;
+    return '<div class="activity-card" data-role="activity">' +
+      '<div class="sec-head">' +
+        '<span class="sec-title">最近活动</span>' +
+        '<span class="sec-meta">最后活动 ' + activity.lastAgo + '</span>' +
+      '</div>' +
+      '<div class="activity-big">今日完成 ' + activity.completed + ' 项</div>' +
+      '<div class="activity-break">正文翻译 ' + activity.body + ' · 标题翻译 ' + activity.title + ' · 改写 ' + activity.rewrite + '</div>' +
+    '</div>';
+  }
+
+  function cCounts(view) {
+    return METRIC_DEFS.map(function (definition) {
+      var value = view.counts[definition.key];
+      var extra = toneClass(definition.key, value);
+      return '<span class="c-count" data-metric="' + definition.key + '">' +
+        '<span class="dot ' + definition.tone + '" aria-hidden="true"></span>' + definition.label + ' ' +
+        '<b class="' + extra + '" data-value="' + value + '">' + value + '</b>' +
+      '</span>';
+    }).join('');
+  }
+
+  function cFailureBlock(failure, index, view) {
+    var expanded = isFailureExpanded(view, index);
+    return '<div class="c-fail' + (expanded ? ' is-expanded' : '') + '" data-role="failure-group">' +
+      failToggleHTML(failure, index, view, 'c-fail-toggle') +
+      '<div class="c-fail-body"' + (expanded ? '' : ' hidden') + '>' +
+        '<div class="fail-meta">涉及订阅源：' + esc(failure.source) + '</div>' +
+        failureActionHTML(failure, index, view) +
+      '</div>' +
+    '</div>';
+  }
+
+  function cSourceRow(row, view) {
+    var full = view.coverageMode === 'full';
+    var failureIndex = -1;
+    for (var i = 0; i < DATA.failures.length; i += 1) {
+      if (DATA.failures[i].source === row.source) {
+        failureIndex = i;
+        break;
+      }
+    }
+    var failureHTML = (view.failures.length && failureIndex >= 0)
+      ? cFailureBlock(DATA.failures[failureIndex], failureIndex, view)
+      : '';
+    return '<div class="c-source" data-source="' + esc(row.source) + '">' +
+      '<div class="c-src-top">' +
+        '<span class="c-src-name">' + esc(row.source) + '</span>' +
+        (full ? '<span class="c-src-total">' + row.total + ' 篇</span>' : '') +
+      '</div>' +
+      (full ? dualBarGroup(row) +
+        '<div class="c-src-nums">' +
+          '<span><i class="dot tone-teal" aria-hidden="true"></i>译文 <b>' + row.translated + '</b></span>' +
+          '<span><i class="dot tone-purple" aria-hidden="true"></i>改写 <b>' + row.rewritten + '</b></span>' +
+          '<span><i class="dot tone-neutral" aria-hidden="true"></i>原文 <b>' + row.untranslated + '</b></span>' +
+        '</div>' : '') +
+      failureHTML +
+    '</div>';
+  }
+
+  function cList(view) {
+    if (view.coverageMode === 'unavailable') {
+      return '<div class="c-list" data-role="coverage">' +
+        '<div class="c-list-head">' +
+          '<span class="sec-title">订阅源</span>' +
+        '</div>' +
+        '<p class="empty-line">覆盖率暂时不可用</p>' +
+      '</div>';
+    }
+    var full = view.coverageMode === 'full';
+    var stateLine = view.coverageMode === 'empty'
+      ? '<p class="empty-line">列表内没有文章</p>'
+      : '';
+    var rows = view.coverageMode === 'empty'
+      ? ''
+      : DATA.coverage.rows.map(function (row) {
+          return cSourceRow(row, view);
+        }).join('');
+    return '<div class="c-list" data-role="coverage">' +
+      '<div class="c-list-head">' +
+        '<span class="sec-title">订阅源</span>' +
+        (full ? '<span class="sec-meta">' + coverageMeta() + '</span>' : '') +
+      '</div>' +
+      (full ? '<p class="def def-c">' + esc(DATA.coverage.definitionC) + '</p>' : '') +
+      stateLine +
+      rows +
+    '</div>';
+  }
+
+  function renderA(view, width) {
+    return scopeHeader(view) +
+      '<div class="panel-scroll">' +
+        headlineHTML(view) +
+        metricsGrid(view) +
+        noticeHTML(view) +
+        coverageA(view, width) +
+        anomalySection(view) +
+        activityFoot() +
+      '</div>';
+  }
+
+  function renderB(view, width) {
+    return scopeHeader(view) +
+      '<div class="panel-scroll">' +
+        headlineHTML(view) +
+        rhythmStrip(view) +
+        noticeHTML(view) +
+        anomalySection(view) +
+        coverageB(view, width) +
+        activityFoot() +
+      '</div>';
+  }
+
+  function renderC(view) {
+    return scopeHeader(view) +
+      '<div class="panel-scroll c-scroll">' +
+        '<div class="c-summary">' +
+          headlineHTML(view) +
+          '<div class="c-counts">' + cCounts(view) + '</div>' +
+        '</div>' +
+        '<div class="c-content">' +
+          noticeHTML(view) +
+          cList(view) +
+          (view.coverageMode === 'unavailable' ? anomalySection(view) : '') +
+          activityCard() +
+        '</div>' +
+      '</div>';
+  }
+
+  function renderAll() {
+    var key = document.documentElement.getAttribute('data-scenario') || 'normal';
+    var view = buildView(key);
+    document.querySelectorAll('.panel').forEach(function (panel) {
+      var direction = panel.getAttribute('data-dir');
+      var width = panel.getAttribute('data-width');
+      if (direction === 'A') {
+        panel.innerHTML = renderA(view, width);
+      } else if (direction === 'B') {
+        panel.innerHTML = renderB(view, width);
+      } else {
+        panel.innerHTML = renderC(view);
+      }
+    });
+  }
+
+  function setTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    var lightButton = document.getElementById('theme-light');
+    var darkButton = document.getElementById('theme-dark');
+    var isLight = theme === 'light';
+    lightButton.classList.toggle('is-active', isLight);
+    darkButton.classList.toggle('is-active', !isLight);
+    lightButton.setAttribute('aria-pressed', String(isLight));
+    darkButton.setAttribute('aria-pressed', String(!isLight));
+  }
+
+  function setActiveNav(target) {
+    document.querySelectorAll('[data-target]').forEach(function (link) {
+      link.classList.toggle('is-active', link.getAttribute('data-target') === target);
+    });
+  }
+
+  function updateActiveOnScroll() {
+    var sections = document.querySelectorAll('section[data-direction]');
+    if (!sections.length) {
+      return;
+    }
+    var current = sections[0].getAttribute('data-direction');
+    var atBottom = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2;
+    if (atBottom) {
+      current = sections[sections.length - 1].getAttribute('data-direction');
+    } else {
+      sections.forEach(function (section) {
+        if (section.getBoundingClientRect().top <= 90) {
+          current = section.getAttribute('data-direction');
+        }
+      });
+    }
+    setActiveNav(current);
+  }
+
+  document.querySelectorAll('[data-target]').forEach(function (link) {
+    link.addEventListener('click', function (event) {
+      event.preventDefault();
+      var target = link.getAttribute('data-target');
+      var section = document.querySelector('section[data-direction="' + target + '"]');
+      if (section) {
+        section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+      setActiveNav(target);
+    });
+  });
+
+  document.getElementById('theme-light').addEventListener('click', function () {
+    setTheme('light');
+  });
+
+  document.getElementById('theme-dark').addEventListener('click', function () {
+    setTheme('dark');
+  });
+
+  document.getElementById('scenario-select').addEventListener('change', function (event) {
+    document.documentElement.setAttribute('data-scenario', event.target.value);
+    retryState = {};
+    expandedFailures = {};
+    if (retryTimer) {
+      window.clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+    renderAll();
+  });
+
+  document.addEventListener('click', function (event) {
+    var toggle = event.target instanceof Element ? event.target.closest('[data-fail-toggle]') : null;
+    if (!toggle) {
+      return;
+    }
+    var index = toggle.getAttribute('data-fail-toggle');
+    var expanded = toggle.getAttribute('aria-expanded') === 'true';
+    expandedFailures[index] = !expanded;
+    toggle.setAttribute('aria-expanded', String(!expanded));
+    var group = toggle.closest('.fail-group, .c-fail');
+    if (!group) {
+      return;
+    }
+    group.classList.toggle('is-expanded', !expanded);
+    var body = group.querySelector('.fail-body, .c-fail-body');
+    if (body) {
+      body.hidden = expanded;
+    }
+  });
+
+  document.addEventListener('click', function (event) {
+    var button = event.target instanceof Element ? event.target.closest('.retry-btn') : null;
+    if (!button || button.disabled) {
+      return;
+    }
+    var index = button.getAttribute('data-fail-index');
+    if (index === null) {
+      return;
+    }
+    expandedFailures[index] = true;
+    retryState[index] = 'retrying';
+    renderAll();
+    if (retryTimer) {
+      window.clearTimeout(retryTimer);
+    }
+    retryTimer = window.setTimeout(function () {
+      retryState[index] = 'queued';
+      renderAll();
+      retryTimer = null;
+    }, 1200);
+  });
+
+  window.addEventListener('scroll', updateActiveOnScroll, { passive: true });
+
+  renderAll();
+  setTheme(document.documentElement.getAttribute('data-theme') || 'light');
+  updateActiveOnScroll();
+})();
+</script>
+</body>
+</html>
