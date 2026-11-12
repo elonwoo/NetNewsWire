@@ -60,11 +60,55 @@ enum AIReaderWebBaseURL {
 /// stop working while one of those tabs has focus.
 final class AIReaderWebView: WKWebView {
 
+	override init(frame: CGRect, configuration: WKWebViewConfiguration) {
+		super.init(frame: frame, configuration: configuration)
+		navigationDelegate = self
+		uiDelegate = self
+	}
+
+	required init?(coder: NSCoder) {
+		super.init(coder: coder)
+		navigationDelegate = self
+		uiDelegate = self
+	}
+
 	override func keyDown(with event: NSEvent) {
 		if MainWindowKeyboardHandler.shared.keydown(event, in: self) {
 			return
 		}
 		super.keyDown(with: event)
+	}
+}
+
+// MARK: - WKNavigationDelegate & WKUIDelegate
+
+extension AIReaderWebView: WKNavigationDelegate, WKUIDelegate {
+
+	func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, preferences: WKWebpagePreferences, decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
+		// The reading pages offer no way back once they navigate away, so links
+		// open in the system browser, matching the article view.
+		if navigationAction.navigationType == .linkActivated {
+			if let url = navigationAction.request.url {
+				openInBrowser(url, flags: navigationAction.modifierFlags)
+			}
+			decisionHandler(.cancel, preferences)
+			return
+		}
+
+		decisionHandler(.allow, preferences)
+	}
+
+	func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+		if let url = navigationAction.request.url {
+			openInBrowser(url, flags: navigationAction.modifierFlags)
+		}
+
+		return nil
+	}
+
+	private func openInBrowser(_ url: URL, flags: NSEvent.ModifierFlags) {
+		let invert = flags.contains(.shift) || flags.contains(.command)
+		Browser.open(url.absoluteString, invertPreference: invert)
 	}
 }
 
