@@ -79,6 +79,13 @@ final class MainWindowController: NSWindowController, NSUserInterfaceValidations
 	var aiJobPanelRefreshHandler: (() -> Void)?
 	private var timelineRefreshToken: NSObjectProtocol?
 	private var currentSearchField: NSSearchField?
+	private var searchToolbarView: SearchToolbarView?
+	private var isCollapsingSearchField = false
+	/// Changing the display mode re-adds custom-view items, so the removal that
+	/// happens during our own presentation switch must not tear the search down.
+	private var isAdjustingSearchToolbarPresentation = false
+	private var savedSearchDisplayMode: NSToolbar.DisplayMode?
+	private var savedSearchVisibilityPriority: NSToolbarItem.VisibilityPriority?
 	private var searchString: String?
 	private var lastSentSearchString: String?
 	private var timelineSourceMode: TimelineSourceMode = .regular {
@@ -789,10 +796,23 @@ final class MainWindowController: NSWindowController, NSUserInterfaceValidations
 		if let toolbar = window?.toolbar, !toolbar.isVisible {
 			toolbar.isVisible = true
 		}
-		guard let searchField = currentSearchField else {
+		guard let searchView = searchToolbarView else {
 			return
 		}
-		window?.makeFirstResponder(searchField)
+		revealSearchToolbarItemIfNeeded()
+		searchView.expand()
+		updateSearchIconState()
+		if searchView.window === window {
+			window?.makeFirstResponder(searchView.searchField)
+		} else {
+			// The toolbar may only attach the view after its next layout pass.
+			DispatchQueue.main.async { [weak self] in
+				guard let self, let searchView = self.searchToolbarView else {
+					return
+				}
+				self.window?.makeFirstResponder(searchView.searchField)
+			}
+		}
 	}
 
 	@IBAction func cleanUp(_ sender: Any?) {
@@ -849,6 +869,8 @@ extension MainWindowController: NSWindowDelegate {
 
 	func windowWillClose(_ notification: Notification) {
 		Self.logger.debug("MainWindowController: windowWillClose")
+		// Do not leave a search-triggered toolbar mode change in the saved configuration.
+		restoreSearchToolbarPresentation()
 		detailViewController?.stopMediaPlayback()
 		appDelegate.removeMainWindow(self)
 	}
@@ -943,11 +965,35 @@ extension MainWindowController: NSSearchFieldDelegate {
 	}
 
 	func searchFieldDidEndSearching(_ sender: NSSearchField) {
+		// Collapsing the field or clicking outside it also ends the search session.
+		// A non-empty query stays, and so does its filtered timeline, for the next reveal.
+		guard sender.stringValue.isEmpty else {
+			return
+		}
 		stopSearchingIfNeeded()
+		// Cancelling with the clear button ends the search, so show the normal icon again.
+		collapseSearchField()
+	}
+
+	func controlTextDidEndEditing(_ notification: Notification) {
+		guard let searchField = currentSearchField, notification.object as AnyObject? === searchField else {
+			return
+		}
+		collapseSearchField()
+	}
+
+	func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+		guard control === currentSearchField, commandSelector == #selector(NSResponder.cancelOperation(_:)) else {
+			return false
+		}
+		// Escape collapses the field without ending the search, so the query and its results stay.
+		collapseSearchField()
+		return true
 	}
 
 	@IBAction func runSearch(_ sender: NSSearchField) {
 		if sender.stringValue == "" {
+			stopSearchingIfNeeded()
 			return
 		}
 		startSearchingIfNeeded()
@@ -984,6 +1030,7 @@ extension MainWindowController: NSSearchFieldDelegate {
 		if let searchField = currentSearchField {
 			searchField.stringValue = ""
 		}
+		updateSearchIconState()
 		updateWindowTitle()
 	}
 
@@ -997,7 +1044,71 @@ extension MainWindowController: NSSearchFieldDelegate {
 		lastSentSearchString = nil
 		timelineSourceMode = .regular
 		timelineContainerViewController?.setRepresentedObjects(nil, mode: .search)
+		updateSearchIconState()
 		updateWindowTitle()
+	}
+
+	private func collapseSearchField() {
+		guard let searchView = searchToolbarView, searchView.isExpanded, !isCollapsingSearchField else {
+			return
+		}
+		isCollapsingSearchField = true
+		if searchView.searchField.currentEditor() != nil {
+			makeTimelineViewFirstResponder()
+		}
+		searchView.collapse()
+		updateSearchIconState()
+		restoreSearchToolbarPresentation()
+		isCollapsingSearchField = false
+	}
+
+	/// A menu form or a Text Only toolbar keeps the custom view out of the window,
+	/// so bring the item back before expanding it.
+	private func revealSearchToolbarItemIfNeeded() {
+		guard let window, let toolbar = window.toolbar, let item = toolbar.existingItem(withIdentifier: .search) else {
+			return
+		}
+		guard item.view?.window !== window else {
+			return
+		}
+		savedSearchVisibilityPriority = item.visibilityPriority
+		item.visibilityPriority = .user
+		isAdjustingSearchToolbarPresentation = true
+		if toolbar.displayMode == .labelOnly {
+			savedSearchDisplayMode = toolbar.displayMode
+			toolbar.displayMode = .iconOnly
+		}
+		toolbar.validateVisibleItems()
+		window.layoutIfNeeded()
+		isAdjustingSearchToolbarPresentation = false
+	}
+
+	private func restoreSearchToolbarPresentation() {
+		isAdjustingSearchToolbarPresentation = true
+		if let displayMode = savedSearchDisplayMode {
+			window?.toolbar?.displayMode = displayMode
+			savedSearchDisplayMode = nil
+		}
+		if let visibilityPriority = savedSearchVisibilityPriority {
+			if let item = window?.toolbar?.existingItem(withIdentifier: .search) {
+				item.visibilityPriority = visibilityPriority
+				window?.toolbar?.validateVisibleItems()
+				// Validation walks a responder chain that cannot reach us while the
+				// item is shown as its label, so keep the label clickable.
+				item.isEnabled = true
+			}
+			savedSearchVisibilityPriority = nil
+		}
+		isAdjustingSearchToolbarPresentation = false
+	}
+
+	private func updateSearchIconState() {
+		guard let searchView = searchToolbarView else {
+			return
+		}
+		// The icon is only visible while collapsed, so the accent state marks
+		// a query that is still filtering the timeline behind it.
+		searchView.isActive = !searchView.isExpanded && !searchView.searchField.stringValue.isEmpty
 	}
 }
 
@@ -1203,10 +1314,23 @@ extension MainWindowController: NSToolbarDelegate {
 			return toolbarItem
 
 		case .search:
-			let toolbarItem = NSSearchToolbarItem(itemIdentifier: .search)
+			// A custom view keeps the field permanently collapsed to its icon and expands
+			// on demand. NSSearchToolbarItem has no way to force that collapsed state.
 			let description = NSLocalizedString("Search", comment: "Search")
+			let toolbarItem = RSToolbarItem(itemIdentifier: .search)
+			// Search is always available. Validation walks the responder chain, which
+			// reaches the window controller only while the custom view is hosted, so
+			// the Text Only and menu forms would otherwise be disabled.
+			toolbarItem.autovalidates = false
+			toolbarItem.isEnabled = true
+			toolbarItem.action = #selector(moveFocusToSearchField(_:))
 			toolbarItem.toolTip = description
 			toolbarItem.label = description
+			toolbarItem.paletteLabel = description
+			let searchView = SearchToolbarView(title: description)
+			searchView.button.action = #selector(moveFocusToSearchField(_:))
+			toolbarItem.view = searchView
+			toolbarItem.menuFormRepresentation = NSMenuItem(title: description, action: #selector(moveFocusToSearchField(_:)), keyEquivalent: "")
 			return toolbarItem
 
 		case .cleanUp:
@@ -1280,11 +1404,13 @@ extension MainWindowController: NSToolbarDelegate {
 			button.sendAction(on: .leftMouseDown)
 		}
 
-		if item.itemIdentifier == .search, let searchItem = item as? NSSearchToolbarItem {
-			searchItem.searchField.delegate = self
-			searchItem.searchField.target = self
-			searchItem.searchField.action = #selector(runSearch(_:))
-			currentSearchField = searchItem.searchField
+		if item.itemIdentifier == .search, let searchView = item.view as? SearchToolbarView {
+			item.isEnabled = true
+			searchView.searchField.delegate = self
+			searchView.searchField.target = self
+			searchView.searchField.action = #selector(runSearch(_:))
+			currentSearchField = searchView.searchField
+			searchToolbarView = searchView
 		}
 	}
 
@@ -1293,11 +1419,23 @@ extension MainWindowController: NSToolbarDelegate {
 			return
 		}
 
-		if item.itemIdentifier == .search, let searchItem = item as? NSSearchToolbarItem {
-			searchItem.searchField.delegate = nil
-			searchItem.searchField.target = nil
-			searchItem.searchField.action = nil
+		if item.itemIdentifier == .search, let searchView = item.view as? SearchToolbarView {
+			// Our own display-mode switch removes and re-adds the item; keep the
+			// search session intact across it.
+			guard !isAdjustingSearchToolbarPresentation else {
+				return
+			}
+			searchView.searchField.delegate = nil
+			searchView.searchField.target = nil
+			searchView.searchField.action = nil
+			searchView.searchField.stringValue = ""
+			searchView.collapse()
+			searchView.isActive = false
 			currentSearchField = nil
+			searchToolbarView = nil
+			restoreSearchToolbarPresentation()
+			// The query would otherwise keep filtering the timeline with no field in sight.
+			stopSearchingIfNeeded()
 		}
 	}
 }
@@ -2380,5 +2518,103 @@ private extension MainWindowController {
 			statusBarView.sidebarDividerLineWidth = contentExtendsUnderSidebar ? hairline : splitView.dividerThickness
 		}
 		statusBarView.sidebarDividerPosition = dividerPositionInStatusBar.x
+	}
+}
+
+// MARK: - Search Toolbar View
+
+/// The toolbar search item’s view: an icon at rest that expands into a fixed-width search field.
+private final class SearchToolbarView: NSView {
+
+	private static let expandedWidth: CGFloat = 200
+
+	private static let minimumCollapsedWidth: CGFloat = 30
+
+	let button = NSButton()
+	let searchField = NSSearchField()
+	private(set) var isExpanded = false
+	private lazy var widthConstraint = widthAnchor.constraint(equalToConstant: SearchToolbarView.minimumCollapsedWidth)
+	private var collapsedWidth = SearchToolbarView.minimumCollapsedWidth
+	private let normalImage: NSImage?
+	private let activeImage: NSImage?
+
+	/// Marks a collapsed icon whose query is still filtering the timeline.
+	var isActive = false {
+		didSet {
+			// The toolbar draws a custom view’s button in the system monochrome
+			// treatment, so the active state rides on an accent-colored symbol.
+			button.image = isActive ? activeImage : normalImage
+			button.needsDisplay = true
+		}
+	}
+
+	init(title: String) {
+		normalImage = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: title)
+		normalImage?.isTemplate = true
+		activeImage = normalImage?.withSymbolConfiguration(NSImage.SymbolConfiguration(paletteColors: [.controlAccentColor]))
+
+		super.init(frame: .zero)
+		translatesAutoresizingMaskIntoConstraints = false
+
+		button.bezelStyle = .texturedRounded
+		button.image = normalImage
+		button.imageScaling = .scaleProportionallyDown
+		button.toolTip = title
+		button.setAccessibilityLabel(title)
+		collapsedWidth = max(Self.minimumCollapsedWidth, ceil(button.fittingSize.width))
+
+		searchField.placeholderString = title
+		searchField.setAccessibilityLabel(title)
+		searchField.isHidden = true
+
+		addSubview(button)
+		addSubview(searchField)
+		button.translatesAutoresizingMaskIntoConstraints = false
+		searchField.translatesAutoresizingMaskIntoConstraints = false
+
+		NSLayoutConstraint.activate([
+			button.leadingAnchor.constraint(equalTo: leadingAnchor),
+			button.trailingAnchor.constraint(equalTo: trailingAnchor),
+			button.topAnchor.constraint(equalTo: topAnchor),
+			button.bottomAnchor.constraint(equalTo: bottomAnchor),
+			searchField.leadingAnchor.constraint(equalTo: leadingAnchor),
+			searchField.trailingAnchor.constraint(equalTo: trailingAnchor),
+			searchField.topAnchor.constraint(equalTo: topAnchor),
+			searchField.bottomAnchor.constraint(equalTo: bottomAnchor)
+		])
+
+		widthConstraint.constant = collapsedWidth
+		widthConstraint.isActive = true
+	}
+
+	@available(*, unavailable)
+	required init?(coder: NSCoder) {
+		fatalError("init(coder:) is not supported")
+	}
+
+	func expand() {
+		guard !isExpanded else {
+			return
+		}
+		isExpanded = true
+		button.isHidden = true
+		searchField.isHidden = false
+		updateWidth(Self.expandedWidth)
+	}
+
+	func collapse() {
+		guard isExpanded else {
+			return
+		}
+		isExpanded = false
+		searchField.isHidden = true
+		button.isHidden = false
+		updateWidth(collapsedWidth)
+	}
+
+	private func updateWidth(_ width: CGFloat) {
+		widthConstraint.constant = width
+		invalidateIntrinsicContentSize()
+		superview?.needsLayout = true
 	}
 }
