@@ -2,7 +2,7 @@
 
 只读的 NetNewsWire MCP 服务端，独立 SPM 可执行文件，使用 MCP stdio transport。
 
-本仓库实现 **v2**：数据根定位、账户闸门、只读数据库打开与 schema 断言，以及 6 个只读工具：`list_feeds`、`list_articles`、`get_article`、`search_articles`、`unread_digest`、`query`。`list_articles` 与 `search_articles` 支持 keyset 游标分页；`query` 是受控的只读 SQL 出口。
+本仓库实现 **v2**：数据根定位、账户闸门、只读数据库打开与 schema 断言，以及 6 个只读工具：`list_feeds`、`list_articles`、`get_article`、`search_articles`、`unread_digest`、`query`。`list_articles` 与 `search_articles` 支持 keyset 游标分页；`query` 是受控的只读 SQL 出口。`initialize` 响应的 `instructions` 是服务自描述：只读、覆盖本机 NetNewsWire 订阅源（不代表全网），以及各工具的用法要点（如 `search_articles` 无时间参数，需先取当前时间再按结果的 `published_at` 筛选时间窗口）。
 
 ## 构建
 
@@ -246,7 +246,7 @@ python3 Tools/NetNewsWireMCP/scripts/verify_fixtures.py
 python3 Tools/NetNewsWireMCP/scripts/verify_client.py
 ```
 
-- `handshake.py`：真实 stdio 会话，`initialize` + `tools/list`（6 个工具，全部 `readOnlyHint: true`）+ 一次 `list_feeds`。
+- `handshake.py`：真实 stdio 会话，`initialize`（校验 `instructions` 非空）+ `tools/list`（6 个工具，全部 `readOnlyHint: true`）+ 一次 `list_feeds`。
 - `verify_list_feeds.py`：在活跃数据根上把 `totals` 与等价 SQL 直查逐项比较。
 - `verify_articles.py`：在活跃数据根上把 `list_articles` 的过滤计数与上限不变量、`get_article` 的 `content_bytes`、重复 URL 的 `duplicate_count` 与等价 SQL 直查比较。
 - `verify_search.py`：在活跃数据根上分别用 ASCII、CJK、混合查询，把 `total_matched` 与「FTS 直查 / LIKE 直查 / 两者交集」比较，并检查 `mode_used`、排序、`snippet` 上限与 `total_matched` 与 `limit` 无关。

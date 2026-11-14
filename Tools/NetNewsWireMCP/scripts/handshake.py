@@ -30,6 +30,10 @@ def main() -> int:
         initialize = client.initialize()
         print("initialize:", json.dumps(initialize, ensure_ascii=False))
 
+        instructions = initialize.get("result", {}).get("instructions")
+        if not instructions or not instructions.strip():
+            failures.append("initialize 响应缺少非空 instructions")
+
         listed = client.list_tools()
         print("tools/list:", json.dumps(listed, ensure_ascii=False))
 
