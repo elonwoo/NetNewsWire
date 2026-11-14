@@ -153,9 +153,127 @@ public enum ToolCatalog {
         )
     )
 
-    /// P0 registers only the implemented tool.
+    public static let listArticles = Tool(
+        name: "list_articles",
+        description:
+            "按发布时间倒序列出文章摘要，可按 feed_id 与未读状态过滤。只读，不返回正文。",
+        inputSchema: .object([
+            "type": .string("object"),
+            "properties": .object([
+                "feed_id": .object([
+                    "type": .string("string"),
+                    "description": .string("精确匹配的 feed_id；未知时返回错误"),
+                ]),
+                "unread_only": .object([
+                    "type": .string("boolean"),
+                    "description": .string("只返回未读文章，默认 false"),
+                ]),
+                "limit": .object([
+                    "type": .string("integer"),
+                    "minimum": .int(1),
+                    "maximum": .int(100),
+                    "default": .int(20),
+                    "description": .string("返回条数上限，默认 20，最大 100"),
+                ]),
+            ]),
+            "additionalProperties": .bool(false),
+        ]),
+        annotations: Tool.Annotations(
+            readOnlyHint: true,
+            destructiveHint: false,
+            idempotentHint: true,
+            openWorldHint: false
+        )
+    )
+
+    public static let getArticle = Tool(
+        name: "get_article",
+        description:
+            "按 article_id 或 url 读取单篇文章的元数据与纯文本正文，正文可按 Character 截断。只读。",
+        inputSchema: .object([
+            "type": .string("object"),
+            "properties": .object([
+                "article_id": .object([
+                    "type": .string("string"),
+                    "description": .string("文章 ID；与 url 二选一"),
+                ]),
+                "url": .object([
+                    "type": .string("string"),
+                    "description": .string("先匹配 articles.url，再匹配 articles.externalURL；与 article_id 二选一"),
+                ]),
+                "max_chars": .object([
+                    "type": .string("integer"),
+                    "minimum": .int(500),
+                    "maximum": .int(32000),
+                    "default": .int(20000),
+                    "description": .string("正文最多返回的 Character 数，默认 20000，范围 500..32000"),
+                ]),
+            ]),
+            "additionalProperties": .bool(false),
+        ]),
+        annotations: Tool.Annotations(
+            readOnlyHint: true,
+            destructiveHint: false,
+            idempotentHint: true,
+            openWorldHint: false
+        )
+    )
+
     public static var serverTools: [Tool] {
-        [listFeeds]
+        [listFeeds, listArticles, getArticle]
+    }
+}
+
+enum ToolArgument {
+    static func rejectUnknown(
+        _ arguments: [String: Value], allowed: Set<String>, tool: String
+    ) throws {
+        let unknown = Set(arguments.keys).subtracting(allowed)
+        guard unknown.isEmpty else {
+            throw ToolError(
+                "\(tool) 不接受参数：\(unknown.sorted().joined(separator: ", "))")
+        }
+    }
+
+    static func string(_ arguments: [String: Value], _ key: String) throws -> String? {
+        guard let value = arguments[key], !value.isNull else { return nil }
+        guard let string = value.stringValue else {
+            throw ToolError("参数 \(key) 必须是字符串")
+        }
+        return string
+    }
+
+    static func bool(_ arguments: [String: Value], _ key: String) throws -> Bool? {
+        guard let value = arguments[key], !value.isNull else { return nil }
+        guard let bool = value.boolValue else {
+            throw ToolError("参数 \(key) 必须是布尔值")
+        }
+        return bool
+    }
+
+    static func int(_ arguments: [String: Value], _ key: String) throws -> Int? {
+        guard let value = arguments[key], !value.isNull else { return nil }
+        guard let int = value.intValue else {
+            throw ToolError("参数 \(key) 必须是整数")
+        }
+        return int
+    }
+}
+
+enum ToolDatabase {
+    /// One connection per tool call: `DB.sqlite3` read-only, `FeedSettings.db`
+    /// attached to the same connection before any transaction starts.
+    static func open(context: ServerContext) throws -> ReadOnlyDatabase {
+        do {
+            let database = try ReadOnlyDatabase(path: context.databasePath)
+            try database.attachReadOnlyDatabase(at: context.feedSettingsPath)
+            return database
+        } catch let error as DatabaseError {
+            throw ToolError(error.description)
+        } catch {
+            throw ToolError(
+                "打开 \(context.databasePath) 或附加 \(context.feedSettingsPath) 失败：\(error)")
+        }
     }
 }
 
@@ -177,6 +295,24 @@ public enum ToolDispatcher {
                 return failure(error.message)
             } catch {
                 return failure("list_feeds 失败：\(error)")
+            }
+        case ToolCatalog.listArticles.name:
+            do {
+                let json = try ListArticlesTool.run(arguments: arguments, context: context)
+                return .init(content: [text(json)], isError: false)
+            } catch let error as ToolError {
+                return failure(error.message)
+            } catch {
+                return failure("list_articles 失败：\(error)")
+            }
+        case ToolCatalog.getArticle.name:
+            do {
+                let json = try GetArticleTool.run(arguments: arguments, context: context)
+                return .init(content: [text(json)], isError: false)
+            } catch let error as ToolError {
+                return failure(error.message)
+            } catch {
+                return failure("get_article 失败：\(error)")
             }
         default:
             return failure("未知工具：\(name)")

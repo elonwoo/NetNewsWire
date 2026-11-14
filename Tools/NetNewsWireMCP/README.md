@@ -2,7 +2,7 @@
 
 只读的 NetNewsWire MCP 服务端，独立 SPM 可执行文件，使用 MCP stdio transport。
 
-本仓库当前实现 **P0 阶段**：数据根定位、账户闸门、只读数据库打开与 schema 断言，以及 `list_feeds` 工具。`tools/list` 在 P0 只注册 1 个已实现的工具；其余工具属于后续阶段。
+本仓库当前实现 **P1 阶段**：数据根定位、账户闸门、只读数据库打开与 schema 断言，以及 `list_feeds`、`list_articles`、`get_article` 三个工具。`tools/list` 注册 3 个已实现的工具；检索与摘要工具属于 P2。
 
 ## 构建
 
@@ -58,7 +58,7 @@ claude mcp add --transport stdio netnewswire -- \
 - 打开前显式 stat 文件大小：0 字节数据库按退出 5 处理。
 - 可空字段（feed 的 `folder`、`home_page_url`、`latest_published_at` 与候选根的 `db_mtime`）在无值时输出显式 `null`，键始终存在，不会被省略。
 
-## 工具（P0）
+## 工具（P1）
 
 ### `list_feeds`
 
@@ -88,6 +88,50 @@ claude mcp add --transport stdio netnewswire -- \
 - `null` 是显式值：`folder`、`home_page_url`、`latest_published_at`、`db_mtime` 的键不会因为值为空而消失。
 - trigger 是否引用 `search` 按 SQL 标识符判断；`searchRowID` 是一个独立标识符，不会被误判为对 `search` 表的引用。
 
+### `list_articles`
+
+参数：
+
+| 参数 | 类型 | 默认 | 约束 |
+| --- | --- | --- | --- |
+| `feed_id` | string | null | 精确匹配 `articles.feedID`；未知则 `isError` |
+| `unread_only` | bool | false | 只返回未读文章；缺 `statuses` 行按未读计 |
+| `limit` | int | 20 | 1..100 |
+
+返回 `total_matched`、`returned`、`omitted`、`truncated`、`articles[]`。每项：`article_id`、`title`、`feed_id`、`feed_title`、`folder`、`published_at`、`url`、`read`、`starred`、`author`、`excerpt`、`content_chars`。
+
+口径：
+
+- 排序固定 `datePublished DESC, articleID DESC`，null 日期排最后；`total_matched` 与 `limit` 无关。
+- `title` 取 `search.title`，空串归一为 `null`；`articles.title` 不参与返回。
+- `excerpt` 取 `search.body` 前 160 个 Character 并把换行压成空格。
+- `author` 取 `authors` JSON 首元素的 `name`，解析失败为 `null`。
+- `content_chars` 是 `get_article` 会返回的那份正文的总 Character 数（`search.body` 非空用它，否则用 `contentText`），不返回正文本身。
+- `feed_title` / `folder` 的取值与 `list_feeds` 一致。
+- 响应超过 48 KiB 时从尾部丢弃文章并置 `truncated` / `omitted`；`returned + omitted == min(total_matched, limit)`，`omitted` 只统计 `limit` 窗口内被丢弃的条数。
+
+### `get_article`
+
+参数：
+
+| 参数 | 类型 | 默认 | 约束 |
+| --- | --- | --- | --- |
+| `article_id` | string | null | 与 `url` 二选一，精确匹配 |
+| `url` | string | null | 与 `article_id` 二选一；先匹配 `articles.url`，再匹配 `articles.externalURL` |
+| `max_chars` | int | 20000 | 500..32000，按 Character 截断正文 |
+
+返回 `article_id`、`feed_id`、`feed_title`、`folder`、`title`、`url`、`external_url`、`published_at`、`modified_at`、`arrived_at`、`read`、`starred`、`authors`、`content_source`、`content`、`content_chars`、`content_total_chars`、`content_bytes`、`content_truncated`、`duplicate_count`。
+
+口径：
+
+- 两个定位参数都缺或都给 → `isError`；找不到 → `isError` 并回显查询值。
+- 正文来源优先级：`search.body` 非空 → `contentText` 非空 → 空串；`content_source` 依次为 `search_index_text`、`contentText`、`none`。空正文返回 `content: ""` 与 0 计数，不是错误。
+- `authors` 是 `authors` JSON 中 `name` 字段组成的字符串数组；列为 null 或解析失败时为 `null`，`[]` 原样返回空数组。
+- `content_bytes` 等于返回正文的 UTF-8 字节数；`content_truncated` 当且仅当 `content_chars < content_total_chars`。
+- 先按 `max_chars` 截 Character；若整条 JSON 响应仍超过 96 KiB，继续在 Character 边界缩短 `content`，任一次缩短都置 `content_truncated: true`。正文已为空仍超限 → `isError`「响应过大」。
+- `duplicate_count`：按 `article_id` 查询固定为 1；按 `url` 命中 `articles.url` 时等于该列同值行数，否则等于 `articles.externalURL` 同值行数。
+- 多行命中时按 `datePublished DESC, articleID DESC`（null 日期最后）取第一行。
+
 ## 退出码
 
 | 码 | 含义 |
@@ -106,14 +150,16 @@ swift test --package-path Tools/NetNewsWireMCP
 
 python3 Tools/NetNewsWireMCP/scripts/handshake.py
 python3 Tools/NetNewsWireMCP/scripts/verify_list_feeds.py
+python3 Tools/NetNewsWireMCP/scripts/verify_articles.py
 python3 Tools/NetNewsWireMCP/scripts/verify_readonly.py
 python3 Tools/NetNewsWireMCP/scripts/verify_fixtures.py
 ```
 
-- `handshake.py`：真实 stdio 会话，`initialize` + `tools/list` + 一次 `list_feeds`。
+- `handshake.py`：真实 stdio 会话，`initialize` + `tools/list`（3 个工具）+ 一次 `list_feeds`。
 - `verify_list_feeds.py`：在活跃数据根上把 `totals` 与等价 SQL 直查逐项比较。
+- `verify_articles.py`：在活跃数据根上把 `list_articles` 的过滤计数与上限不变量、`get_article` 的 `content_bytes`、重复 URL 的 `duplicate_count` 与等价 SQL 直查比较。
 - `verify_readonly.py`：用 SQLite `.backup` 生成一致快照，连续 200 次调用前后比较三个文件的 sha256 与 mtime。
-- `verify_fixtures.py`：临时库构造退出码 3/4/5/6、env 覆盖、账户闸门、64 KiB 截断与 stdout 纯净性。
+- `verify_fixtures.py`：临时库构造退出码 3/4/5/6、env 覆盖、账户闸门、64 KiB 截断、stdout 纯净性，以及 P1 的 `contentText` 兜底、`statuses` 缺行、96 KiB 响应截断。
 
 单元测试全部在临时目录内构造数据库与 OPML，不读写真实 `~/Library/Application Support/NetNewsWire`。
 

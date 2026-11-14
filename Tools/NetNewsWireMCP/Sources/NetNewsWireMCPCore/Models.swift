@@ -222,6 +222,254 @@ public struct ListFeedsResponse: Codable, Sendable, Equatable {
     }
 }
 
+public struct ListArticlesItem: Codable, Sendable, Equatable {
+    public let articleID: String
+    public let title: String?
+    public let feedID: String
+    public let feedTitle: String
+    public let folder: String?
+    public let publishedAt: String?
+    public let url: String?
+    public let read: Bool
+    public let starred: Bool
+    public let author: String?
+    public let excerpt: String
+    public let contentChars: Int
+
+    enum CodingKeys: String, CodingKey {
+        case articleID = "article_id"
+        case title
+        case feedID = "feed_id"
+        case feedTitle = "feed_title"
+        case folder
+        case publishedAt = "published_at"
+        case url
+        case read
+        case starred
+        case author
+        case excerpt
+        case contentChars = "content_chars"
+    }
+
+    public init(
+        articleID: String,
+        title: String?,
+        feedID: String,
+        feedTitle: String,
+        folder: String?,
+        publishedAt: String?,
+        url: String?,
+        read: Bool,
+        starred: Bool,
+        author: String?,
+        excerpt: String,
+        contentChars: Int
+    ) {
+        self.articleID = articleID
+        self.title = title
+        self.feedID = feedID
+        self.feedTitle = feedTitle
+        self.folder = folder
+        self.publishedAt = publishedAt
+        self.url = url
+        self.read = read
+        self.starred = starred
+        self.author = author
+        self.excerpt = excerpt
+        self.contentChars = contentChars
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(articleID, forKey: .articleID)
+        if let title {
+            try container.encode(title, forKey: .title)
+        } else {
+            try container.encodeNil(forKey: .title)
+        }
+        try container.encode(feedID, forKey: .feedID)
+        try container.encode(feedTitle, forKey: .feedTitle)
+        if let folder {
+            try container.encode(folder, forKey: .folder)
+        } else {
+            try container.encodeNil(forKey: .folder)
+        }
+        if let publishedAt {
+            try container.encode(publishedAt, forKey: .publishedAt)
+        } else {
+            try container.encodeNil(forKey: .publishedAt)
+        }
+        if let url {
+            try container.encode(url, forKey: .url)
+        } else {
+            try container.encodeNil(forKey: .url)
+        }
+        try container.encode(read, forKey: .read)
+        try container.encode(starred, forKey: .starred)
+        if let author {
+            try container.encode(author, forKey: .author)
+        } else {
+            try container.encodeNil(forKey: .author)
+        }
+        try container.encode(excerpt, forKey: .excerpt)
+        try container.encode(contentChars, forKey: .contentChars)
+    }
+}
+
+public struct ListArticlesResponse: Codable, Sendable, Equatable {
+    public var totalMatched: Int
+    public var returned: Int
+    public var omitted: Int
+    public var truncated: Bool
+    public var articles: [ListArticlesItem]
+
+    enum CodingKeys: String, CodingKey {
+        case totalMatched = "total_matched"
+        case returned
+        case omitted
+        case truncated
+        case articles
+    }
+
+    public init(
+        totalMatched: Int,
+        returned: Int,
+        omitted: Int,
+        truncated: Bool,
+        articles: [ListArticlesItem]
+    ) {
+        self.totalMatched = totalMatched
+        self.returned = returned
+        self.omitted = omitted
+        self.truncated = truncated
+        self.articles = articles
+    }
+}
+
+public struct GetArticleResponse: Codable, Sendable, Equatable {
+    public var articleID: String
+    public var feedID: String
+    public var feedTitle: String
+    public var folder: String?
+    public var title: String?
+    public var url: String?
+    public var externalURL: String?
+    public var publishedAt: String?
+    public var modifiedAt: String?
+    public var arrivedAt: String?
+    public var read: Bool
+    public var starred: Bool
+    public var authors: [String]?
+    public var contentSource: String
+    public var content: String
+    public var contentChars: Int
+    public var contentTotalChars: Int
+    public var contentBytes: Int
+    public var contentTruncated: Bool
+    public var duplicateCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case articleID = "article_id"
+        case feedID = "feed_id"
+        case feedTitle = "feed_title"
+        case folder
+        case title
+        case url
+        case externalURL = "external_url"
+        case publishedAt = "published_at"
+        case modifiedAt = "modified_at"
+        case arrivedAt = "arrived_at"
+        case read
+        case starred
+        case authors
+        case contentSource = "content_source"
+        case content
+        case contentChars = "content_chars"
+        case contentTotalChars = "content_total_chars"
+        case contentBytes = "content_bytes"
+        case contentTruncated = "content_truncated"
+        case duplicateCount = "duplicate_count"
+    }
+
+    public init(
+        articleID: String,
+        feedID: String,
+        feedTitle: String,
+        folder: String?,
+        title: String?,
+        url: String?,
+        externalURL: String?,
+        publishedAt: String?,
+        modifiedAt: String?,
+        arrivedAt: String?,
+        read: Bool,
+        starred: Bool,
+        authors: [String]?,
+        contentSource: String,
+        content: String,
+        contentChars: Int,
+        contentTotalChars: Int,
+        contentBytes: Int,
+        contentTruncated: Bool,
+        duplicateCount: Int
+    ) {
+        self.articleID = articleID
+        self.feedID = feedID
+        self.feedTitle = feedTitle
+        self.folder = folder
+        self.title = title
+        self.url = url
+        self.externalURL = externalURL
+        self.publishedAt = publishedAt
+        self.modifiedAt = modifiedAt
+        self.arrivedAt = arrivedAt
+        self.read = read
+        self.starred = starred
+        self.authors = authors
+        self.contentSource = contentSource
+        self.content = content
+        self.contentChars = contentChars
+        self.contentTotalChars = contentTotalChars
+        self.contentBytes = contentBytes
+        self.contentTruncated = contentTruncated
+        self.duplicateCount = duplicateCount
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(articleID, forKey: .articleID)
+        try container.encode(feedID, forKey: .feedID)
+        try container.encode(feedTitle, forKey: .feedTitle)
+        try encodeOptional(folder, forKey: .folder, into: &container)
+        try encodeOptional(title, forKey: .title, into: &container)
+        try encodeOptional(url, forKey: .url, into: &container)
+        try encodeOptional(externalURL, forKey: .externalURL, into: &container)
+        try encodeOptional(publishedAt, forKey: .publishedAt, into: &container)
+        try encodeOptional(modifiedAt, forKey: .modifiedAt, into: &container)
+        try encodeOptional(arrivedAt, forKey: .arrivedAt, into: &container)
+        try container.encode(read, forKey: .read)
+        try container.encode(starred, forKey: .starred)
+        try encodeOptional(authors, forKey: .authors, into: &container)
+        try container.encode(contentSource, forKey: .contentSource)
+        try container.encode(content, forKey: .content)
+        try container.encode(contentChars, forKey: .contentChars)
+        try container.encode(contentTotalChars, forKey: .contentTotalChars)
+        try container.encode(contentBytes, forKey: .contentBytes)
+        try container.encode(contentTruncated, forKey: .contentTruncated)
+        try container.encode(duplicateCount, forKey: .duplicateCount)
+    }
+
+    private func encodeOptional<T: Encodable>(
+        _ value: T?, forKey key: CodingKeys, into container: inout KeyedEncodingContainer<CodingKeys>
+    ) throws {
+        if let value {
+            try container.encode(value, forKey: key)
+        } else {
+            try container.encodeNil(forKey: key)
+        }
+    }
+}
+
 public enum DateFormats {
     /// UTC ISO-8601 without fractional seconds, e.g. `2026-11-15T00:19:54Z`.
     public static func iso8601(_ date: Date) -> String {

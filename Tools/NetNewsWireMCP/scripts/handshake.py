@@ -9,7 +9,7 @@ import sys
 
 from mcp_client import MCPClient, default_binary, tool_text
 
-EXPECTED_P0_TOOL_COUNT = 1
+EXPECTED_TOOL_NAMES = ["list_feeds", "list_articles", "get_article"]
 
 
 def main() -> int:
@@ -27,10 +27,13 @@ def main() -> int:
         print("tools/list:", json.dumps(listed, ensure_ascii=False))
 
         tools = listed["result"]["tools"]
-        if len(tools) != EXPECTED_P0_TOOL_COUNT:
+        names = [tool.get("name") for tool in tools]
+        if len(tools) != len(EXPECTED_TOOL_NAMES):
             failures.append(
-                f"tools/list 工具数 {len(tools)} != P0 期望 {EXPECTED_P0_TOOL_COUNT}"
+                f"tools/list 工具数 {len(tools)} != 期望 {len(EXPECTED_TOOL_NAMES)}"
             )
+        if sorted(names) != sorted(EXPECTED_TOOL_NAMES):
+            failures.append(f"tools/list 工具名 {names} != 期望 {EXPECTED_TOOL_NAMES}")
         for tool in tools:
             annotations = tool.get("annotations", {})
             if annotations.get("readOnlyHint") is not True:
@@ -77,7 +80,7 @@ def main() -> int:
         for failure in failures:
             print("FAIL:", failure)
         return 1
-    print("handshake=ok tool_count=%d" % EXPECTED_P0_TOOL_COUNT)
+    print("handshake=ok tool_count=%d tools=%s" % (len(EXPECTED_TOOL_NAMES), names))
     return 0
 
 

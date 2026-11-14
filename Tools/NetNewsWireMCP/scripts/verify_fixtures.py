@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Runs the P0 fixture acceptance cases against the built binary."""
+"""Runs the P0/P1 fixture acceptance cases against the built binary."""
 
 from __future__ import annotations
 
@@ -588,6 +588,188 @@ def case_feed_url_null_and_empty(binary: str) -> None:
         shutil.rmtree(base, ignore_errors=True)
 
 
+def add_article(
+    account: Path,
+    article_id: str,
+    feed_id: str,
+    *,
+    search_row: int | None = None,
+    search_title: str = "",
+    body: str | None = None,
+    content_text: str = "",
+    published: float | None = 1700000400,
+    url: str | None = None,
+    external_url: str | None = None,
+    authors: str | None = None,
+    status: tuple[int, int, float] | None = None,
+) -> None:
+    connection = sqlite3.connect(account / "DB.sqlite3")
+    try:
+        connection.execute(
+            "INSERT INTO articles "
+            "(articleID, feedID, uniqueID, title, contentText, url, externalURL, "
+            "datePublished, searchRowID, authors) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                article_id,
+                feed_id,
+                article_id,
+                search_title,
+                content_text,
+                url,
+                external_url,
+                published,
+                search_row,
+                authors,
+            ),
+        )
+        if search_row is not None:
+            connection.execute(
+                "INSERT INTO search (docid, title, body) VALUES (?, ?, ?)",
+                (search_row, search_title, body if body is not None else ""),
+            )
+        if status is not None:
+            read, starred, arrived = status
+            connection.execute(
+                "INSERT INTO statuses (articleID, read, starred, dateArrived) "
+                "VALUES (?, ?, ?, ?)",
+                (article_id, read, starred, arrived),
+            )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def p1_call(binary: str, root: Path, name: str, arguments: dict | None):
+    client = MCPClient(binary, {"NNW_MCP_DATA_ROOT": str(root)})
+    try:
+        client.initialize()
+        result = client.call_tool(name, arguments)
+        payload = tool_text(result)
+        return result, payload, json.loads(payload)
+    finally:
+        client.close()
+
+
+def case_p1_content_text_fallback(binary: str) -> None:
+    base, _ = make_temporary_root("nnw-mcp-p1-contenttext-")
+    try:
+        root = standard_root(base)
+        account = root / "Accounts/OnMyMac"
+        text = "Fallback 正文 only in contentText"
+        add_article(
+            account,
+            "ct1",
+            "https://a.example/feed",
+            content_text=text,
+            status=(0, 0, 1700000400),
+        )
+        result, payload, data = p1_call(binary, root, "get_article", {"article_id": "ct1"})
+        passed = (
+            result["result"].get("isError") is False
+            and data.get("content_source") == "contentText"
+            and data.get("content") == text
+            and data.get("content_chars") == len(text)
+            and data.get("content_total_chars") == len(text)
+            and data.get("content_truncated") is False
+        )
+        record(
+            "p1_content_text_fallback",
+            passed,
+            f"isError={result['result'].get('isError')} "
+            f"content_source={data.get('content_source')} "
+            f"content_equal={data.get('content') == text} "
+            f"chars={data.get('content_chars')}/{data.get('content_total_chars')} "
+            f"truncated={data.get('content_truncated')}",
+        )
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def case_p1_statuses_missing(binary: str) -> None:
+    base, _ = make_temporary_root("nnw-mcp-p1-nostatus-")
+    try:
+        root = standard_root(base)
+        account = root / "Accounts/OnMyMac"
+        feed_id = "https://a.example/feed"
+        add_article(
+            account,
+            "ns1",
+            feed_id,
+            search_row=7,
+            search_title="No status",
+            body="No status body",
+            published=1700000400,
+            status=None,
+        )
+        result, payload, data = p1_call(
+            binary, root, "list_articles", {"feed_id": feed_id, "unread_only": True}
+        )
+        items = [item for item in data.get("articles", []) if item.get("article_id") == "ns1"]
+        item_read = items[0].get("read") if items else None
+        detail_result, detail_payload, detail = p1_call(
+            binary, root, "get_article", {"article_id": "ns1"}
+        )
+        passed = (
+            result["result"].get("isError") is False
+            and len(items) == 1
+            and item_read is False
+            and detail_result["result"].get("isError") is False
+            and detail.get("read") is False
+            and detail.get("starred") is False
+            and detail.get("arrived_at") is None
+        )
+        record(
+            "p1_statuses_missing_unread",
+            passed,
+            f"unread_only_contains={len(items)} item_read={item_read} "
+            f"get_read={detail.get('read')} get_starred={detail.get('starred')} "
+            f"arrived_at={detail.get('arrived_at')}",
+        )
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def case_p1_get_article_96kib(binary: str) -> None:
+    base, _ = make_temporary_root("nnw-mcp-p1-96kib-")
+    try:
+        root = standard_root(base)
+        account = root / "Accounts/OnMyMac"
+        body = "😀" * 32000
+        add_article(
+            account,
+            "big1",
+            "https://a.example/feed",
+            search_row=8,
+            search_title="Emoji",
+            body=body,
+            published=1700000400,
+        )
+        result, payload, data = p1_call(
+            binary, root, "get_article", {"article_id": "big1", "max_chars": 32000}
+        )
+        content = data.get("content", "")
+        payload_bytes = len(payload.encode("utf-8"))
+        passed = (
+            result["result"].get("isError") is False
+            and payload_bytes <= 96 * 1024
+            and data.get("content_truncated") is True
+            and data.get("content_total_chars") == 32000
+            and data.get("content_chars", 0) < data.get("content_total_chars", 0)
+            and data.get("content_bytes") == len(content.encode("utf-8"))
+            and data.get("content_chars") == len(content)
+        )
+        record(
+            "p1_get_article_96kib",
+            passed,
+            f"bytes={payload_bytes} limit={96 * 1024} "
+            f"chars={data.get('content_chars')}/{data.get('content_total_chars')} "
+            f"content_bytes={data.get('content_bytes')} "
+            f"truncated={data.get('content_truncated')}",
+        )
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", default=default_binary())
@@ -611,6 +793,9 @@ def main() -> int:
     case_mixed_accounts_and_64kib(binary)
     case_journal(binary)
     case_feed_url_null_and_empty(binary)
+    case_p1_content_text_fallback(binary)
+    case_p1_statuses_missing(binary)
+    case_p1_get_article_96kib(binary)
 
     failed = [name for name, passed, _ in results if not passed]
     print(f"fixture_cases={len(results)} failed={len(failed)}")

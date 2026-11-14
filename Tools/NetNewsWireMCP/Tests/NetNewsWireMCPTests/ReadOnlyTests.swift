@@ -39,4 +39,22 @@ final class ReadOnlyTests: XCTestCase {
         _ = try ListFeedsTool.run(context: context)
         XCTAssertEqual(try sha256(root.databaseURL), before)
     }
+
+    func testArticleToolsDoNotChangeFiles() throws {
+        let root = try TestRoot()
+        let context = try root.createStandardServerContext()
+
+        let files = [root.databaseURL, root.feedSettingsURL, root.opmlURL]
+        let hashesBefore = try files.map(sha256)
+        let mtimesBefore = try files.map(mtime)
+
+        for _ in 0..<50 {
+            _ = try ListArticlesTool.run(arguments: nil, context: context)
+            _ = try GetArticleTool.run(
+                arguments: ["article_id": .string("a1")], context: context)
+        }
+
+        XCTAssertEqual(try files.map(sha256), hashesBefore)
+        XCTAssertEqual(try files.map(mtime), mtimesBefore)
+    }
 }
