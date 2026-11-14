@@ -650,6 +650,17 @@ def p1_call(binary: str, root: Path, name: str, arguments: dict | None):
         client.close()
 
 
+def p1_call_raw(binary: str, root: Path, name: str, arguments: dict | None):
+    """Like `p1_call`, but tolerates a plain-text `isError` payload."""
+    client = MCPClient(binary, {"NNW_MCP_DATA_ROOT": str(root)})
+    try:
+        client.initialize()
+        result = client.call_tool(name, arguments)
+        return result, tool_text(result)
+    finally:
+        client.close()
+
+
 def case_p1_content_text_fallback(binary: str) -> None:
     base, _ = make_temporary_root("nnw-mcp-p1-contenttext-")
     try:
@@ -770,6 +781,299 @@ def case_p1_get_article_96kib(binary: str) -> None:
         shutil.rmtree(base, ignore_errors=True)
 
 
+def case_p1_orphan_feed_id(binary: str) -> None:
+    base, _ = make_temporary_root("nnw-mcp-p1-orphan-")
+    try:
+        root = standard_root(base)
+        account = root / "Accounts/OnMyMac"
+        orphan = "https://orphan.example/feed"
+        add_article(
+            account,
+            "orphan1",
+            orphan,
+            search_row=7,
+            search_title="Orphan",
+            body="orphan body",
+            published=1700000400,
+            status=(0, 0, 1700000400),
+        )
+        connection = sqlite3.connect(account / "FeedSettings.db")
+        try:
+            connection.execute(
+                "INSERT INTO feedSettings (feedURL, feedID, editedName) "
+                "VALUES (?, ?, ?)",
+                ("https://settings-only.example/feed", "settings-feed-id", "Settings Only"),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        listing_result, _, listing = p1_call(binary, root, "list_articles", None)
+        orphan_items = [
+            item
+            for item in listing.get("articles", [])
+            if item.get("article_id") == "orphan1"
+        ]
+        item = orphan_items[0] if orphan_items else {}
+
+        filter_result, _, filtered = p1_call(
+            binary, root, "list_articles", {"feed_id": orphan}
+        )
+
+        by_id_result, _, by_id = p1_call(
+            binary, root, "list_articles", {"feed_id": "settings-feed-id"}
+        )
+        url_result, url_payload = p1_call_raw(
+            binary, root, "list_articles", {"feed_id": "https://settings-only.example/feed"}
+        )
+
+        passed = (
+            listing_result["result"].get("isError") is False
+            and len(orphan_items) == 1
+            and item.get("feed_title") == orphan
+            and item.get("folder") is None
+            and filter_result["result"].get("isError") is False
+            and filtered.get("total_matched") == 1
+            and [entry.get("article_id") for entry in filtered.get("articles", [])]
+            == ["orphan1"]
+            and by_id_result["result"].get("isError") is False
+            and by_id.get("total_matched") == 0
+            and url_result["result"].get("isError") is True
+            and "未知 feed_id" in url_payload
+        )
+        record(
+            "p1_orphan_feed_id",
+            passed,
+            f"listed={len(orphan_items)} feed_title={item.get('feed_title')!r} "
+            f"folder={item.get('folder')!r} "
+            f"filter_total={filtered.get('total_matched')} "
+            f"by_feed_id_total={by_id.get('total_matched')} "
+            f"feed_url_isError={url_result['result'].get('isError')} "
+            f"feed_url_message={url_payload[:60]!r}",
+        )
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def case_p1_author_shapes(binary: str) -> None:
+    base, _ = make_temporary_root("nnw-mcp-p1-authors-")
+    try:
+        root = standard_root(base)
+        account = root / "Accounts/OnMyMac"
+        feed_id = "https://a.example/feed"
+        rows = {
+            "au-empty": "[]",
+            "au-invalid": "not json",
+            "au-mixed": '[{"name":"A"},{"nope":1}]',
+            "au-null": None,
+        }
+        for index, (article_id, authors) in enumerate(rows.items()):
+            add_article(
+                account,
+                article_id,
+                feed_id,
+                published=1700000400 + index,
+                authors=authors,
+                status=(0, 0, 1700000400 + index),
+            )
+
+        expected_detail = {
+            "au-empty": [],
+            "au-invalid": None,
+            "au-mixed": ["A"],
+            "au-null": None,
+        }
+        detail_ok = True
+        detail_observed = {}
+        for article_id, expected in expected_detail.items():
+            result, _, data = p1_call(binary, root, "get_article", {"article_id": article_id})
+            observed = data.get("authors")
+            detail_observed[article_id] = observed
+            if result["result"].get("isError") is not False or observed != expected:
+                detail_ok = False
+
+        listing_result, _, listing = p1_call(
+            binary, root, "list_articles", {"feed_id": feed_id, "limit": 100}
+        )
+        author_by_id = {
+            item.get("article_id"): item.get("author")
+            for item in listing.get("articles", [])
+        }
+        expected_listing = {
+            "au-empty": None,
+            "au-invalid": None,
+            "au-mixed": "A",
+            "au-null": None,
+        }
+        listing_ok = all(
+            author_by_id.get(article_id) == expected
+            for article_id, expected in expected_listing.items()
+        )
+        passed = (
+            detail_ok
+            and listing_result["result"].get("isError") is False
+            and listing_ok
+        )
+        record(
+            "p1_author_shapes",
+            passed,
+            f"detail={detail_observed} detail_ok={detail_ok} "
+            f"listing={ {k: author_by_id.get(k) for k in expected_listing} } "
+            f"listing_ok={listing_ok}",
+        )
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def case_p0_root_level_feed(binary: str) -> None:
+    base, _ = make_temporary_root("nnw-mcp-p0-rootfeed-")
+    try:
+        root = base / "NetNewsWire"
+        account = make_account(root)
+        write_database(account / "DB.sqlite3", SCHEMA, None)
+        write_database(account / "FeedSettings.db", SCHEMA, None)
+        (account / "Subscriptions.opml").write_text(
+            """<?xml version="1.0" encoding="UTF-8"?>
+<opml version="1.1"><head/><body>
+    <outline text="News" title="News">
+        <outline text="Folder Feed" title="Folder Feed" type="rss" xmlUrl="https://f.example/feed"/>
+    </outline>
+    <outline text="Root Feed" title="Root Feed" type="rss" xmlUrl="https://r.example/feed"/>
+</body></opml>
+""",
+            encoding="utf-8",
+        )
+        connection = sqlite3.connect(account / "FeedSettings.db")
+        try:
+            connection.executemany(
+                "INSERT INTO feedSettings (feedURL, feedID, editedName) VALUES (?, ?, ?)",
+                [
+                    ("https://f.example/feed", "https://f.example/feed", "Folder Feed"),
+                    ("https://r.example/feed", "https://r.example/feed", "Root Feed"),
+                ],
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        add_article(
+            account, "f1", "https://f.example/feed",
+            published=1700000400, status=(0, 0, 1700000400),
+        )
+        add_article(
+            account, "f2", "https://f.example/feed",
+            published=1700000300, status=(1, 0, 1700000300),
+        )
+        add_article(
+            account, "r1", "https://r.example/feed",
+            published=1700000200, status=(0, 0, 1700000200),
+        )
+
+        result, payload, data = p1_call(binary, root, "list_feeds", None)
+        totals = data["totals"]
+        feeds = data["feeds"]
+        folders = data["folders"]
+        root_feed = next(
+            (feed for feed in feeds if feed["feed_id"] == "https://r.example/feed"), None
+        )
+        folder_feed_sum = sum(folder["feed_count"] for folder in folders)
+        folder_unread_sum = sum(folder["unread_count"] for folder in folders)
+        passed = (
+            result["result"].get("isError") is False
+            and totals["feeds"] == 2
+            and totals["unread"] == 2
+            and len(folders) == 1
+            and folders[0]["name"] == "News"
+            and folders[0]["feed_count"] == 1
+            and folders[0]["unread_count"] == 1
+            and folder_feed_sum <= totals["feeds"]
+            and totals["feeds"] - folder_feed_sum == 1
+            and folder_unread_sum <= totals["unread"]
+            and totals["unread"] - folder_unread_sum == 1
+            and root_feed is not None
+            and root_feed["folder"] is None
+            and root_feed["article_count"] == 1
+            and root_feed["unread_count"] == 1
+        )
+        record(
+            "p0_root_level_feed",
+            passed,
+            f"totals={totals} folders={folders} "
+            f"root_feed_folder={root_feed.get('folder') if root_feed else None} "
+            f"folder_feed_sum={folder_feed_sum} folder_unread_sum={folder_unread_sum}",
+        )
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def case_p2_digest_empty_feed_id(binary: str) -> None:
+    base, _ = make_temporary_root("nnw-mcp-p2-empty-feed-")
+    try:
+        root = base / "NetNewsWire"
+        account = make_account(root)
+        write_database(account / "DB.sqlite3", SCHEMA, None)
+        write_database(account / "FeedSettings.db", SCHEMA, None)
+        (account / "Subscriptions.opml").write_text(
+            """<?xml version="1.0" encoding="UTF-8"?>
+<opml version="1.1"><head/><body>
+    <outline text="News" title="News">
+        <outline text="Feed One" title="Feed One" type="rss" xmlUrl="https://f1.example/feed"/>
+    </outline>
+</body></opml>
+""",
+            encoding="utf-8",
+        )
+        connection = sqlite3.connect(account / "FeedSettings.db")
+        try:
+            connection.execute(
+                "INSERT INTO feedSettings (feedURL, feedID, editedName) VALUES (?, ?, ?)",
+                ("https://f1.example/feed", "https://f1.example/feed", "Feed One"),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        now = time.time()
+        add_article(
+            account, "good1", "https://f1.example/feed",
+            published=now - 100, status=(0, 0, now - 100),
+        )
+        add_article(
+            account, "empty1", "",
+            published=now - 200, status=(0, 0, now - 200),
+        )
+        add_article(
+            account, "empty2", "",
+            published=now - 300, status=(1, 0, now - 300),
+        )
+
+        result, payload, data = p1_call(binary, root, "unread_digest", {"days": 1})
+        totals = data["totals"]
+        feeds = data["feeds"]
+        feed_sum = sum(feed["unread_in_window"] for feed in feeds)
+        d1 = feed_sum + data["omitted_unread_in_window"] == totals["unread_in_window"]
+        d19 = totals["unread_feeds"] == len(feeds) + data["omitted_feeds"]
+        passed = (
+            result["result"].get("isError") is False
+            and totals["unread_total"] == 1
+            and totals["unread_in_window"] == 1
+            and totals["articles_in_window"] == 1
+            and totals["unread_feeds"] == 1
+            and len(feeds) == 1
+            and feeds[0]["feed_id"] == "https://f1.example/feed"
+            and d1
+            and d19
+        )
+        record(
+            "p2_digest_empty_feed_id",
+            passed,
+            f"totals={totals} feeds={len(feeds)} feed_sum={feed_sum} "
+            f"omitted_unread={data['omitted_unread_in_window']} d1={d1} d19={d19}",
+        )
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", default=default_binary())
@@ -796,6 +1100,10 @@ def main() -> int:
     case_p1_content_text_fallback(binary)
     case_p1_statuses_missing(binary)
     case_p1_get_article_96kib(binary)
+    case_p1_orphan_feed_id(binary)
+    case_p1_author_shapes(binary)
+    case_p0_root_level_feed(binary)
+    case_p2_digest_empty_feed_id(binary)
 
     failed = [name for name, passed, _ in results if not passed]
     print(f"fixture_cases={len(results)} failed={len(failed)}")

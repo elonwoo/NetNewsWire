@@ -219,8 +219,63 @@ public enum ToolCatalog {
         )
     )
 
+    public static let searchArticles = Tool(
+        name: "search_articles",
+        description:
+            "按关键词检索文章：ASCII 词走全文索引，中文等 CJK 词走子串匹配，混合查询取交集。只读。",
+        inputSchema: .object([
+            "type": .string("object"),
+            "properties": .object([
+                "query": .object([
+                    "type": .string("string"),
+                    "description": .string("检索词；trim 后 1..200 字符"),
+                ]),
+                "limit": .object([
+                    "type": .string("integer"),
+                    "minimum": .int(1),
+                    "maximum": .int(50),
+                    "default": .int(20),
+                    "description": .string("返回条数上限，默认 20，最大 50"),
+                ]),
+            ]),
+            "required": .array([.string("query")]),
+            "additionalProperties": .bool(false),
+        ]),
+        annotations: Tool.Annotations(
+            readOnlyHint: true,
+            destructiveHint: false,
+            idempotentHint: true,
+            openWorldHint: false
+        )
+    )
+
+    public static let unreadDigest = Tool(
+        name: "unread_digest",
+        description:
+            "汇总最近 N 天内各 feed 的未读文章，按 feed 列出计数与最多 3 条明细。只读。",
+        inputSchema: .object([
+            "type": .string("object"),
+            "properties": .object([
+                "days": .object([
+                    "type": .string("integer"),
+                    "minimum": .int(1),
+                    "maximum": .int(90),
+                    "default": .int(1),
+                    "description": .string("窗口天数，默认 1，最大 90"),
+                ])
+            ]),
+            "additionalProperties": .bool(false),
+        ]),
+        annotations: Tool.Annotations(
+            readOnlyHint: true,
+            destructiveHint: false,
+            idempotentHint: true,
+            openWorldHint: false
+        )
+    )
+
     public static var serverTools: [Tool] {
-        [listFeeds, listArticles, getArticle]
+        [listFeeds, listArticles, getArticle, searchArticles, unreadDigest]
     }
 }
 
@@ -313,6 +368,24 @@ public enum ToolDispatcher {
                 return failure(error.message)
             } catch {
                 return failure("get_article 失败：\(error)")
+            }
+        case ToolCatalog.searchArticles.name:
+            do {
+                let json = try SearchArticlesTool.run(arguments: arguments, context: context)
+                return .init(content: [text(json)], isError: false)
+            } catch let error as ToolError {
+                return failure(error.message)
+            } catch {
+                return failure("search_articles 失败：\(error)")
+            }
+        case ToolCatalog.unreadDigest.name:
+            do {
+                let json = try UnreadDigestTool.run(arguments: arguments, context: context)
+                return .init(content: [text(json)], isError: false)
+            } catch let error as ToolError {
+                return failure(error.message)
+            } catch {
+                return failure("unread_digest 失败：\(error)")
             }
         default:
             return failure("未知工具：\(name)")

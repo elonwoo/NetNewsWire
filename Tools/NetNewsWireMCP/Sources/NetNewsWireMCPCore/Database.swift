@@ -55,7 +55,39 @@ public enum SQLValue: Sendable, Equatable {
 public enum SQLBind: Sendable, Equatable {
     case null
     case integer(Int64)
+    case real(Double)
     case text(String)
+}
+
+/// A wall-clock budget enforced by SQLite's progress handler. The handler is
+/// invoked every 1000 VM instructions; once the deadline passes it reports
+/// `interrupted` and asks SQLite to abort the current statement.
+public final class SQLiteProgressBudget: @unchecked Sendable {
+    private let deadline: DispatchTime
+    private let lock = NSLock()
+    private var interrupted = false
+
+    public init(milliseconds: Int) {
+        deadline = .now() + .milliseconds(milliseconds)
+    }
+
+    var isExpired: Bool {
+        DispatchTime.now() >= deadline
+    }
+
+    func markInterrupted() {
+        lock.lock()
+        interrupted = true
+        lock.unlock()
+    }
+
+    /// Whether the handler actually aborted a statement (as opposed to the
+    /// deadline passing between statements).
+    public var didInterrupt: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return interrupted
+    }
 }
 
 final class ConnectionCounter: @unchecked Sendable {
@@ -172,6 +204,8 @@ public final class ReadOnlyDatabase {
                 bindResult = sqlite3_bind_null(statement, index)
             case .integer(let value):
                 bindResult = sqlite3_bind_int64(statement, index, value)
+            case .real(let value):
+                bindResult = sqlite3_bind_double(statement, index, value)
             case .text(let value):
                 bindResult = sqlite3_bind_text(statement, index, value, -1, sqliteTransient)
             }
@@ -229,6 +263,28 @@ public final class ReadOnlyDatabase {
             try? execute("ROLLBACK")
             throw error
         }
+    }
+
+    /// Installs a progress handler for the duration of `body`. Statements that
+    /// step past the budget are aborted with `SQLITE_INTERRUPT`, which surfaces
+    /// as a `readFailed` error; callers distinguish the timeout through
+    /// `budget.didInterrupt`. The handler is always removed afterwards.
+    public func withProgressBudget<T>(
+        _ budget: SQLiteProgressBudget, _ body: () throws -> T
+    ) rethrows -> T {
+        guard let handle else { return try body() }
+        let callback: @convention(c) (UnsafeMutableRawPointer?) -> Int32 = { context in
+            guard let context else { return 0 }
+            let budget = Unmanaged<SQLiteProgressBudget>.fromOpaque(context)
+                .takeUnretainedValue()
+            guard budget.isExpired else { return 0 }
+            budget.markInterrupted()
+            return 1
+        }
+        sqlite3_progress_handler(
+            handle, 1000, callback, Unmanaged.passUnretained(budget).toOpaque())
+        defer { sqlite3_progress_handler(handle, 0, nil, nil) }
+        return try body()
     }
 
     private func readColumn(statement: OpaquePointer, index: Int32) -> SQLValue {

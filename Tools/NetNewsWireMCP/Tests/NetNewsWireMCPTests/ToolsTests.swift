@@ -14,10 +14,11 @@ final class ToolsTests: XCTestCase {
         return dictionary
     }
 
-    func testToolCatalogHasThreeTools() {
-        XCTAssertEqual(ToolCatalog.serverTools.count, 3)
+    func testToolCatalogHasFiveTools() {
+        XCTAssertEqual(ToolCatalog.serverTools.count, 5)
         XCTAssertEqual(
-            ToolCatalog.serverTools.map(\.name), ["list_feeds", "list_articles", "get_article"])
+            ToolCatalog.serverTools.map(\.name),
+            ["list_feeds", "list_articles", "get_article", "search_articles", "unread_digest"])
         for tool in ToolCatalog.serverTools {
             XCTAssertEqual(tool.annotations.readOnlyHint, true)
             XCTAssertEqual(tool.annotations.destructiveHint, false)
@@ -863,6 +864,631 @@ final class ToolsTests: XCTestCase {
 
         ReadOnlyDatabase.connectionCounter.reset()
         _ = try GetArticleTool.run(arguments: ["article_id": .string("a1")], context: context)
+        XCTAssertEqual(ReadOnlyDatabase.connectionCounter.count, 1)
+    }
+
+    // MARK: - P1 follow-up: orphan feed ids and author shapes
+
+    func testOrphanFeedIDIsListedAndFilterable() throws {
+        let root = try TestRoot()
+        let context = try root.createStandardServerContext()
+        try insertStandardSearch(root)
+        try insertSearch(root, rows: [(7, "Orphan", "Orphan body")])
+        try insertArticle(
+            root, id: "orphan1", feedID: "https://orphan.example/feed", title: "Orphan",
+            datePublished: 1_700_000_600, searchRowID: 7)
+
+        let unfiltered = try decode(
+            try ListArticlesTool.run(arguments: nil, context: context))
+        let unfilteredArticles = try XCTUnwrap(unfiltered["articles"] as? [[String: Any]])
+        let orphan = try XCTUnwrap(
+            unfilteredArticles.first { $0["article_id"] as? String == "orphan1" })
+        XCTAssertEqual(orphan["feed_id"] as? String, "https://orphan.example/feed")
+        XCTAssertEqual(orphan["feed_title"] as? String, "https://orphan.example/feed")
+        XCTAssertTrue(orphan["folder"] is NSNull)
+
+        let filtered = try decode(
+            try ListArticlesTool.run(
+                arguments: ["feed_id": .string("https://orphan.example/feed")], context: context))
+        XCTAssertEqual(filtered["total_matched"] as? Int, 1)
+        let filteredArticles = try XCTUnwrap(filtered["articles"] as? [[String: Any]])
+        XCTAssertEqual(filteredArticles.map { $0["article_id"] as? String }, ["orphan1"])
+        XCTAssertEqual(
+            filteredArticles[0]["feed_title"] as? String, "https://orphan.example/feed")
+        XCTAssertTrue(filteredArticles[0]["folder"] is NSNull)
+    }
+
+    func testFeedURLIsNotAcceptedAsFeedID() throws {
+        let root = try TestRoot()
+        let context = try root.createStandardServerContext()
+        let writer = try SQLiteWriter(path: root.feedSettingsURL.path)
+        try writer.exec(
+            """
+            INSERT INTO feedSettings (feedURL, feedID, editedName)
+            VALUES ('https://settings-only.example/feed', 'settings-feed-id', 'Settings Only');
+            """
+        )
+
+        // `feedID` is known even without articles, so filtering succeeds with 0 rows.
+        let byID = try decode(
+            try ListArticlesTool.run(
+                arguments: ["feed_id": .string("settings-feed-id")], context: context))
+        XCTAssertEqual(byID["total_matched"] as? Int, 0)
+
+        // The `feedURL` column is not part of the known set and must not be
+        // silently accepted as a feed id.
+        XCTAssertThrowsError(
+            try ListArticlesTool.run(
+                arguments: ["feed_id": .string("https://settings-only.example/feed")],
+                context: context)
+        ) { error in
+            XCTAssertTrue((error as? ToolError)?.message.contains("未知 feed_id") == true)
+        }
+    }
+
+    func testAuthorShapesInGetArticleAndListArticles() throws {
+        let root = try TestRoot()
+        let context = try root.createStandardServerContext()
+        try insertArticle(
+            root, id: "au-empty", title: "Empty", datePublished: 1_700_000_400, authors: "[]")
+        try insertArticle(
+            root, id: "au-invalid", title: "Invalid", datePublished: 1_700_000_300,
+            authors: "not json")
+        try insertArticle(
+            root, id: "au-mixed", title: "Mixed", datePublished: 1_700_000_200,
+            authors: "[{\"name\":\"A\"},{\"nope\":1}]")
+        try insertArticle(
+            root, id: "au-null", title: "Null", datePublished: 1_700_000_100, authors: nil)
+
+        let expected: [String: Any] = [
+            "au-empty": [String](),
+            "au-invalid": NSNull(),
+            "au-mixed": ["A"],
+            "au-null": NSNull(),
+        ]
+        for (articleID, authors) in expected {
+            let object = try decode(
+                try GetArticleTool.run(
+                    arguments: ["article_id": .string(articleID)], context: context))
+            XCTAssertTrue(object.keys.contains("authors"), "\(articleID) 缺少 authors 键")
+            if let array = authors as? [String] {
+                XCTAssertEqual(object["authors"] as? [String], array, articleID)
+            } else {
+                XCTAssertTrue(object["authors"] is NSNull, "\(articleID) 应为 null")
+            }
+        }
+
+        let listed = try decode(
+            try ListArticlesTool.run(
+                arguments: [
+                    "feed_id": .string("https://a.example/feed"), "limit": .int(100),
+                ], context: context))
+        let articles = try XCTUnwrap(listed["articles"] as? [[String: Any]])
+        let authorByID = Dictionary(
+            uniqueKeysWithValues: articles.map {
+                ($0["article_id"] as? String ?? "", $0["author"] ?? NSNull())
+            })
+        XCTAssertTrue(authorByID["au-empty"] is NSNull)
+        XCTAssertTrue(authorByID["au-invalid"] is NSNull)
+        XCTAssertEqual(authorByID["au-mixed"] as? String, "A")
+        XCTAssertTrue(authorByID["au-null"] is NSNull)
+    }
+
+    // MARK: - search_articles
+
+    func testSearchArticlesASCIITerms() throws {
+        let root = try TestRoot()
+        let context = try root.createStandardServerContext()
+        try insertStandardSearch(root)
+
+        let body = try decode(
+            try SearchArticlesTool.run(arguments: ["query": .string("body")], context: context))
+        XCTAssertEqual(body["query"] as? String, "body")
+        XCTAssertEqual(body["mode_used"] as? String, "terms")
+        XCTAssertEqual(body["total_matched"] as? Int, 5)
+        let articles = try XCTUnwrap(body["articles"] as? [[String: Any]])
+        XCTAssertEqual(
+            articles.map { $0["article_id"] as? String },
+            ["b1", "c1", "b2", "a2", "a3"])
+        XCTAssertEqual(articles[0]["feed_title"] as? String, "Bee Text")
+        XCTAssertEqual(articles[4]["title"] as? String, nil)
+        XCTAssertTrue(articles[4]["title"] is NSNull)
+
+        // `total_matched` does not depend on `limit`.
+        let limited = try decode(
+            try SearchArticlesTool.run(
+                arguments: ["query": .string("body"), "limit": .int(1)], context: context))
+        XCTAssertEqual(limited["total_matched"] as? Int, 5)
+        XCTAssertEqual(limited["returned"] as? Int, 1)
+        XCTAssertEqual(limited["omitted"] as? Int, 0)
+
+        let alpha = try decode(
+            try SearchArticlesTool.run(arguments: ["query": .string("alpha")], context: context))
+        XCTAssertEqual(alpha["total_matched"] as? Int, 1)
+    }
+
+    func testSearchArticlesOperatorsAreLiteralTerms() throws {
+        let root = try TestRoot()
+        let context = try root.createStandardServerContext()
+        try insertSearch(root, rows: [(7, "Boolean", "alpha beta")])
+        try insertArticle(
+            root, id: "bool1", title: "Boolean", datePublished: 1_700_000_400, searchRowID: 7)
+
+        let plain = try decode(
+            try SearchArticlesTool.run(arguments: ["query": .string("alpha")], context: context))
+        XCTAssertEqual(plain["total_matched"] as? Int, 1)
+
+        let operatorLiteral = try decode(
+            try SearchArticlesTool.run(
+                arguments: ["query": .string("alpha AND")], context: context))
+        XCTAssertEqual(operatorLiteral["mode_used"] as? String, "terms")
+        XCTAssertEqual(operatorLiteral["total_matched"] as? Int, 0)
+    }
+
+    func testSearchArticlesCJKUsesSubstring() throws {
+        let root = try TestRoot()
+        let context = try root.createStandardServerContext()
+        try insertSearch(root, rows: [
+            (7, "中文标题", "这是正文"),
+            (8, "另一个标题", "这是另一段正文"),
+        ])
+        try insertArticle(
+            root, id: "cjk1", title: "中文标题", datePublished: 1_700_000_400, searchRowID: 7)
+        try insertArticle(
+            root, id: "cjk2", title: "另一个标题", datePublished: 1_700_000_300, searchRowID: 8)
+
+        let byBody = try decode(
+            try SearchArticlesTool.run(arguments: ["query": .string("正文")], context: context))
+        XCTAssertEqual(byBody["mode_used"] as? String, "substring")
+        XCTAssertEqual(byBody["total_matched"] as? Int, 2)
+        XCTAssertEqual(
+            (byBody["articles"] as? [[String: Any]])?.map { $0["article_id"] as? String },
+            ["cjk1", "cjk2"])
+
+        let byTitle = try decode(
+            try SearchArticlesTool.run(arguments: ["query": .string("中文")], context: context))
+        XCTAssertEqual(byTitle["total_matched"] as? Int, 1)
+
+        // The substring only matches as a whole FTS token, which CJK text is not.
+        let directDatabase = try ReadOnlyDatabase(path: root.databaseURL.path)
+        let ftsDirect =
+            try directDatabase.withReadTransaction {
+                try directDatabase.scalarInt(
+                    "SELECT count(*) FROM search WHERE search MATCH ?",
+                    binds: [.text("\"正文\"")])
+            } ?? 0
+        XCTAssertEqual(ftsDirect, 0)
+    }
+
+    func testSearchArticlesHybridIntersects() throws {
+        let root = try TestRoot()
+        let context = try root.createStandardServerContext()
+        try insertSearch(root, rows: [
+            (7, "Alpha 中文", "hybrid body 中文 keyword"),
+            (8, "Alpha only", "body without CJK"),
+            (9, "中文 only", "中文 body"),
+        ])
+        try insertArticle(
+            root, id: "hy1", title: "Alpha 中文", datePublished: 1_700_000_400, searchRowID: 7)
+        try insertArticle(
+            root, id: "hy2", title: "Alpha only", datePublished: 1_700_000_300, searchRowID: 8)
+        try insertArticle(
+            root, id: "hy3", title: "中文 only", datePublished: 1_700_000_200, searchRowID: 9)
+
+        let hybrid = try decode(
+            try SearchArticlesTool.run(
+                arguments: ["query": .string("Alpha 中文")], context: context))
+        XCTAssertEqual(hybrid["mode_used"] as? String, "hybrid")
+        XCTAssertEqual(hybrid["total_matched"] as? Int, 1)
+        let articles = try XCTUnwrap(hybrid["articles"] as? [[String: Any]])
+        XCTAssertEqual(articles.map { $0["article_id"] as? String }, ["hy1"])
+
+        // Both classes inside one token also split and intersect.
+        let joined = try decode(
+            try SearchArticlesTool.run(
+                arguments: ["query": .string("Alpha中文")], context: context))
+        XCTAssertEqual(joined["mode_used"] as? String, "hybrid")
+        XCTAssertEqual(joined["total_matched"] as? Int, 1)
+    }
+
+    func testSearchArticlesSnippetFollowsFirstHit() throws {
+        let root = try TestRoot()
+        let context = try root.createStandardServerContext()
+        let bodyText = String(repeating: "x", count: 500) + "needle" + String(repeating: "y", count: 500)
+        try insertSearch(root, rows: [
+            (7, "Needle in title", bodyText),
+            (8, String(repeating: "z", count: 200) + "中文" + "tail", "needle body"),
+        ])
+        try insertArticle(
+            root, id: "snip1", title: "Needle in title", datePublished: 1_700_000_400,
+            searchRowID: 7)
+        try insertArticle(
+            root, id: "snip2", title: "Plain title", datePublished: 1_700_000_300, searchRowID: 8)
+
+        let titleHit = try decode(
+            try SearchArticlesTool.run(arguments: ["query": .string("needle")], context: context))
+        let titleSnippet = try XCTUnwrap(
+            (titleHit["articles"] as? [[String: Any]])?.first?["snippet"] as? String)
+        XCTAssertLessThanOrEqual(titleSnippet.count, ContentLimits.snippetMaximumCharacters)
+        XCTAssertTrue(titleSnippet.hasPrefix("Needle in title"))
+
+        let bodyHit = try decode(
+            try SearchArticlesTool.run(
+                arguments: ["query": .string("needle")], context: context))
+        // Both snippets satisfy the 400-character bound.
+        for article in (bodyHit["articles"] as? [[String: Any]]) ?? [] {
+            XCTAssertLessThanOrEqual(
+                (article["snippet"] as? String)?.count ?? 0,
+                ContentLimits.snippetMaximumCharacters)
+        }
+
+        // Hybrid prefers the CJK term's position, which is in the title.
+        let hybrid = try decode(
+            try SearchArticlesTool.run(
+                arguments: ["query": .string("needle 中文")], context: context))
+        let snippets = (hybrid["articles"] as? [[String: Any]])?.compactMap {
+            $0["snippet"] as? String
+        } ?? []
+        let cjkSnippet = try XCTUnwrap(snippets.first { $0.contains("中文") })
+        XCTAssertFalse(cjkSnippet.contains("needle"))
+    }
+
+    func testSearchArticlesTruncatesAt32KiB() throws {
+        let root = try TestRoot()
+        try root.writeDatabases(schema: try Fixture.sql("schema"), includeSeed: false)
+        try root.writeStandardOPML()
+
+        let title = String(repeating: "长标题", count: 50)
+        let body = "bulk " + String(repeating: "内容", count: 200)
+        var searchValues: [String] = []
+        var articleValues: [String] = []
+        for index in 0..<50 {
+            let id = "big\(index)"
+            searchValues.append("(\(index + 1), \(literal(title)), \(literal(body)))")
+            articleValues.append(
+                "(\(literal(id)), \(literal("https://a.example/feed")), \(literal(id)), \(literal(title)), NULL, NULL, \(1_700_000_000 + index), NULL, \(index + 1), '', NULL)"
+            )
+        }
+        let writer = try SQLiteWriter(path: root.databaseURL.path)
+        try writer.exec(
+            "INSERT INTO search (docid, title, body) VALUES \(searchValues.joined(separator: ","));")
+        try writer.exec(
+            """
+            INSERT INTO articles
+                (articleID, feedID, uniqueID, title, url, externalURL, datePublished,
+                 dateModified, searchRowID, contentText, authors)
+            VALUES \(articleValues.joined(separator: ","));
+            """)
+
+        let context = try root.prepare()
+        let json = try SearchArticlesTool.run(
+            arguments: ["query": .string("bulk"), "limit": .int(50)], context: context)
+        XCTAssertLessThanOrEqual(json.utf8.count, ContentLimits.searchArticlesBytes)
+
+        let decoded = try decode(json)
+        XCTAssertEqual(decoded["total_matched"] as? Int, 50)
+        XCTAssertEqual(decoded["truncated"] as? Bool, true)
+        let omitted = try XCTUnwrap(decoded["omitted"] as? Int)
+        XCTAssertGreaterThan(omitted, 0)
+        let articles = try XCTUnwrap(decoded["articles"] as? [[String: Any]])
+        XCTAssertEqual(decoded["returned"] as? Int, articles.count)
+        XCTAssertEqual(articles.count + omitted, 50)
+        XCTAssertEqual(articles[0]["article_id"] as? String, "big49")
+    }
+
+    func testSearchArticlesRejectsEmptyAndInvalidArguments() throws {
+        let root = try TestRoot()
+        let context = try root.createStandardServerContext()
+
+        for query in ["!!!", ".,;", "?!"] {
+            XCTAssertThrowsError(
+                try SearchArticlesTool.run(
+                    arguments: ["query": .string(query)], context: context)
+            ) { error in
+                XCTAssertEqual((error as? ToolError)?.message.contains("词项"), true)
+            }
+        }
+        XCTAssertThrowsError(
+            try SearchArticlesTool.run(arguments: ["query": .string("   ")], context: context)
+        ) { error in
+            XCTAssertEqual((error as? ToolError)?.message.contains("不能为空"), true)
+        }
+        XCTAssertThrowsError(
+            try SearchArticlesTool.run(arguments: nil, context: context))
+        XCTAssertThrowsError(
+            try SearchArticlesTool.run(
+                arguments: ["query": .string(String(repeating: "a", count: 201))],
+                context: context))
+        for badLimit in [0, 51] {
+            XCTAssertThrowsError(
+                try SearchArticlesTool.run(
+                    arguments: ["query": .string("a"), "limit": .int(badLimit)], context: context))
+        }
+    }
+
+    func testSearchLikeBudgetInterrupts() throws {
+        let root = try TestRoot()
+        try root.writeDatabases(schema: try Fixture.sql("schema"), includeSeed: false)
+        try root.writeStandardOPML()
+        let writer = try SQLiteWriter(path: root.databaseURL.path)
+        try writer.exec(
+            """
+            INSERT INTO feedSettings (feedURL, feedID, editedName)
+            VALUES ('https://a.example/feed', 'https://a.example/feed', 'Alpha');
+            """)
+
+        let bodyText = String(repeating: "数据库检索预算", count: 400)
+        let articleCount = 1000
+        let batchSize = 20
+        var index = 0
+        while index < articleCount {
+            let upper = min(index + batchSize, articleCount)
+            var searchValues: [String] = []
+            var articleValues: [String] = []
+            for row in index..<upper {
+                searchValues.append(
+                    "(\(row + 1), \(literal("标题 \(row)")), \(literal(bodyText)))")
+                articleValues.append(
+                    "(\(literal("slow\(row)")), \(literal("https://a.example/feed")), \(literal("slow\(row)")), \(literal("标题 \(row)")), NULL, NULL, \(1_700_000_000 + row), NULL, \(row + 1), '', NULL)"
+                )
+            }
+            try writer.exec(
+                "INSERT INTO search (docid, title, body) VALUES \(searchValues.joined(separator: ","));")
+            try writer.exec(
+                """
+                INSERT INTO articles
+                    (articleID, feedID, uniqueID, title, url, externalURL, datePublished,
+                     dateModified, searchRowID, contentText, authors)
+                VALUES \(articleValues.joined(separator: ","));
+                """)
+            index = upper
+        }
+
+        let context = try root.prepare()
+
+        XCTAssertThrowsError(
+            try SearchArticlesTool.run(
+                arguments: ["query": .string("检索")], context: context,
+                likeBudgetMilliseconds: 1)
+        ) { error in
+            XCTAssertTrue(
+                (error as? ToolError)?.message.contains("检索超时") == true,
+                "实际错误：\(error)")
+        }
+
+        let completed = try decode(
+            try SearchArticlesTool.run(
+                arguments: ["query": .string("检索")], context: context,
+                likeBudgetMilliseconds: 60_000))
+        XCTAssertEqual(completed["total_matched"] as? Int, articleCount)
+    }
+
+    // MARK: - unread_digest
+
+    func testUnreadDigestWindowBoundariesAndTotals() throws {
+        let root = try TestRoot()
+        try root.writeDatabases(schema: try Fixture.sql("schema"), includeSeed: false)
+        try root.writeOPML(
+            """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <opml version="1.1"><head/><body>
+                <outline text="News" title="News">
+                    <outline text="Feed One" title="Feed One" type="rss" xmlUrl="https://f1.example/feed"/>
+                    <outline text="Feed Two" title="Feed Two" type="rss" xmlUrl="https://f2.example/feed"/>
+                </outline>
+            </body></opml>
+            """
+        )
+        let writer = try SQLiteWriter(path: root.feedSettingsURL.path)
+        try writer.exec(
+            """
+            INSERT INTO feedSettings (feedURL, feedID, editedName) VALUES
+                ('https://f1.example/feed', 'https://f1.example/feed', 'Feed One'),
+                ('https://f2.example/feed', 'https://f2.example/feed', 'Feed Two');
+            """
+        )
+
+        let now = fixedNow.timeIntervalSince1970
+        let sinceOneDay = now - 86400
+        func article(_ id: String, feed: String, at date: Double?, read: Int) throws {
+            try insertArticle(
+                root, id: id, feedID: feed, title: id, datePublished: date,
+                status: (read: read, starred: 0, arrived: date ?? 0))
+        }
+        try article("w1", feed: "https://f1.example/feed", at: now - 3600, read: 0)
+        try article("w2", feed: "https://f1.example/feed", at: now - 1800, read: 1)
+        try article("w3", feed: "https://f1.example/feed", at: now - 100, read: 0)
+        try article("w4", feed: "https://f1.example/feed", at: now + 100, read: 0)
+        try article("w5", feed: "https://f1.example/feed", at: nil, read: 0)
+        try article("out1", feed: "https://f1.example/feed", at: now - 100_000, read: 0)
+        try article("w6", feed: "https://f2.example/feed", at: now - 200, read: 0)
+        try article("e1", feed: "https://f2.example/feed", at: sinceOneDay, read: 0)
+        try article("e2", feed: "https://f2.example/feed", at: now, read: 0)
+
+        let context = try root.prepare()
+        let oneDay = try decode(
+            try UnreadDigestTool.run(
+                arguments: ["days": .int(1)], context: context, now: fixedNow))
+        let window = try XCTUnwrap(oneDay["window"] as? [String: Any])
+        XCTAssertEqual(window["since"] as? String, "2027-01-14T08:00:00Z")
+        XCTAssertEqual(window["until"] as? String, "2027-01-15T08:00:00Z")
+
+        let totals = try XCTUnwrap(oneDay["totals"] as? [String: Any])
+        XCTAssertEqual(totals["unread_total"] as? Int, 8)
+        XCTAssertEqual(totals["unread_in_window"] as? Int, 5)
+        XCTAssertEqual(totals["articles_in_window"] as? Int, 6)
+        XCTAssertEqual(totals["unread_feeds"] as? Int, 2)
+
+        let feeds = try XCTUnwrap(oneDay["feeds"] as? [[String: Any]])
+        XCTAssertEqual(feeds.map { $0["feed_id"] as? String }, [
+            "https://f2.example/feed", "https://f1.example/feed",
+        ])
+        let f1 = feeds[1]
+        XCTAssertEqual(f1["title"] as? String, "Feed One")
+        XCTAssertEqual(f1["folder"] as? String, "News")
+        XCTAssertEqual(f1["unread_total"] as? Int, 5)
+        XCTAssertEqual(f1["unread_in_window"] as? Int, 2)
+        XCTAssertEqual(f1["latest_published_at"] as? String, "2027-01-15T07:58:20Z")
+        XCTAssertEqual(
+            (f1["articles"] as? [[String: Any]])?.map { $0["article_id"] as? String },
+            ["w3", "w1"])
+
+        let f2 = feeds[0]
+        XCTAssertEqual(f2["unread_in_window"] as? Int, 3)
+        XCTAssertEqual(f2["latest_published_at"] as? String, "2027-01-15T08:00:00Z")
+        XCTAssertEqual(
+            (f2["articles"] as? [[String: Any]])?.map { $0["article_id"] as? String },
+            ["e2", "w6", "e1"])
+
+        // D1 and D19.
+        let sumOneDay = feeds.reduce(0) { $0 + ($1["unread_in_window"] as? Int ?? 0) }
+        XCTAssertEqual(
+            sumOneDay + (oneDay["omitted_unread_in_window"] as? Int ?? 0),
+            totals["unread_in_window"] as? Int)
+        XCTAssertEqual(
+            totals["unread_feeds"] as? Int,
+            feeds.count + (oneDay["omitted_feeds"] as? Int ?? 0))
+        XCTAssertEqual(oneDay["truncated"] as? Bool, false)
+
+        let sevenDays = try decode(
+            try UnreadDigestTool.run(
+                arguments: ["days": .int(7)], context: context, now: fixedNow))
+        let sevenTotals = try XCTUnwrap(sevenDays["totals"] as? [String: Any])
+        XCTAssertEqual(sevenTotals["unread_total"] as? Int, 8)
+        XCTAssertEqual(sevenTotals["unread_in_window"] as? Int, 6)
+        XCTAssertEqual(sevenTotals["articles_in_window"] as? Int, 7)
+        let sevenFeeds = try XCTUnwrap(sevenDays["feeds"] as? [[String: Any]])
+        let sevenSum = sevenFeeds.reduce(0) { $0 + ($1["unread_in_window"] as? Int ?? 0) }
+        XCTAssertEqual(
+            sevenSum + (sevenDays["omitted_unread_in_window"] as? Int ?? 0),
+            sevenTotals["unread_in_window"] as? Int)
+    }
+
+    func testUnreadDigestExcludesEmptyFeedID() throws {
+        let root = try TestRoot()
+        try root.writeDatabases(schema: try Fixture.sql("schema"), includeSeed: false)
+        try root.writeOPML(
+            """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <opml version="1.1"><head/><body>
+                <outline text="News" title="News">
+                    <outline text="Feed One" title="Feed One" type="rss" xmlUrl="https://f1.example/feed"/>
+                </outline>
+            </body></opml>
+            """
+        )
+        let writer = try SQLiteWriter(path: root.feedSettingsURL.path)
+        try writer.exec(
+            """
+            INSERT INTO feedSettings (feedURL, feedID, editedName)
+            VALUES ('https://f1.example/feed', 'https://f1.example/feed', 'Feed One');
+            """
+        )
+
+        let now = fixedNow.timeIntervalSince1970
+        try insertArticle(
+            root, id: "good1", feedID: "https://f1.example/feed", title: "Good",
+            datePublished: now - 100, status: (read: 0, starred: 0, arrived: now - 100))
+        // Empty feedID is not a recognizable feed; it must not be counted in
+        // any digest total (D1/D2 must still agree).
+        try insertArticle(
+            root, id: "empty1", feedID: "", title: "Empty feed",
+            datePublished: now - 200, status: (read: 0, starred: 0, arrived: now - 200))
+        try insertArticle(
+            root, id: "empty2", feedID: "", title: "Empty feed read",
+            datePublished: now - 300, status: (read: 1, starred: 0, arrived: now - 300))
+
+        let context = try root.prepare()
+        let decoded = try decode(
+            try UnreadDigestTool.run(
+                arguments: ["days": .int(1)], context: context, now: fixedNow))
+        let totals = try XCTUnwrap(decoded["totals"] as? [String: Any])
+        XCTAssertEqual(totals["unread_total"] as? Int, 1)
+        XCTAssertEqual(totals["unread_in_window"] as? Int, 1)
+        XCTAssertEqual(totals["articles_in_window"] as? Int, 1)
+        XCTAssertEqual(totals["unread_feeds"] as? Int, 1)
+
+        let feeds = try XCTUnwrap(decoded["feeds"] as? [[String: Any]])
+        XCTAssertEqual(feeds.map { $0["feed_id"] as? String }, ["https://f1.example/feed"])
+        let sum = feeds.reduce(0) { $0 + ($1["unread_in_window"] as? Int ?? 0) }
+        XCTAssertEqual(
+            sum + (decoded["omitted_unread_in_window"] as? Int ?? 0),
+            totals["unread_in_window"] as? Int)
+        XCTAssertEqual(
+            totals["unread_feeds"] as? Int,
+            feeds.count + (decoded["omitted_feeds"] as? Int ?? 0))
+    }
+
+    func testUnreadDigestTruncatesWholeFeeds() throws {
+        let root = try TestRoot()
+        try root.writeDatabases(schema: try Fixture.sql("schema"), includeSeed: false)
+        try root.writeOPML(
+            "<?xml version=\"1.0\"?><opml version=\"1.1\"><head/><body></body></opml>")
+
+        let feedCount = 300
+        var settingsValues: [String] = []
+        var articleValues: [String] = []
+        for index in 0..<feedCount {
+            let feedID = "https://feed\(index).example/rss"
+            let title = "Feed \(index) " + String(repeating: "long-name-", count: 8)
+            settingsValues.append(
+                "(\(literal(feedID)), \(literal(feedID)), \(literal(title)))")
+            articleValues.append(
+                "(\(literal("digest\(index)")), \(literal(feedID)), \(literal("digest\(index)")), \(literal("Article \(index)")), NULL, NULL, \(1_799_999_000), NULL, NULL, '', NULL)"
+            )
+        }
+        let writer = try SQLiteWriter(path: root.feedSettingsURL.path)
+        try writer.exec(
+            """
+            INSERT INTO feedSettings (feedURL, feedID, editedName)
+            VALUES \(settingsValues.joined(separator: ","));
+            """)
+        let articleWriter = try SQLiteWriter(path: root.databaseURL.path)
+        try articleWriter.exec(
+            """
+            INSERT INTO articles
+                (articleID, feedID, uniqueID, title, url, externalURL, datePublished,
+                 dateModified, searchRowID, contentText, authors)
+            VALUES \(articleValues.joined(separator: ","));
+            """)
+
+        let context = try root.prepare()
+        let json = try UnreadDigestTool.run(
+            arguments: ["days": .int(1)], context: context, now: fixedNow)
+        XCTAssertLessThanOrEqual(json.utf8.count, ContentLimits.unreadDigestBytes)
+
+        let decoded = try decode(json)
+        let totals = try XCTUnwrap(decoded["totals"] as? [String: Any])
+        let feeds = try XCTUnwrap(decoded["feeds"] as? [[String: Any]])
+        let omittedFeeds = try XCTUnwrap(decoded["omitted_feeds"] as? Int)
+        let omittedUnread = try XCTUnwrap(decoded["omitted_unread_in_window"] as? Int)
+
+        XCTAssertEqual(totals["unread_in_window"] as? Int, feedCount)
+        XCTAssertGreaterThan(omittedFeeds, 0)
+        XCTAssertEqual(decoded["truncated"] as? Bool, true)
+        let sum = feeds.reduce(0) { $0 + ($1["unread_in_window"] as? Int ?? 0) }
+        XCTAssertEqual(sum + omittedUnread, totals["unread_in_window"] as? Int)
+        XCTAssertEqual(
+            totals["unread_feeds"] as? Int, feeds.count + omittedFeeds)
+        for feed in feeds {
+            let articles = feed["articles"] as? [[String: Any]] ?? []
+            XCTAssertLessThanOrEqual(articles.count, UnreadDigestTool.maxArticlesPerFeed)
+        }
+    }
+
+    func testP2ToolsOpenExactlyOneConnection() throws {
+        let root = try TestRoot()
+        let context = try root.createStandardServerContext()
+        try insertStandardSearch(root)
+        try insertArticle(
+            root, id: "conn1", title: "Conn", datePublished: 1_700_000_400, searchRowID: 1)
+
+        ReadOnlyDatabase.connectionCounter.reset()
+        _ = try SearchArticlesTool.run(arguments: ["query": .string("body")], context: context)
+        XCTAssertEqual(ReadOnlyDatabase.connectionCounter.count, 1)
+
+        ReadOnlyDatabase.connectionCounter.reset()
+        _ = try UnreadDigestTool.run(arguments: nil, context: context, now: fixedNow)
         XCTAssertEqual(ReadOnlyDatabase.connectionCounter.count, 1)
     }
 }

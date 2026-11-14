@@ -4,6 +4,7 @@ public enum ContentLimits {
     public static let listFeedsBytes = 64 * 1024
     public static let listArticlesBytes = 48 * 1024
     public static let searchArticlesBytes = 32 * 1024
+    public static let unreadDigestBytes = 48 * 1024
     public static let getArticleBytes = 96 * 1024
 
     public static let excerptCharacters = 160
@@ -70,6 +71,49 @@ public func encodeListArticlesBounded(
         response.articles.removeLast()
         response.returned = response.articles.count
         response.omitted += 1
+        response.truncated = true
+    }
+}
+
+/// Drops articles from the tail until the compact JSON payload fits the byte
+/// limit. `total_matched` is never affected; `returned` tracks the tail drops.
+public func encodeSearchArticlesBounded(
+    _ response: inout SearchArticlesResponse,
+    limit: Int = ContentLimits.searchArticlesBytes
+) throws -> String {
+    while true {
+        let data = try CompactJSON.encode(response)
+        if data.count <= limit {
+            return try utf8String(data)
+        }
+        guard !response.articles.isEmpty else {
+            throw ToolError("search_articles 响应超过 \(limit) 字节上限，且无法再丢弃文章")
+        }
+        response.articles.removeLast()
+        response.returned = response.articles.count
+        response.omitted += 1
+        response.truncated = true
+    }
+}
+
+/// Drops whole feeds from the tail until the compact JSON payload fits the
+/// byte limit. A feed's articles are never partially dropped; every dropped
+/// feed contributes its `unread_in_window` to `omitted_unread_in_window`, so
+/// D1 keeps holding under any truncation.
+public func encodeUnreadDigestBounded(
+    _ response: inout UnreadDigestResponse,
+    limit: Int = ContentLimits.unreadDigestBytes
+) throws -> String {
+    while true {
+        let data = try CompactJSON.encode(response)
+        if data.count <= limit {
+            return try utf8String(data)
+        }
+        guard let dropped = response.feeds.popLast() else {
+            throw ToolError("unread_digest 响应超过 \(limit) 字节上限，且无法再丢弃 feed")
+        }
+        response.omittedFeeds += 1
+        response.omittedUnreadInWindow += dropped.unreadInWindow
         response.truncated = true
     }
 }

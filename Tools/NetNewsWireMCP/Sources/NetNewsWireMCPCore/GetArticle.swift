@@ -120,7 +120,7 @@ public enum GetArticleTool {
     }
 
     private static func buildResponse(
-        from selected: SelectedArticle, directory: [String: FeedInfo], maxChars: Int
+        from selected: SelectedArticle, directory: FeedDirectory, maxChars: Int
     ) -> GetArticleResponse {
         let row = selected.row
         let articleID = row[0].stringValue ?? ""
@@ -152,7 +152,7 @@ public enum GetArticleTool {
             truncated = false
         }
 
-        let feed = directory[feedID]
+        let feed = directory.info(feedID)
         return GetArticleResponse(
             articleID: articleID,
             feedID: feedID,

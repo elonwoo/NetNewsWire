@@ -9,7 +9,13 @@ import sys
 
 from mcp_client import MCPClient, default_binary, tool_text
 
-EXPECTED_TOOL_NAMES = ["list_feeds", "list_articles", "get_article"]
+EXPECTED_TOOL_NAMES = [
+    "list_feeds",
+    "list_articles",
+    "get_article",
+    "search_articles",
+    "unread_digest",
+]
 
 
 def main() -> int:

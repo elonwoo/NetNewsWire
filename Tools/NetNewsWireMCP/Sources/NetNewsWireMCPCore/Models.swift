@@ -470,6 +470,270 @@ public struct GetArticleResponse: Codable, Sendable, Equatable {
     }
 }
 
+public struct SearchArticlesItem: Codable, Sendable, Equatable {
+    public let articleID: String
+    public let title: String?
+    public let feedID: String
+    public let feedTitle: String
+    public let publishedAt: String?
+    public let url: String?
+    public let read: Bool
+    public let starred: Bool
+    public let snippet: String
+
+    enum CodingKeys: String, CodingKey {
+        case articleID = "article_id"
+        case title
+        case feedID = "feed_id"
+        case feedTitle = "feed_title"
+        case publishedAt = "published_at"
+        case url
+        case read
+        case starred
+        case snippet
+    }
+
+    public init(
+        articleID: String,
+        title: String?,
+        feedID: String,
+        feedTitle: String,
+        publishedAt: String?,
+        url: String?,
+        read: Bool,
+        starred: Bool,
+        snippet: String
+    ) {
+        self.articleID = articleID
+        self.title = title
+        self.feedID = feedID
+        self.feedTitle = feedTitle
+        self.publishedAt = publishedAt
+        self.url = url
+        self.read = read
+        self.starred = starred
+        self.snippet = snippet
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(articleID, forKey: .articleID)
+        if let title {
+            try container.encode(title, forKey: .title)
+        } else {
+            try container.encodeNil(forKey: .title)
+        }
+        try container.encode(feedID, forKey: .feedID)
+        try container.encode(feedTitle, forKey: .feedTitle)
+        if let publishedAt {
+            try container.encode(publishedAt, forKey: .publishedAt)
+        } else {
+            try container.encodeNil(forKey: .publishedAt)
+        }
+        if let url {
+            try container.encode(url, forKey: .url)
+        } else {
+            try container.encodeNil(forKey: .url)
+        }
+        try container.encode(read, forKey: .read)
+        try container.encode(starred, forKey: .starred)
+        try container.encode(snippet, forKey: .snippet)
+    }
+}
+
+public struct SearchArticlesResponse: Codable, Sendable, Equatable {
+    public var query: String
+    public var modeUsed: String
+    public var totalMatched: Int
+    public var returned: Int
+    public var omitted: Int
+    public var truncated: Bool
+    public var articles: [SearchArticlesItem]
+
+    enum CodingKeys: String, CodingKey {
+        case query
+        case modeUsed = "mode_used"
+        case totalMatched = "total_matched"
+        case returned
+        case omitted
+        case truncated
+        case articles
+    }
+
+    public init(
+        query: String,
+        modeUsed: String,
+        totalMatched: Int,
+        returned: Int,
+        omitted: Int,
+        truncated: Bool,
+        articles: [SearchArticlesItem]
+    ) {
+        self.query = query
+        self.modeUsed = modeUsed
+        self.totalMatched = totalMatched
+        self.returned = returned
+        self.omitted = omitted
+        self.truncated = truncated
+        self.articles = articles
+    }
+}
+
+public struct UnreadDigestWindow: Codable, Sendable, Equatable {
+    public let since: String
+    public let until: String
+
+    public init(since: String, until: String) {
+        self.since = since
+        self.until = until
+    }
+}
+
+public struct UnreadDigestTotals: Codable, Sendable, Equatable {
+    public let unreadTotal: Int
+    public let unreadInWindow: Int
+    public let articlesInWindow: Int
+    public let unreadFeeds: Int
+
+    enum CodingKeys: String, CodingKey {
+        case unreadTotal = "unread_total"
+        case unreadInWindow = "unread_in_window"
+        case articlesInWindow = "articles_in_window"
+        case unreadFeeds = "unread_feeds"
+    }
+
+    public init(unreadTotal: Int, unreadInWindow: Int, articlesInWindow: Int, unreadFeeds: Int) {
+        self.unreadTotal = unreadTotal
+        self.unreadInWindow = unreadInWindow
+        self.articlesInWindow = articlesInWindow
+        self.unreadFeeds = unreadFeeds
+    }
+}
+
+public struct UnreadDigestArticle: Codable, Sendable, Equatable {
+    public let articleID: String
+    public let title: String?
+    public let publishedAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case articleID = "article_id"
+        case title
+        case publishedAt = "published_at"
+    }
+
+    public init(articleID: String, title: String?, publishedAt: String?) {
+        self.articleID = articleID
+        self.title = title
+        self.publishedAt = publishedAt
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(articleID, forKey: .articleID)
+        if let title {
+            try container.encode(title, forKey: .title)
+        } else {
+            try container.encodeNil(forKey: .title)
+        }
+        if let publishedAt {
+            try container.encode(publishedAt, forKey: .publishedAt)
+        } else {
+            try container.encodeNil(forKey: .publishedAt)
+        }
+    }
+}
+
+public struct UnreadDigestFeed: Codable, Sendable, Equatable {
+    public let feedID: String
+    public let title: String
+    public let folder: String?
+    public let unreadTotal: Int
+    public let unreadInWindow: Int
+    public let latestPublishedAt: String?
+    public let articles: [UnreadDigestArticle]
+
+    enum CodingKeys: String, CodingKey {
+        case feedID = "feed_id"
+        case title
+        case folder
+        case unreadTotal = "unread_total"
+        case unreadInWindow = "unread_in_window"
+        case latestPublishedAt = "latest_published_at"
+        case articles
+    }
+
+    public init(
+        feedID: String,
+        title: String,
+        folder: String?,
+        unreadTotal: Int,
+        unreadInWindow: Int,
+        latestPublishedAt: String?,
+        articles: [UnreadDigestArticle]
+    ) {
+        self.feedID = feedID
+        self.title = title
+        self.folder = folder
+        self.unreadTotal = unreadTotal
+        self.unreadInWindow = unreadInWindow
+        self.latestPublishedAt = latestPublishedAt
+        self.articles = articles
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(feedID, forKey: .feedID)
+        try container.encode(title, forKey: .title)
+        if let folder {
+            try container.encode(folder, forKey: .folder)
+        } else {
+            try container.encodeNil(forKey: .folder)
+        }
+        try container.encode(unreadTotal, forKey: .unreadTotal)
+        try container.encode(unreadInWindow, forKey: .unreadInWindow)
+        if let latestPublishedAt {
+            try container.encode(latestPublishedAt, forKey: .latestPublishedAt)
+        } else {
+            try container.encodeNil(forKey: .latestPublishedAt)
+        }
+        try container.encode(articles, forKey: .articles)
+    }
+}
+
+public struct UnreadDigestResponse: Codable, Sendable, Equatable {
+    public var window: UnreadDigestWindow
+    public var totals: UnreadDigestTotals
+    public var feeds: [UnreadDigestFeed]
+    public var truncated: Bool
+    public var omittedFeeds: Int
+    public var omittedUnreadInWindow: Int
+
+    enum CodingKeys: String, CodingKey {
+        case window
+        case totals
+        case feeds
+        case truncated
+        case omittedFeeds = "omitted_feeds"
+        case omittedUnreadInWindow = "omitted_unread_in_window"
+    }
+
+    public init(
+        window: UnreadDigestWindow,
+        totals: UnreadDigestTotals,
+        feeds: [UnreadDigestFeed],
+        truncated: Bool,
+        omittedFeeds: Int,
+        omittedUnreadInWindow: Int
+    ) {
+        self.window = window
+        self.totals = totals
+        self.feeds = feeds
+        self.truncated = truncated
+        self.omittedFeeds = omittedFeeds
+        self.omittedUnreadInWindow = omittedUnreadInWindow
+    }
+}
+
 public enum DateFormats {
     /// UTC ISO-8601 without fractional seconds, e.g. `2026-11-15T00:19:54Z`.
     public static func iso8601(_ date: Date) -> String {

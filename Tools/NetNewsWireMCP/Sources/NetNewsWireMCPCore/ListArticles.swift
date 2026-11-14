@@ -15,30 +15,87 @@ public struct FeedInfo: Sendable, Equatable {
     }
 }
 
-/// Feed identity and display names, keyed by both the display id and the feed
-/// URL. Built from `FeedSettings.feedSettings` plus the already parsed OPML;
-/// name priority matches `list_feeds` (editedName → OPML text/title → feed id).
-public enum FeedDirectory {
+/// Feed identity and display names.
+///
+/// The known `feed_id` set is `FeedSettings.feedID` ∪ OPML `xmlUrl` ∪
+/// `articles.feedID`; `feedURL` is deliberately not part of it, so a URL column
+/// value can never stand in for a feed id (filtering does not fall back to
+/// `articles.feedURL`). Display names still resolve through the settings row
+/// that matches either column, with priority
+/// editedName → OPML text/title → feed id.
+public struct FeedDirectory: Sendable, Equatable {
+    public let infoByID: [String: FeedInfo]
+    public let knownIDs: Set<String>
+
+    public init(infoByID: [String: FeedInfo], knownIDs: Set<String>) {
+        self.infoByID = infoByID
+        self.knownIDs = knownIDs
+    }
+
+    public func info(_ feedID: String) -> FeedInfo? {
+        infoByID[feedID]
+    }
+
+    public func isKnown(_ feedID: String) -> Bool {
+        knownIDs.contains(feedID)
+    }
+
     public static func load(
         from database: ReadOnlyDatabase, opml: ParsedOPML
-    ) throws -> [String: FeedInfo] {
+    ) throws -> FeedDirectory {
+        var infoByID: [String: FeedInfo] = [:]
+        var knownIDs: Set<String> = []
+
         let rows = try database.query("SELECT feedURL, feedID, editedName FROM fs.feedSettings")
-        var directory: [String: FeedInfo] = [:]
         for row in rows {
-            guard row.count >= 3, let feedURL = normalizeOptional(row[0].stringValue) else {
-                continue
-            }
-            let displayID = normalizeOptional(row[1].stringValue) ?? feedURL
+            guard row.count >= 3 else { continue }
+            let rawFeedID = normalizeOptional(row[1].stringValue)
+            if let rawFeedID { knownIDs.insert(rawFeedID) }
+            let rawFeedURL = normalizeOptional(row[0].stringValue)
+            let displayID = rawFeedID ?? rawFeedURL
+            guard let displayID else { continue }
+
+            let lookupURL = rawFeedURL ?? displayID
             let opmlFeed =
-                opml.feedsByURL[feedURL]
-                ?? normalizeOptional(row[1].stringValue).flatMap { opml.feedsByURL[$0] }
+                opml.feedsByURL[lookupURL] ?? rawFeedID.flatMap { opml.feedsByURL[$0] }
             let title = normalizeOptional(row[2].stringValue) ?? opmlFeed?.name ?? displayID
             let info = FeedInfo(
-                id: displayID, url: feedURL, title: title, folder: opmlFeed?.folder)
-            directory[displayID] = info
-            directory[feedURL] = info
+                id: displayID, url: lookupURL, title: title, folder: opmlFeed?.folder)
+            // Names are looked up by the feed id used in `articles.feedID`; a
+            // `feedURL` key is only a naming fallback and never grants access.
+            if infoByID[displayID] == nil { infoByID[displayID] = info }
+            if infoByID[lookupURL] == nil { infoByID[lookupURL] = info }
         }
-        return directory
+
+        for (xmlURL, feed) in opml.feedsByURL {
+            knownIDs.insert(xmlURL)
+            if infoByID[xmlURL] == nil {
+                infoByID[xmlURL] = FeedInfo(
+                    id: xmlURL,
+                    url: xmlURL,
+                    title: feed.name ?? xmlURL,
+                    folder: feed.folder
+                )
+            }
+        }
+
+        let articleFeedIDs = try database.query(
+            "SELECT DISTINCT feedID FROM articles WHERE feedID IS NOT NULL AND feedID <> ''")
+        for row in articleFeedIDs {
+            guard let feedID = row.first?.stringValue, !feedID.isEmpty else { continue }
+            knownIDs.insert(feedID)
+            if infoByID[feedID] == nil {
+                let opmlFeed = opml.feedsByURL[feedID]
+                infoByID[feedID] = FeedInfo(
+                    id: feedID,
+                    url: feedID,
+                    title: opmlFeed?.name ?? feedID,
+                    folder: opmlFeed?.folder
+                )
+            }
+        }
+
+        return FeedDirectory(infoByID: infoByID, knownIDs: knownIDs)
     }
 }
 
@@ -105,7 +162,7 @@ public enum ListArticlesTool {
         let (totalMatched, items) = try database.withReadTransaction {
             () -> (Int, [ListArticlesItem]) in
             let directory = try FeedDirectory.load(from: database, opml: context.opml)
-            if let feedID, directory[feedID] == nil {
+            if let feedID, !directory.isKnown(feedID) {
                 throw ToolError("未知 feed_id：\(feedID)")
             }
 
@@ -165,7 +222,7 @@ public enum ListArticlesTool {
                 let body = row[8].stringValue ?? ""
                 let contentText = row[9].stringValue ?? ""
                 let effectiveContent = body.isEmpty ? contentText : body
-                let feed = directory[articleFeedID]
+                let feed = directory.info(articleFeedID)
                 return ListArticlesItem(
                     articleID: articleID,
                     title: normalizeOptional(row[2].stringValue),

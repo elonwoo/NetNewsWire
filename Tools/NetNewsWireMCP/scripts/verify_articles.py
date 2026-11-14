@@ -48,7 +48,8 @@ def main() -> int:
         print("tools=", names)
         record(
             "tools_list",
-            sorted(names) == ["get_article", "list_articles", "list_feeds"],
+            sorted(names)
+            == ["get_article", "list_articles", "list_feeds", "search_articles", "unread_digest"],
             f"names={names}",
         )
 
