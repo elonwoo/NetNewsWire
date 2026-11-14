@@ -393,6 +393,14 @@ schema 校验阶段发生的读取失败按 3 处理：`Startup` 把 `validateDa
 
 **fixture 通用要求**：数据类 fixture 由实现者在 `Tests/` 里用临时库构造，不依赖真实数据；真实数据验收只覆盖「数据形态恰好有」的路径。数据 fixture 必须能独立重跑，构造与清理都在临时目录内。本节 fixture 清单是唯一口径，但两处覆盖并不完全重合：`scripts/verify_fixtures.py` 覆盖进程级与工具级场景（退出码、hot journal、env 覆盖、账户闸门、64 KiB 截断、游标、query 限流等），`Tests/NetNewsWireMCPTests/` 覆盖工具级数据 fixture；两个 P2 数据 fixture（`unread_digest` 48 KiB 整 feed 截断、3000 ms LIKE 预算中断）只在单测中构造（`testUnreadDigestTruncatesWholeFeeds`、`testSearchLikeBudgetInterrupts`）。客户端 fixture 不适用临时库，见 P2。
 
+**为什么这两个 fixture 留在单测**：这是有意决定，不是漏搬。两条的原因不一样，分开写。
+
+1. **LIKE 预算在 MCP 层没有注入点。** `SearchArticlesTool.run` 的 `likeBudgetMilliseconds` 是 Swift 参数，默认 3000；服务端分发（`Tools.swift` 的 `search_articles` 分支）只传 `arguments` 和 `context`，请求里多传键会被 `ToolArgument.rejectUnknown` 拒绝，也没有对应的环境变量。单测能直接传 `1` 毫秒，中断必然发生。走验收脚本只能用默认的 3000 毫秒，要撞上它得让 LIKE 真实跑满 3 秒：本机用 release 包实测，4000 行、每行 3200 个 CJK 字符（约 38 MB 正文）的 CJK LIKE 查询连整次 MCP 会话（含握手）约 0.07 秒，按线性外推需要约 30 万行、约 3 GB 正文才够。每次验收都造这种数据、等满预算，换来的仍是「超时后返回什么」这一条断言；而且耗时依赖机器，快机器上未必触发。
+
+2. **48 KiB 整 feed 截断搬过去很便宜，但没有新增覆盖。** 单测造 300 个 feed、每个一条未读文章（feed 标题各补到约 90 字符），实测这套数据构造约 0.01 秒，一次 MCP 会话约 0.25 秒；返回 49,029 字节，丢掉尾部 152 个 feed 后剩 148 个，正好卡在 49,152 字节（48 KiB）上限内。技术上完全搬得动，这里不拿「不方便」当理由。`encodeUnreadDigestBounded` 的做法是从尾部整只丢弃 feed，并把丢弃 feed 的 `unread_in_window` 累加进 `omittedUnreadInWindow`；单测直接对临时库调这个工具，字节上限、整 feed 丢弃和 D1/D19 不变量都已断言。验收脚本再跑一遍只是多包一层进程与 JSON-RPC，断言一模一样。
+
+3. **两个单测的断言就是这两条验收要判的东西。** digest 侧断言：`json.utf8.count <= ContentLimits.unreadDigestBytes`、`truncated == true`、`omittedFeeds > 0`、每个 feed 的 `articles.count <= maxArticlesPerFeed`、`sum(returned unread) + omitted_unread_in_window == totals.unread_in_window`、`totals.unread_feeds == feeds.count + omittedFeeds`。search 侧断言：1 毫秒预算时抛出的错误文本含「检索超时」；同一查询把预算放到 60 秒时会返回 `total_matched == 1000`，证明中断来自预算而不是数据或 SQL 错误。MCP 层只负责转发参数、把错误包成 `isError`，这部分已由 `verify_fixtures.py` 的其他用例覆盖。如果以后 LIKE 预算改成可通过环境变量或工具参数配置，这条差异就该消掉，把它搬进验收脚本。
+
 ### P0：骨架 + 数据定位 + 闸门 + `list_feeds`
 
 产出：§A.1 中除 `ListArticles`、`SearchArticles`、`GetArticle`、`UnreadDigest`、`Query` 外的全部文件，含 `README.md`；`tools/list` 只有 1 个工具。
