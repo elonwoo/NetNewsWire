@@ -14,11 +14,14 @@ final class ToolsTests: XCTestCase {
         return dictionary
     }
 
-    func testToolCatalogHasFiveTools() {
-        XCTAssertEqual(ToolCatalog.serverTools.count, 5)
+    func testToolCatalogHasSixTools() {
+        XCTAssertEqual(ToolCatalog.serverTools.count, 6)
         XCTAssertEqual(
             ToolCatalog.serverTools.map(\.name),
-            ["list_feeds", "list_articles", "get_article", "search_articles", "unread_digest"])
+            [
+                "list_feeds", "list_articles", "get_article", "search_articles",
+                "unread_digest", "query",
+            ])
         for tool in ToolCatalog.serverTools {
             XCTAssertEqual(tool.annotations.readOnlyHint, true)
             XCTAssertEqual(tool.annotations.destructiveHint, false)

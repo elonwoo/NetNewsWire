@@ -142,11 +142,18 @@ enum ArticleSupport {
 public enum ListArticlesTool {
     public static let defaultLimit = 20
     public static let maximumLimit = 100
+    static let cursorKind = "list_articles"
+
+    private struct Fetched {
+        let item: ListArticlesItem
+        let position: ArticleCursorPosition
+    }
 
     public static func run(arguments: [String: Value]?, context: ServerContext) throws -> String {
         let arguments = arguments ?? [:]
         try ToolArgument.rejectUnknown(
-            arguments, allowed: ["feed_id", "unread_only", "limit"], tool: "list_articles")
+            arguments, allowed: ["feed_id", "unread_only", "since", "after", "limit"],
+            tool: "list_articles")
 
         let feedID = try ToolArgument.string(arguments, "feed_id")
         let unreadOnly = try ToolArgument.bool(arguments, "unread_only") ?? false
@@ -158,9 +165,29 @@ public enum ListArticlesTool {
             throw ToolError("feed_id 不能为空字符串")
         }
 
+        let sinceSeconds: Double?
+        if let rawSince = try ToolArgument.string(arguments, "since") {
+            guard let seconds = DateFormats.epochSeconds(fromISO8601: rawSince) else {
+                throw ToolError("since 无法解析为 ISO 8601 时间：\(rawSince)")
+            }
+            sinceSeconds = seconds
+        } else {
+            sinceSeconds = nil
+        }
+
+        let filter = ArticleFilterFingerprint.list(
+            feedID: feedID, unreadOnly: unreadOnly, sinceSeconds: sinceSeconds)
+        let cursorPosition: ArticleCursorPosition?
+        if let rawAfter = try ToolArgument.string(arguments, "after") {
+            cursorPosition = try ArticleCursor.decode(
+                rawAfter, kind: cursorKind, filter: filter, tool: "list_articles")
+        } else {
+            cursorPosition = nil
+        }
+
         let database = try ToolDatabase.open(context: context)
-        let (totalMatched, items) = try database.withReadTransaction {
-            () -> (Int, [ListArticlesItem]) in
+        let (totalMatched, remainingMatched, fetched) = try database.withReadTransaction {
+            () -> (Int, Int, [Fetched]) in
             let directory = try FeedDirectory.load(from: database, opml: context.opml)
             if let feedID, !directory.isKnown(feedID) {
                 throw ToolError("未知 feed_id：\(feedID)")
@@ -175,20 +202,36 @@ public enum ListArticlesTool {
             if unreadOnly {
                 conditions.append("(st.articleID IS NULL OR COALESCE(st.read, 0) = 0)")
             }
+            if let sinceSeconds {
+                conditions.append("a.datePublished IS NOT NULL AND a.datePublished >= ?")
+                binds.append(.real(sinceSeconds))
+            }
+
+            let joins = """
+                FROM articles AS a
+                LEFT JOIN search AS f ON f.rowid = a.searchRowID
+                LEFT JOIN statuses AS st ON st.articleID = a.articleID
+                """
             let whereClause =
                 conditions.isEmpty ? "" : " WHERE " + conditions.joined(separator: " AND ")
 
-            let totalMatched =
-                try database.scalarInt(
-                    """
-                    SELECT count(*)
-                    FROM articles AS a
-                    LEFT JOIN statuses AS st ON st.articleID = a.articleID
-                    """ + whereClause,
-                    binds: binds
-                ) ?? 0
+            let totalMatched = try database.scalarInt(
+                "SELECT count(*) " + joins + whereClause, binds: binds) ?? 0
 
-            var rowBinds = binds
+            var pageConditions = conditions
+            var pageBinds = binds
+            if let cursorPosition {
+                let clause = ArticleCursor.positionClause(cursorPosition)
+                pageConditions.append(clause.condition)
+                pageBinds.append(contentsOf: clause.binds)
+            }
+            let pageWhereClause =
+                pageConditions.isEmpty ? "" : " WHERE " + pageConditions.joined(separator: " AND ")
+
+            let remainingMatched = try database.scalarInt(
+                "SELECT count(*) " + joins + pageWhereClause, binds: pageBinds) ?? 0
+
+            var rowBinds = pageBinds
             rowBinds.append(.integer(Int64(limit)))
             let rows = try database.query(
                 """
@@ -202,17 +245,14 @@ public enum ListArticlesTool {
                        COALESCE(st.starred, 0),
                        f.body,
                        a.contentText
-                FROM articles AS a
-                LEFT JOIN search AS f ON f.rowid = a.searchRowID
-                LEFT JOIN statuses AS st ON st.articleID = a.articleID
-                """ + whereClause + """
+                """ + "\n" + joins + pageWhereClause + """
                  ORDER BY (a.datePublished IS NULL) ASC, a.datePublished DESC, a.articleID DESC
                  LIMIT ?
                 """,
                 binds: rowBinds
             )
 
-            let items = rows.compactMap { row -> ListArticlesItem? in
+            let fetched = rows.compactMap { row -> Fetched? in
                 guard row.count >= 10,
                     let articleID = row[0].stringValue,
                     let articleFeedID = row[1].stringValue
@@ -223,7 +263,7 @@ public enum ListArticlesTool {
                 let contentText = row[9].stringValue ?? ""
                 let effectiveContent = body.isEmpty ? contentText : body
                 let feed = directory.info(articleFeedID)
-                return ListArticlesItem(
+                let item = ListArticlesItem(
                     articleID: articleID,
                     title: normalizeOptional(row[2].stringValue),
                     feedID: articleFeedID,
@@ -238,17 +278,52 @@ public enum ListArticlesTool {
                         String(body.prefix(ContentLimits.excerptCharacters))),
                     contentChars: effectiveContent.count
                 )
+                let position = ArticleCursorPosition(
+                    datePublished: row[3].doubleValue, articleID: articleID)
+                return Fetched(item: item, position: position)
             }
-            return (totalMatched, items)
+            return (totalMatched, remainingMatched, fetched)
         }
 
-        var response = ListArticlesResponse(
+        let base = ListArticlesResponse(
             totalMatched: totalMatched,
-            returned: items.count,
+            returned: fetched.count,
             omitted: 0,
             truncated: false,
-            articles: items
+            nextCursor: nil,
+            articles: fetched.map(\.item)
         )
-        return try encodeListArticlesBounded(&response)
+        return try encodeListArticlesWithCursor(
+            base, fetched: fetched, remainingMatched: remainingMatched, filter: filter)
+    }
+
+    /// Encodes the payload under the byte cap, then attaches `next_cursor` when
+    /// rows remain after the last *returned* item. A cursor adds bytes, so the
+    /// encode is repeated until the cursor anchor is stable.
+    private static func encodeListArticlesWithCursor(
+        _ base: ListArticlesResponse,
+        fetched: [Fetched],
+        remainingMatched: Int,
+        filter: String
+    ) throws -> String {
+        var nextCursor: String?
+        while true {
+            var candidate = base
+            candidate.nextCursor = nextCursor
+            let json = try encodeListArticlesBounded(&candidate)
+            guard remainingMatched > candidate.returned else {
+                if nextCursor == nil { return json }
+                nextCursor = nil
+                continue
+            }
+            guard candidate.returned > 0, candidate.returned <= fetched.count else {
+                throw ToolError("list_articles 无法为剩余结果生成游标")
+            }
+            let anchor = fetched[candidate.returned - 1].position
+            let encoded = try ArticleCursor.encode(
+                kind: cursorKind, filter: filter, position: anchor, tool: "list_articles")
+            if encoded == nextCursor { return json }
+            nextCursor = encoded
+        }
     }
 }

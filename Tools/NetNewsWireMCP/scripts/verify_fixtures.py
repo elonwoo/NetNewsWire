@@ -1074,6 +1074,500 @@ def case_p2_digest_empty_feed_id(binary: str) -> None:
         shutil.rmtree(base, ignore_errors=True)
 
 
+# ---------------------------------------------------------------------------
+# P2: cursor pagination and the query tool
+# ---------------------------------------------------------------------------
+
+
+def add_articles_bulk(account: Path, rows: list[tuple[str, str, float | None]]) -> None:
+    """Inserts (article_id, feed_id, published) rows plus unread statuses."""
+    connection = sqlite3.connect(account / "DB.sqlite3")
+    try:
+        connection.executemany(
+            "INSERT INTO articles "
+            "(articleID, feedID, uniqueID, title, datePublished, contentText) "
+            "VALUES (?, ?, ?, ?, ?, '')",
+            [(article_id, feed_id, article_id, article_id, published)
+             for article_id, feed_id, published in rows],
+        )
+        connection.executemany(
+            "INSERT INTO statuses (articleID, read, starred, dateArrived) "
+            "VALUES (?, 0, 0, ?)",
+            [(article_id, published or 0) for article_id, _, published in rows],
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def add_search_bulk(account: Path, rows: list[tuple[int, str, str]]) -> None:
+    connection = sqlite3.connect(account / "DB.sqlite3")
+    try:
+        connection.executemany(
+            "INSERT INTO search (docid, title, body) VALUES (?, ?, ?)", rows
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def link_search_rows(account: Path, pairs: list[tuple[str, int]]) -> None:
+    """Points articles.searchRowID at the given search docids."""
+    connection = sqlite3.connect(account / "DB.sqlite3")
+    try:
+        connection.executemany(
+            "UPDATE articles SET searchRowID = ? WHERE articleID = ?",
+            [(docid, article_id) for article_id, docid in pairs],
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def direct_article_order(database: sqlite3.Connection, where: str = "") -> list[str]:
+    clause = f" WHERE {where}" if where else ""
+    return [
+        row[0]
+        for row in database.execute(
+            "SELECT articleID FROM articles ORDER BY "
+            "(datePublished IS NULL) ASC, datePublished DESC, articleID DESC" + clause
+        )
+    ]
+
+
+def walk_search_pages(
+    binary: str, root: Path, query: str, limit: int
+) -> tuple[list[str], int, list[int]]:
+    ids: list[str] = []
+    totals: list[int] = []
+    pages = 0
+    cursor = None
+    while True:
+        arguments: dict = {"query": query, "limit": limit}
+        if cursor is not None:
+            arguments["after"] = cursor
+        result, payload, data = p1_call(binary, root, "search_articles", arguments)
+        if result["result"].get("isError"):
+            raise RuntimeError(f"search_articles 返回 isError：{payload[:160]!r}")
+        ids.extend(item["article_id"] for item in data["articles"])
+        totals.append(data["total_matched"])
+        pages += 1
+        cursor = data.get("next_cursor")
+        if not cursor or pages > 1000:
+            break
+    return ids, pages, totals
+
+
+def walk_list_pages(
+    binary: str, root: Path, arguments: dict, limit: int
+) -> tuple[list[str], int, list[int]]:
+    ids: list[str] = []
+    totals: list[int] = []
+    pages = 0
+    cursor = None
+    while True:
+        page_arguments = dict(arguments)
+        page_arguments["limit"] = limit
+        if cursor is not None:
+            page_arguments["after"] = cursor
+        result, payload, data = p1_call(binary, root, "list_articles", page_arguments)
+        if result["result"].get("isError"):
+            raise RuntimeError(f"list_articles 返回 isError：{payload[:160]!r}")
+        ids.extend(item["article_id"] for item in data["articles"])
+        totals.append(data["total_matched"])
+        pages += 1
+        cursor = data.get("next_cursor")
+        if not cursor or pages > 1000:
+            break
+    return ids, pages, totals
+
+
+def case_p2_cursor_null_boundary(binary: str) -> None:
+    base, _ = make_temporary_root("nnw-mcp-p2-cursor-null-")
+    try:
+        root = standard_root(base)
+        account = root / "Accounts/OnMyMac"
+        feed = "https://a.example/feed"
+        add_articles_bulk(
+            account,
+            [(f"nd{index}", feed, 1700001000 + index) for index in range(6)]
+            + [(f"nn{index}", feed, None) for index in range(5)],
+        )
+        # The same fixture feeds `search_articles`: docids 1..11 map 1:1 to the
+        # added rows above, so both cursor implementations cross the boundary.
+        # Docids 101+ avoid the seed's searchRowID 1..6 (which have no search
+        # rows of their own in this fixture).
+        link_search_rows(
+            account,
+            [(f"nd{index}", 101 + index) for index in range(6)]
+            + [(f"nn{index}", 107 + index) for index in range(5)],
+        )
+        add_search_bulk(
+            account,
+            [(101 + index, "", "boundary text") for index in range(11)],
+        )
+
+        ids, pages, totals = walk_list_pages(binary, root, {}, 2)
+        search_ids, search_pages, search_totals = walk_search_pages(
+            binary, root, "boundary", 2
+        )
+        database = sqlite3.connect(account / "DB.sqlite3")
+        try:
+            expected = direct_article_order(database)
+            null_ids = {
+                row[0]
+                for row in database.execute(
+                    "SELECT articleID FROM articles WHERE datePublished IS NULL"
+                )
+            }
+            search_expected = [
+                row[0]
+                for row in database.execute(
+                    "SELECT a.articleID FROM articles AS a "
+                    "JOIN search AS f ON f.rowid = a.searchRowID "
+                    "WHERE f.title LIKE '%boundary%' OR f.body LIKE '%boundary%' "
+                    "ORDER BY (a.datePublished IS NULL) ASC, a.datePublished DESC, "
+                    "a.articleID DESC"
+                )
+            ]
+            search_null_ids = {
+                row[0]
+                for row in database.execute(
+                    "SELECT a.articleID FROM articles AS a "
+                    "JOIN search AS f ON f.rowid = a.searchRowID "
+                    "WHERE (f.title LIKE '%boundary%' OR f.body LIKE '%boundary%') "
+                    "AND a.datePublished IS NULL"
+                )
+            }
+        finally:
+            database.close()
+
+        list_ok = (
+            ids == expected
+            and len(set(ids)) == len(ids)
+            and pages > 1
+            and totals == [len(expected)] * len(totals)
+            and ids[-1] in null_ids
+            and null_ids.issubset(set(ids))
+        )
+        search_ok = (
+            search_ids == search_expected
+            and len(set(search_ids)) == len(search_ids)
+            and search_pages > 1
+            and search_totals == [len(search_expected)] * len(search_totals)
+            and search_ids[-1] in search_null_ids
+            and search_null_ids.issubset(set(search_ids))
+        )
+        record(
+            "p2_cursor_null_boundary",
+            list_ok and search_ok,
+            f"list_pages={pages} collected={len(ids)} expected={len(expected)} "
+            f"list_ok={list_ok} duplicates={len(ids) - len(set(ids))} "
+            f"null_ids={len(null_ids)} null_all_reached={null_ids.issubset(set(ids))} "
+            f"last={ids[-1] if ids else None} "
+            f"search_pages={search_pages} search_collected={len(search_ids)} "
+            f"search_expected={len(search_expected)} search_ok={search_ok} "
+            f"search_null_ids={len(search_null_ids)}",
+        )
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def case_p2_cursor_completeness(binary: str) -> None:
+    base, _ = make_temporary_root("nnw-mcp-p2-cursor-complete-")
+    try:
+        root = standard_root(base)
+        account = root / "Accounts/OnMyMac"
+        feed = "https://a.example/feed"
+        add_articles_bulk(
+            account,
+            [(f"pg{index:03d}", feed, 1700002000 + index) for index in range(250)],
+        )
+        link_search_rows(
+            account, [(f"pg{index:03d}", 1001 + index) for index in range(250)]
+        )
+        add_search_bulk(
+            account,
+            [(1001 + index, "", "needle") for index in range(250)],
+        )
+
+        ids, pages, totals = walk_list_pages(binary, root, {}, 40)
+        search_ids, search_pages, search_totals = walk_search_pages(
+            binary, root, "needle", 40
+        )
+        database = sqlite3.connect(account / "DB.sqlite3")
+        try:
+            expected = direct_article_order(database)
+            search_expected = [
+                row[0]
+                for row in database.execute(
+                    "SELECT a.articleID FROM articles AS a "
+                    "JOIN search AS f ON f.rowid = a.searchRowID "
+                    "WHERE f.title LIKE '%needle%' OR f.body LIKE '%needle%' "
+                    "ORDER BY (a.datePublished IS NULL) ASC, a.datePublished DESC, "
+                    "a.articleID DESC"
+                )
+            ]
+        finally:
+            database.close()
+
+        list_ok = (
+            ids == expected
+            and len(set(ids)) == len(ids)
+            and len(ids) == len(expected)
+            and pages > 1
+            and totals == [len(expected)] * len(totals)
+        )
+        search_ok = (
+            search_ids == search_expected
+            and len(set(search_ids)) == len(search_ids)
+            and len(search_ids) == 250
+            and search_pages > 1
+            and search_totals == [len(search_expected)] * len(search_totals)
+        )
+        record(
+            "p2_cursor_completeness",
+            list_ok and search_ok,
+            f"pages={pages} collected={len(ids)} expected={len(expected)} "
+            f"list_ok={list_ok} duplicates={len(ids) - len(set(ids))} "
+            f"totals_stable={len(set(totals)) == 1} "
+            f"search_pages={search_pages} search_collected={len(search_ids)} "
+            f"search_expected={len(search_expected)} search_ok={search_ok} "
+            f"search_duplicates={len(search_ids) - len(set(search_ids))}",
+        )
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def case_p2_cursor_filter_mismatch(binary: str) -> None:
+    base, _ = make_temporary_root("nnw-mcp-p2-cursor-mismatch-")
+    try:
+        root = standard_root(base)
+        result, payload, data = p1_call(
+            binary, root, "list_articles",
+            {"feed_id": "https://a.example/feed", "limit": 1},
+        )
+        cursor = data.get("next_cursor")
+        if result["result"].get("isError") or not cursor:
+            record(
+                "p2_cursor_filter_mismatch", False,
+                f"无法取得游标 isError={result['result'].get('isError')} "
+                f"next_cursor={cursor!r}",
+            )
+            return
+
+        observations = {}
+        ok = True
+        for name, arguments in [
+            ("feed_changed", {"feed_id": "https://b.example/feed", "after": cursor}),
+            ("unread_changed", {"unread_only": True, "after": cursor}),
+            ("since_added", {"since": "2023-11-14T22:16:40Z", "after": cursor}),
+        ]:
+            mismatch_result, mismatch_payload = p1_call_raw(
+                binary, root, "list_articles", arguments
+            )
+            observations[name] = (
+                mismatch_result["result"].get("isError"),
+                "不匹配" in mismatch_payload,
+            )
+            if observations[name] != (True, True):
+                ok = False
+
+        invalid_result, invalid_payload = p1_call_raw(
+            binary, root, "list_articles", {"after": "not-base64!!"}
+        )
+        observations["invalid_format"] = (
+            invalid_result["result"].get("isError"),
+            "格式无效" in invalid_payload,
+        )
+        if observations["invalid_format"] != (True, True):
+            ok = False
+
+        record(
+            "p2_cursor_filter_mismatch",
+            ok,
+            f"cursor={cursor[:24]}... observations={observations}",
+        )
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def query_call(binary: str, root: Path, sql: str, limit: int | None = None):
+    arguments = {"sql": sql}
+    if limit is not None:
+        arguments["limit"] = limit
+    return p1_call_raw(binary, root, "query", arguments)
+
+
+def case_p2_query_rejections(binary: str) -> None:
+    base, _ = make_temporary_root("nnw-mcp-p2-query-reject-")
+    try:
+        root = standard_root(base)
+        ok = True
+        details = []
+
+        for name, sql, expected in [
+            ("multiple_statements", "SELECT 1 AS a; SELECT 2 AS b", "multiple_statements"),
+            ("pragma", "PRAGMA table_info(articles)", "not_select"),
+            ("attach", "ATTACH DATABASE ':memory:' AS extra", "not_select"),
+            ("update", "UPDATE articles SET title = 'x'", "not_select"),
+        ]:
+            result, payload = query_call(binary, root, sql)
+            passed = result["result"].get("isError") is True and expected in payload
+            ok = ok and passed
+            details.append(f"{name}={passed}")
+
+        single_result, single_payload = query_call(binary, root, "SELECT 1 AS a;")
+        single_ok = single_result["result"].get("isError") is False
+        ok = ok and single_ok
+        details.append(f"trailing_semicolon_ok={single_ok}")
+
+        write_result, write_payload = query_call(
+            binary, root,
+            "WITH c AS (SELECT 'x' AS id) "
+            "INSERT INTO statuses (articleID) SELECT id FROM c",
+        )
+        write_ok = (
+            write_result["result"].get("isError") is True
+            and "execution_error" in write_payload
+        )
+        ok = ok and write_ok
+        details.append(f"with_write_execution_error={write_ok}")
+
+        database = sqlite3.connect(root / "Accounts/OnMyMac/DB.sqlite3")
+        try:
+            injected = database.execute(
+                "SELECT count(*) FROM statuses WHERE articleID = 'x'"
+            ).fetchone()[0]
+        finally:
+            database.close()
+        ok = ok and injected == 0
+        details.append(f"no_side_effect={injected == 0}")
+
+        record("p2_query_rejections", ok, " ".join(details))
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def case_p2_query_limits(binary: str) -> None:
+    base, _ = make_temporary_root("nnw-mcp-p2-query-limits-")
+    try:
+        root = standard_root(base)
+        account = root / "Accounts/OnMyMac"
+        feed = "https://a.example/feed"
+        add_articles_bulk(
+            account,
+            [(f"ql{index:03d}", feed, 1700003000 + index) for index in range(250)],
+        )
+
+        result, payload = query_call(binary, root, "SELECT articleID FROM articles", 10)
+        data = json.loads(payload) if not result["result"].get("isError") else {}
+        capped_ok = (
+            result["result"].get("isError") is False
+            and data.get("row_count") == 10
+            and len(data.get("rows", [])) == 10
+            and data.get("truncated") is True
+            and data.get("truncated_reason") == "row_limit"
+        )
+
+        inner_result, inner_payload = query_call(
+            binary, root, "SELECT articleID FROM articles LIMIT 5", 50
+        )
+        inner = json.loads(inner_payload) if not inner_result["result"].get("isError") else {}
+        inner_ok = (
+            inner_result["result"].get("isError") is False
+            and inner.get("row_count") == 5
+            and inner.get("truncated") is False
+            and inner.get("truncated_reason") is None
+        )
+
+        attached_result, attached_payload = query_call(
+            binary, root, "SELECT count(*) AS n FROM fs.feedSettings"
+        )
+        attached = (
+            json.loads(attached_payload)
+            if not attached_result["result"].get("isError")
+            else {}
+        )
+        attached_ok = (
+            attached_result["result"].get("isError") is False
+            and attached.get("rows", [[None]])[0][0] == 4
+            and attached.get("columns") == ["n"]
+        )
+
+        count_result, count_payload = query_call(
+            binary, root, "SELECT count(*) AS n FROM articles"
+        )
+        count = json.loads(count_payload) if not count_result["result"].get("isError") else {}
+        count_ok = count.get("rows", [[None]])[0][0] == 256
+
+        passed = capped_ok and inner_ok and attached_ok and count_ok
+        record(
+            "p2_query_limits",
+            passed,
+            f"capped={capped_ok} inner_limit={inner_ok} attached={attached_ok} "
+            f"count={count_ok} rows={data.get('row_count')} "
+            f"reason={data.get('truncated_reason')}",
+        )
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def case_p2_query_byte_truncation(binary: str) -> None:
+    base, _ = make_temporary_root("nnw-mcp-p2-query-bytes-")
+    try:
+        root = standard_root(base)
+        account = root / "Accounts/OnMyMac"
+        body = "a" * 1000
+        add_search_bulk(
+            account,
+            [(index + 1, f"Row {index}", body) for index in range(200)],
+        )
+
+        result, payload = query_call(binary, root, "SELECT body FROM search", 100)
+        data = json.loads(payload) if not result["result"].get("isError") else {}
+        rows = data.get("rows", [])
+        payload_bytes = len(payload.encode("utf-8"))
+        passed = (
+            result["result"].get("isError") is False
+            and payload_bytes <= 64 * 1024
+            and data.get("row_count") == len(rows)
+            and len(rows) < 100
+            and data.get("truncated") is True
+            and data.get("truncated_reason") == "byte_limit"
+        )
+        record(
+            "p2_query_byte_truncation",
+            passed,
+            f"bytes={payload_bytes} rows={len(rows)} row_count={data.get('row_count')} "
+            f"truncated={data.get('truncated')} reason={data.get('truncated_reason')}",
+        )
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def case_p2_query_single_row_too_large(binary: str) -> None:
+    base, _ = make_temporary_root("nnw-mcp-p2-query-bigrow-")
+    try:
+        root = standard_root(base)
+        account = root / "Accounts/OnMyMac"
+        add_search_bulk(account, [(1, "Huge", "a" * 70000)])
+
+        result, payload = query_call(binary, root, "SELECT body FROM search WHERE docid = 1")
+        passed = (
+            result["result"].get("isError") is True
+            and "single_row_too_large" in payload
+            and "字节" in payload
+        )
+        record(
+            "p2_query_single_row_too_large",
+            passed,
+            f"isError={result['result'].get('isError')} message={payload[:160]!r}",
+        )
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", default=default_binary())
@@ -1104,6 +1598,13 @@ def main() -> int:
     case_p1_author_shapes(binary)
     case_p0_root_level_feed(binary)
     case_p2_digest_empty_feed_id(binary)
+    case_p2_cursor_null_boundary(binary)
+    case_p2_cursor_completeness(binary)
+    case_p2_cursor_filter_mismatch(binary)
+    case_p2_query_rejections(binary)
+    case_p2_query_limits(binary)
+    case_p2_query_byte_truncation(binary)
+    case_p2_query_single_row_too_large(binary)
 
     failed = [name for name, passed, _ in results if not passed]
     print(f"fixture_cases={len(results)} failed={len(failed)}")

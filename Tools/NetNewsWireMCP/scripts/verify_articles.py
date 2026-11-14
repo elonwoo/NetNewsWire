@@ -49,7 +49,14 @@ def main() -> int:
         record(
             "tools_list",
             sorted(names)
-            == ["get_article", "list_articles", "list_feeds", "search_articles", "unread_digest"],
+            == [
+                "get_article",
+                "list_articles",
+                "list_feeds",
+                "query",
+                "search_articles",
+                "unread_digest",
+            ],
             f"names={names}",
         )
 

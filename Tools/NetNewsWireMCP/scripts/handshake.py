@@ -15,6 +15,7 @@ EXPECTED_TOOL_NAMES = [
     "get_article",
     "search_articles",
     "unread_digest",
+    "query",
 ]
 
 

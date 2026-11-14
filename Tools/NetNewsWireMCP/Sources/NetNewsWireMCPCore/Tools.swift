@@ -168,6 +168,14 @@ public enum ToolCatalog {
                     "type": .string("boolean"),
                     "description": .string("只返回未读文章，默认 false"),
                 ]),
+                "since": .object([
+                    "type": .string("string"),
+                    "description": .string("ISO 8601 时间下界（含），datePublished 为 null 的文章不满足"),
+                ]),
+                "after": .object([
+                    "type": .string("string"),
+                    "description": .string("上一页返回的 next_cursor，原样回传；只能与相同 feed_id/unread_only/since 同用"),
+                ]),
                 "limit": .object([
                     "type": .string("integer"),
                     "minimum": .int(1),
@@ -230,6 +238,10 @@ public enum ToolCatalog {
                     "type": .string("string"),
                     "description": .string("检索词；trim 后 1..200 字符"),
                 ]),
+                "after": .object([
+                    "type": .string("string"),
+                    "description": .string("上一页返回的 next_cursor，原样回传；只能与相同 query 同用"),
+                ]),
                 "limit": .object([
                     "type": .string("integer"),
                     "minimum": .int(1),
@@ -274,8 +286,38 @@ public enum ToolCatalog {
         )
     )
 
+    public static let query = Tool(
+        name: "query",
+        description:
+            "执行单条只读 SELECT/WITH 语句，可访问主库与附加的 fs.feedSettings；供工具面覆盖不到时使用。只读。",
+        inputSchema: .object([
+            "type": .string("object"),
+            "properties": .object([
+                "sql": .object([
+                    "type": .string("string"),
+                    "description": .string("单条 SELECT 或 WITH 语句；多语句与非只读语句会被拒绝"),
+                ]),
+                "limit": .object([
+                    "type": .string("integer"),
+                    "minimum": .int(1),
+                    "maximum": .int(100),
+                    "default": .int(50),
+                    "description": .string("返回行数上限，默认 50，最大 100"),
+                ]),
+            ]),
+            "required": .array([.string("sql")]),
+            "additionalProperties": .bool(false),
+        ]),
+        annotations: Tool.Annotations(
+            readOnlyHint: true,
+            destructiveHint: false,
+            idempotentHint: true,
+            openWorldHint: false
+        )
+    )
+
     public static var serverTools: [Tool] {
-        [listFeeds, listArticles, getArticle, searchArticles, unreadDigest]
+        [listFeeds, listArticles, getArticle, searchArticles, unreadDigest, query]
     }
 }
 
@@ -386,6 +428,15 @@ public enum ToolDispatcher {
                 return failure(error.message)
             } catch {
                 return failure("unread_digest 失败：\(error)")
+            }
+        case ToolCatalog.query.name:
+            do {
+                let json = try QueryTool.run(arguments: arguments, context: context)
+                return .init(content: [text(json)], isError: false)
+            } catch let error as ToolError {
+                return failure(error.message)
+            } catch {
+                return failure("query 失败：\(error)")
             }
         default:
             return failure("未知工具：\(name)")

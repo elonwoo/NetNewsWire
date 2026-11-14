@@ -2,7 +2,7 @@
 
 只读的 NetNewsWire MCP 服务端，独立 SPM 可执行文件，使用 MCP stdio transport。
 
-本仓库实现 **P2 阶段（v1 工具面冻结）**：数据根定位、账户闸门、只读数据库打开与 schema 断言，以及 5 个只读工具：`list_feeds`、`list_articles`、`get_article`、`search_articles`、`unread_digest`。
+本仓库实现 **v2**：数据根定位、账户闸门、只读数据库打开与 schema 断言，以及 6 个只读工具：`list_feeds`、`list_articles`、`get_article`、`search_articles`、`unread_digest`、`query`。`list_articles` 与 `search_articles` 支持 keyset 游标分页；`query` 是受控的只读 SQL 出口。
 
 ## 构建
 
@@ -60,7 +60,7 @@ claude mcp add --scope user netnewswire -- \
 - 打开前显式 stat 文件大小：0 字节数据库按退出 5 处理。
 - 可空字段（feed 的 `folder`、`home_page_url`、`latest_published_at` 与候选根的 `db_mtime`）在无值时输出显式 `null`，键始终存在，不会被省略。
 
-## 工具（5 个）
+## 工具（6 个）
 
 ### `list_feeds`
 
@@ -98,9 +98,11 @@ claude mcp add --scope user netnewswire -- \
 | --- | --- | --- | --- |
 | `feed_id` | string | null | 精确匹配 `articles.feedID`；未知则 `isError` |
 | `unread_only` | bool | false | 只返回未读文章；缺 `statuses` 行按未读计 |
+| `since` | string | null | ISO 8601 下界，含 `datePublished >= since`；`datePublished` 为 null 不满足；解析失败 `isError` |
+| `after` | string | null | 上一页的 `next_cursor`，不透明，原样回传；只能与相同 `feed_id`/`unread_only`/`since` 同用 |
 | `limit` | int | 20 | 1..100 |
 
-返回 `total_matched`、`returned`、`omitted`、`truncated`、`articles[]`。每项：`article_id`、`title`、`feed_id`、`feed_title`、`folder`、`published_at`、`url`、`read`、`starred`、`author`、`excerpt`、`content_chars`。
+返回 `total_matched`、`returned`、`omitted`、`truncated`、`next_cursor`、`articles[]`。每项：`article_id`、`title`、`feed_id`、`feed_title`、`folder`、`published_at`、`url`、`read`、`starred`、`author`、`excerpt`、`content_chars`。
 
 口径：
 
@@ -112,7 +114,10 @@ claude mcp add --scope user netnewswire -- \
 - `author` 取 `authors` JSON 首元素的 `name`；列 null、解析失败或空数组为 `null`。
 - `content_chars` 是 `get_article` 会返回的那份正文的总 Character 数（`search.body` 非空用它，否则用 `contentText`），不返回正文本身。
 - `feed_title` / `folder` 的取值与 `list_feeds` 一致。
-- 响应超过 48 KiB 时从尾部丢弃文章并置 `truncated` / `omitted`；`returned + omitted == min(total_matched, limit)`，`omitted` 只统计 `limit` 窗口内被丢弃的条数。
+- 响应超过 48 KiB 时从尾部丢弃文章并置 `truncated` / `omitted`；`returned + omitted == min(remaining_matched, limit)`，`omitted` 只统计 `limit` 窗口内被丢弃的条数。
+- 游标是 keyset 语义，位置由 `(datePublished, articleID)` 决定，不使用 offset。游标区分「有日期」与「无日期」两段，能跨 null 日期边界：有日期行全部走完后，下一页从 null 行继续。
+- `next_cursor` 仅在当前页最后一行之后还有满足过滤条件的行时非 null；因字节上限被丢弃的行也在「之后」，同样会给出游标。`total_matched` 与 `after`/`limit` 无关。
+- 游标只在相同过滤条件（`feed_id`、`unread_only`、`since`）下有效；格式非法或条件不匹配返回 `isError`。
 
 ### `get_article`
 
@@ -143,9 +148,10 @@ claude mcp add --scope user netnewswire -- \
 | 参数 | 类型 | 默认 | 约束 |
 | --- | --- | --- | --- |
 | `query` | string | 必填 | trim 后 1..200 个 Character |
+| `after` | string | null | 上一页的 `next_cursor`，不透明，原样回传；只能与相同 `query` 同用 |
 | `limit` | int | 20 | 1..50 |
 
-返回 `query`、`mode_used`、`total_matched`、`returned`、`omitted`、`truncated`、`articles[]`。每项：`article_id`、`title`、`feed_id`、`feed_title`、`published_at`、`url`、`read`、`starred`、`snippet`。
+返回 `query`、`mode_used`、`total_matched`、`returned`、`omitted`、`truncated`、`next_cursor`、`articles[]`。每项：`article_id`、`title`、`feed_id`、`feed_title`、`published_at`、`url`、`read`、`starred`、`snippet`。
 
 检索策略：
 
@@ -155,8 +161,9 @@ claude mcp add --scope user netnewswire -- \
 - 全部为 ASCII 段时 `mode_used = terms`，全部为 CJK 段时 `substring`，两类都有时 `hybrid`（FTS ∩ LIKE）。拆分后没有任何可检索词项（例如全是标点）→ `isError`「查询没有可检索的词项」，不返回结果对象。
 - 任何含 LIKE 的查询都有 3000 ms 预算；超时返回 `isError`「检索超时」并提示缩小范围，不返回部分结果。
 - `snippet`：先在 `search.title` 找首个命中位置，找不到再找 `search.body`；以命中位置为中心取前后各 80 个 Character，压平换行，总长不超过 400。两处都不命中时取 `body` 开头。混合查询优先用 CJK 词项的命中位置。
-- 排序固定 `datePublished DESC, articleID DESC`，null 日期排最后；`total_matched` 与 `limit` 无关。
-- 响应超过 32 KiB 时从尾部丢弃文章，`returned + omitted == min(total_matched, limit)`。
+- 排序固定 `datePublished DESC, articleID DESC`，null 日期排最后；`total_matched` 与 `limit`/`after` 无关。
+- 游标语义与 `list_articles` 相同：keyset、区分有无日期、可跨 null 边界、只在相同 `query` 下有效。
+- 响应超过 32 KiB 时从尾部丢弃文章，`returned + omitted == min(remaining_matched, limit)`。
 
 ### `unread_digest`
 
@@ -179,6 +186,29 @@ claude mcp add --scope user netnewswire -- \
 - `feed` 排序为 `unread_in_window DESC, latest_published_at DESC, feed_id ASC`，null 日期排最后。
 - 响应超过 48 KiB 时从尾部丢弃整个 feed（不拆单条明细）；`truncated` 当且仅当 `omitted_feeds > 0`。
 - 不变量：`sum(feeds[].unread_in_window) + omitted_unread_in_window == totals.unread_in_window`，且 `unread_feeds == len(feeds) + omitted_feeds`，任何截断下都成立。
+
+### `query`
+
+受控的只读 SQL 出口，不是主路径：它把 schema 知识推给调用方，表结构变更时最先坏；保留它是工具面覆盖不到时的逃生门。
+
+| 参数 | 类型 | 默认 | 约束 |
+| --- | --- | --- | --- |
+| `sql` | string | 必填 | 单条 `SELECT` 或 `WITH` 语句 |
+| `limit` | int | 50 | 1..100 |
+
+返回 `columns`、`rows`、`row_count`、`truncated`、`truncated_reason`、`elapsed_ms`。
+
+- `columns` 按 SELECT 顺序，允许重名；列名与直接执行原语句一致。
+- `rows` 是二维数组：NULL → `null`；INTEGER/REAL → number，绝对值超过 2^53 的 INTEGER 转十进制字符串；TEXT → string；BLOB → 小写十六进制字符串。
+- 单条语句：多语句返回 `isError`，类别 `multiple_statements`；末尾多余分号与注释允许。
+- 跳过前导空白与注释后首关键字必须是 `SELECT` 或 `WITH`（大小写不敏感）。`EXPLAIN`、`PRAGMA`、`ATTACH`、`UPDATE`、`DELETE`、`INSERT` 等一律 `isError`，类别 `not_select`。
+- 自动限流：有效行数上限 `min(limit, 100)`。实现按原语句逐行读取并在第 `limit+1` 行停止，因此不改写 SQL、不改列名；语句自带更小的 `LIMIT` 时以语句为准且不置截断。
+- 响应上限 64 KiB。第一行单独超过 64 KiB → `isError`，类别 `single_row_too_large`，文本含实际字节数与「请缩小列投影或加过滤」。只有多行累计超限才从尾部丢行，`truncated = true`、原因 `byte_limit`。
+- 3000 ms 预算，与 `search_articles` 共用同一 progress handler；超时返回 `isError`，类别 `timeout`。
+- 与其它工具使用同一条只读连接与同一个 `BEGIN DEFERRED` 事务，`ATTACH` 的 `fs` 别名可用（`fs.feedSettings`）。任何写尝试（包括 `WITH` 内的写）由只读连接拦下并返回 `execution_error`，不做静态可写性判定。
+- 错误不回显整条 SQL：只给错误类别与原 SQL 前 200 字符。类别覆盖 `multiple_statements`、`not_select`、`syntax_error`、`timeout`、`execution_error`、`single_row_too_large`。
+- `truncated_reason` 优先级：因字节上限丢行 → `byte_limit`；仅因行数上限丢行 → `row_limit`；两者同时发生报 `byte_limit`。
+- 结果顺序不承诺，除非语句自带 `ORDER BY`；`query` 不提供游标，需要翻页时由调用方把条件下推进 SQL。
 
 ### 已知限制
 
@@ -210,18 +240,20 @@ python3 Tools/NetNewsWireMCP/scripts/verify_list_feeds.py
 python3 Tools/NetNewsWireMCP/scripts/verify_articles.py
 python3 Tools/NetNewsWireMCP/scripts/verify_search.py
 python3 Tools/NetNewsWireMCP/scripts/verify_digest.py
+python3 Tools/NetNewsWireMCP/scripts/verify_pagination.py
 python3 Tools/NetNewsWireMCP/scripts/verify_readonly.py
 python3 Tools/NetNewsWireMCP/scripts/verify_fixtures.py
 python3 Tools/NetNewsWireMCP/scripts/verify_client.py
 ```
 
-- `handshake.py`：真实 stdio 会话，`initialize` + `tools/list`（5 个工具，全部 `readOnlyHint: true`）+ 一次 `list_feeds`。
+- `handshake.py`：真实 stdio 会话，`initialize` + `tools/list`（6 个工具，全部 `readOnlyHint: true`）+ 一次 `list_feeds`。
 - `verify_list_feeds.py`：在活跃数据根上把 `totals` 与等价 SQL 直查逐项比较。
 - `verify_articles.py`：在活跃数据根上把 `list_articles` 的过滤计数与上限不变量、`get_article` 的 `content_bytes`、重复 URL 的 `duplicate_count` 与等价 SQL 直查比较。
 - `verify_search.py`：在活跃数据根上分别用 ASCII、CJK、混合查询，把 `total_matched` 与「FTS 直查 / LIKE 直查 / 两者交集」比较，并检查 `mode_used`、排序、`snippet` 上限与 `total_matched` 与 `limit` 无关。
 - `verify_digest.py`：用工具返回的 `window.since`/`until` 作为同一窗口边界，把 `unread_digest` 的窗口计数与直查比较，并检查 D1、D19、截断标记、排序与明细。
+- `verify_pagination.py`：在活跃数据根上走完 `list_articles` 的全部页（全量与 `unread_only`），与直查比较集合、顺序、重复与 `total_matched` 稳定性；验证 `since` 对照与 null 日期边界；对 `query` 跑计数、join `fs.feedSettings`、自动加限、多语句/非 SELECT 拒绝、首行超限与多行字节截断。
 - `verify_readonly.py`：用 SQLite `.backup` 生成一致快照，连续 200 次调用前后比较三个文件的 sha256 与 mtime。
-- `verify_fixtures.py`：临时库构造退出码 3/4/5/6、env 覆盖、账户闸门、64 KiB 截断、stdout 纯净性，以及 P1 的 `contentText` 兜底、`statuses` 缺行、96 KiB 响应截断、孤儿 `feedID`、作者形态。
+- `verify_fixtures.py`：临时库构造退出码 3/4/5/6、env 覆盖、账户闸门、64 KiB 截断、stdout 纯净性，P1 的 `contentText` 兜底、`statuses` 缺行、96 KiB 响应截断、孤儿 `feedID`、作者形态，以及 v2 的游标跨 null 边界、分页完备性、游标条件不匹配拒绝、`query` 多语句/非 SELECT/自动限流/字节截断/首行超限。
 - `verify_client.py`：用 `claude mcp add --scope user` 注册本服务，确认 `claude mcp list` 显示 Connected，随后立即移除并确认 `~/.claude.json` 无残留。
 
 P2 的两个数据 fixture（`unread_digest` 48 KiB 整 feed 截断、3000 ms LIKE 预算中断）由单元测试在临时库中构造：`testUnreadDigestTruncatesWholeFeeds`、`testSearchLikeBudgetInterrupts`。

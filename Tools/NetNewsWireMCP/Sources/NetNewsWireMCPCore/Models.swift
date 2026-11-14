@@ -321,6 +321,7 @@ public struct ListArticlesResponse: Codable, Sendable, Equatable {
     public var returned: Int
     public var omitted: Int
     public var truncated: Bool
+    public var nextCursor: String?
     public var articles: [ListArticlesItem]
 
     enum CodingKeys: String, CodingKey {
@@ -328,6 +329,7 @@ public struct ListArticlesResponse: Codable, Sendable, Equatable {
         case returned
         case omitted
         case truncated
+        case nextCursor = "next_cursor"
         case articles
     }
 
@@ -336,13 +338,29 @@ public struct ListArticlesResponse: Codable, Sendable, Equatable {
         returned: Int,
         omitted: Int,
         truncated: Bool,
+        nextCursor: String?,
         articles: [ListArticlesItem]
     ) {
         self.totalMatched = totalMatched
         self.returned = returned
         self.omitted = omitted
         self.truncated = truncated
+        self.nextCursor = nextCursor
         self.articles = articles
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(totalMatched, forKey: .totalMatched)
+        try container.encode(returned, forKey: .returned)
+        try container.encode(omitted, forKey: .omitted)
+        try container.encode(truncated, forKey: .truncated)
+        if let nextCursor {
+            try container.encode(nextCursor, forKey: .nextCursor)
+        } else {
+            try container.encodeNil(forKey: .nextCursor)
+        }
+        try container.encode(articles, forKey: .articles)
     }
 }
 
@@ -548,6 +566,7 @@ public struct SearchArticlesResponse: Codable, Sendable, Equatable {
     public var returned: Int
     public var omitted: Int
     public var truncated: Bool
+    public var nextCursor: String?
     public var articles: [SearchArticlesItem]
 
     enum CodingKeys: String, CodingKey {
@@ -557,6 +576,7 @@ public struct SearchArticlesResponse: Codable, Sendable, Equatable {
         case returned
         case omitted
         case truncated
+        case nextCursor = "next_cursor"
         case articles
     }
 
@@ -567,6 +587,7 @@ public struct SearchArticlesResponse: Codable, Sendable, Equatable {
         returned: Int,
         omitted: Int,
         truncated: Bool,
+        nextCursor: String?,
         articles: [SearchArticlesItem]
     ) {
         self.query = query
@@ -575,7 +596,107 @@ public struct SearchArticlesResponse: Codable, Sendable, Equatable {
         self.returned = returned
         self.omitted = omitted
         self.truncated = truncated
+        self.nextCursor = nextCursor
         self.articles = articles
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(query, forKey: .query)
+        try container.encode(modeUsed, forKey: .modeUsed)
+        try container.encode(totalMatched, forKey: .totalMatched)
+        try container.encode(returned, forKey: .returned)
+        try container.encode(omitted, forKey: .omitted)
+        try container.encode(truncated, forKey: .truncated)
+        if let nextCursor {
+            try container.encode(nextCursor, forKey: .nextCursor)
+        } else {
+            try container.encodeNil(forKey: .nextCursor)
+        }
+        try container.encode(articles, forKey: .articles)
+    }
+}
+
+/// One cell of a `query` result. SQLite integers beyond 2^53 are encoded as
+/// decimal strings because JSON numbers cannot represent them exactly; BLOBs
+/// become lowercase hex strings.
+public enum QueryValue: Encodable, Sendable, Equatable {
+    case null
+    case integer(Int64)
+    case real(Double)
+    case text(String)
+    case blobHex(String)
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .null:
+            try container.encodeNil()
+        case .integer(let value):
+            if value.magnitude > 9_007_199_254_740_992 {
+                try container.encode(String(value))
+            } else {
+                try container.encode(value)
+            }
+        case .real(let value):
+            if value.isFinite {
+                try container.encode(value)
+            } else {
+                try container.encodeNil()
+            }
+        case .text(let value):
+            try container.encode(value)
+        case .blobHex(let value):
+            try container.encode(value)
+        }
+    }
+}
+
+public struct QueryResponse: Encodable, Sendable, Equatable {
+    public var columns: [String]
+    public var rows: [[QueryValue]]
+    public var rowCount: Int
+    public var truncated: Bool
+    public var truncatedReason: String?
+    public var elapsedMs: Int
+
+    enum CodingKeys: String, CodingKey {
+        case columns
+        case rows
+        case rowCount = "row_count"
+        case truncated
+        case truncatedReason = "truncated_reason"
+        case elapsedMs = "elapsed_ms"
+    }
+
+    public init(
+        columns: [String],
+        rows: [[QueryValue]],
+        rowCount: Int,
+        truncated: Bool,
+        truncatedReason: String?,
+        elapsedMs: Int
+    ) {
+        self.columns = columns
+        self.rows = rows
+        self.rowCount = rowCount
+        self.truncated = truncated
+        self.truncatedReason = truncatedReason
+        self.elapsedMs = elapsedMs
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(columns, forKey: .columns)
+        try container.encode(rows, forKey: .rows)
+        try container.encode(rowCount, forKey: .rowCount)
+        try container.encode(truncated, forKey: .truncated)
+        if let truncatedReason {
+            try container.encode(truncatedReason, forKey: .truncatedReason)
+        } else {
+            try container.encodeNil(forKey: .truncatedReason)
+        }
+        try container.encode(elapsedMs, forKey: .elapsedMs)
     }
 }
 
@@ -745,6 +866,22 @@ public enum DateFormats {
 
     public static func iso8601(epochSeconds: Double) -> String {
         iso8601(Date(timeIntervalSince1970: epochSeconds))
+    }
+
+    /// Parses an ISO 8601 timestamp with or without fractional seconds.
+    /// Returns nil when the string is not a valid ISO 8601 date-time.
+    public static func epochSeconds(fromISO8601 string: String) -> Double? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        fractional.timeZone = TimeZone(secondsFromGMT: 0)
+        if let date = fractional.date(from: string) {
+            return date.timeIntervalSince1970
+        }
+
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        plain.timeZone = TimeZone(secondsFromGMT: 0)
+        return plain.date(from: string)?.timeIntervalSince1970
     }
 }
 

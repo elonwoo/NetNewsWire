@@ -28,7 +28,7 @@ public enum SQLValue: Sendable, Equatable {
     case integer(Int64)
     case real(Double)
     case text(String)
-    case blob
+    case blob(Data)
 
     public var intValue: Int? {
         switch self {
@@ -241,6 +241,85 @@ public final class ReadOnlyDatabase {
         try query(sql, binds: binds).first?.first?.intValue
     }
 
+    /// Statement-level failure from `queryCapped`. `phase` lets callers tell a
+    /// compile-time (syntax) failure from a runtime (execution) failure; the
+    /// caller decides which category to report.
+    public struct QueryFailure: Error, Sendable, CustomStringConvertible {
+        public enum Phase: Sendable, Equatable {
+            case prepare
+            case step
+        }
+
+        public let phase: Phase
+        public let message: String
+
+        public init(phase: Phase, message: String) {
+            self.phase = phase
+            self.message = message
+        }
+
+        public var description: String { message }
+    }
+
+    /// A query result that carries column names and stops fetching after
+    /// `maximumRows`. When another row is still available, `hasMore` is true and
+    /// that row is not consumed. This enforces the effective row cap without
+    /// rewriting the caller's SQL, so column names stay exactly as authored.
+    public struct CappedQueryResult: Sendable, Equatable {
+        public let columns: [String]
+        public let rows: [[SQLValue]]
+        public let hasMore: Bool
+    }
+
+    public func queryCapped(_ sql: String, maximumRows: Int) throws -> CappedQueryResult {
+        guard let handle else {
+            throw DatabaseError.readFailed(path: path, detail: "连接已关闭")
+        }
+
+        var statement: OpaquePointer?
+        let prepareResult = sqlite3_prepare_v2(handle, sql, -1, &statement, nil)
+        guard prepareResult == SQLITE_OK, let statement else {
+            let detail = String(cString: sqlite3_errmsg(handle))
+            if let statement { sqlite3_finalize(statement) }
+            throw QueryFailure(phase: .prepare, message: detail)
+        }
+        defer { sqlite3_finalize(statement) }
+
+        let columnCount = sqlite3_column_count(statement)
+        var columns: [String] = []
+        columns.reserveCapacity(Int(columnCount))
+        for column in 0..<columnCount {
+            if let name = sqlite3_column_name(statement, column) {
+                columns.append(String(cString: name))
+            } else {
+                columns.append("")
+            }
+        }
+
+        let cap = max(0, maximumRows)
+        var rows: [[SQLValue]] = []
+        var hasMore = false
+        while true {
+            let stepResult = sqlite3_step(statement)
+            if stepResult == SQLITE_DONE { break }
+            guard stepResult == SQLITE_ROW else {
+                throw QueryFailure(
+                    phase: .step, message: String(cString: sqlite3_errmsg(handle)))
+            }
+            if rows.count >= cap {
+                hasMore = true
+                break
+            }
+            var row: [SQLValue] = []
+            row.reserveCapacity(Int(columnCount))
+            for column in 0..<columnCount {
+                row.append(readColumn(statement: statement, index: column))
+            }
+            rows.append(row)
+        }
+        return CappedQueryResult(columns: columns, rows: rows, hasMore: hasMore)
+    }
+
     /// Attaches another database to this connection. The attached database
     /// inherits `SQLITE_OPEN_READONLY` and `query_only` from the main
     /// connection, so it cannot be written either.
@@ -299,7 +378,11 @@ public final class ReadOnlyDatabase {
             let buffer = UnsafeBufferPointer(start: pointer, count: count)
             return .text(String(decoding: buffer, as: UTF8.self))
         case SQLITE_BLOB:
-            return .blob
+            guard let pointer = sqlite3_column_blob(statement, index) else {
+                return .blob(Data())
+            }
+            let count = Int(sqlite3_column_bytes(statement, index))
+            return .blob(Data(bytes: pointer, count: count))
         default:
             return .null
         }

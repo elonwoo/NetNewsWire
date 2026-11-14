@@ -110,6 +110,12 @@ public enum SearchArticlesTool {
     public static let maximumLimit = 50
     public static let maximumQueryCharacters = 200
     public static let defaultLikeBudgetMilliseconds = 3000
+    static let cursorKind = "search_articles"
+
+    private struct Fetched {
+        let item: SearchArticlesItem
+        let position: ArticleCursorPosition
+    }
 
     public static func run(
         arguments: [String: Value]?,
@@ -118,7 +124,7 @@ public enum SearchArticlesTool {
     ) throws -> String {
         let arguments = arguments ?? [:]
         try ToolArgument.rejectUnknown(
-            arguments, allowed: ["query", "limit"], tool: "search_articles")
+            arguments, allowed: ["query", "after", "limit"], tool: "search_articles")
 
         guard let rawQuery = try ToolArgument.string(arguments, "query") else {
             throw ToolError("search_articles 需要 query 参数")
@@ -141,18 +147,29 @@ public enum SearchArticlesTool {
             throw ToolError("查询没有可检索的词项")
         }
 
+        let filter = ArticleFilterFingerprint.search(query: query)
+        let cursorPosition: ArticleCursorPosition?
+        if let rawAfter = try ToolArgument.string(arguments, "after") {
+            cursorPosition = try ArticleCursor.decode(
+                rawAfter, kind: cursorKind, filter: filter, tool: "search_articles")
+        } else {
+            cursorPosition = nil
+        }
+
         let database = try ToolDatabase.open(context: context)
         let budget = SQLiteProgressBudget(milliseconds: likeBudgetMilliseconds)
 
         let totalMatched: Int
-        let items: [SearchArticlesItem]
+        let remainingMatched: Int
+        let fetched: [Fetched]
         do {
-            (totalMatched, items) = try database.withReadTransaction {
-                () -> (Int, [SearchArticlesItem]) in
+            (totalMatched, remainingMatched, fetched) = try database.withReadTransaction {
+                () -> (Int, Int, [Fetched]) in
                 let directory = try FeedDirectory.load(from: database, opml: context.opml)
-                let work = { () -> (Int, [SearchArticlesItem]) in
+                let work = { () -> (Int, Int, [Fetched]) in
                     try execute(
-                        terms: terms, limit: limit, database: database, directory: directory)
+                        terms: terms, limit: limit, cursorPosition: cursorPosition,
+                        database: database, directory: directory)
                 }
                 if terms.cjk.isEmpty {
                     return try work()
@@ -167,24 +184,27 @@ public enum SearchArticlesTool {
             throw ToolError(error.description)
         }
 
-        var response = SearchArticlesResponse(
+        let base = SearchArticlesResponse(
             query: query,
             modeUsed: terms.mode,
             totalMatched: totalMatched,
-            returned: items.count,
+            returned: fetched.count,
             omitted: 0,
             truncated: false,
-            articles: items
+            nextCursor: nil,
+            articles: fetched.map(\.item)
         )
-        return try encodeSearchArticlesBounded(&response)
+        return try encodeSearchArticlesWithCursor(
+            base, fetched: fetched, remainingMatched: remainingMatched)
     }
 
     private static func execute(
         terms: SearchTerms,
         limit: Int,
+        cursorPosition: ArticleCursorPosition?,
         database: ReadOnlyDatabase,
         directory: FeedDirectory
-    ) throws -> (Int, [SearchArticlesItem]) {
+    ) throws -> (Int, Int, [Fetched]) {
         var conditions: [String] = []
         var binds: [SQLBind] = []
 
@@ -208,7 +228,21 @@ public enum SearchArticlesTool {
         let totalMatched =
             try database.scalarInt("SELECT count(*) " + joins + whereClause, binds: binds) ?? 0
 
-        var rowBinds = binds
+        var pageConditions = conditions
+        var pageBinds = binds
+        if let cursorPosition {
+            let clause = ArticleCursor.positionClause(cursorPosition)
+            pageConditions.append(clause.condition)
+            pageBinds.append(contentsOf: clause.binds)
+        }
+        let pageWhereClause =
+            pageConditions.isEmpty ? "" : " WHERE " + pageConditions.joined(separator: " AND ")
+
+        let remainingMatched =
+            try database.scalarInt(
+                "SELECT count(*) " + joins + pageWhereClause, binds: pageBinds) ?? 0
+
+        var rowBinds = pageBinds
         rowBinds.append(.integer(Int64(limit)))
         let rows = try database.query(
             """
@@ -220,14 +254,14 @@ public enum SearchArticlesTool {
                    COALESCE(st.read, 0),
                    COALESCE(st.starred, 0),
                    f.body
-            """ + "\n" + joins + whereClause + """
+            """ + "\n" + joins + pageWhereClause + """
              ORDER BY (a.datePublished IS NULL) ASC, a.datePublished DESC, a.articleID DESC
              LIMIT ?
             """,
             binds: rowBinds
         )
 
-        let items = rows.compactMap { row -> SearchArticlesItem? in
+        let fetched = rows.compactMap { row -> Fetched? in
             guard row.count >= 8,
                 let articleID = row[0].stringValue,
                 let feedID = row[1].stringValue
@@ -235,7 +269,7 @@ public enum SearchArticlesTool {
                 return nil
             }
             let feed = directory.info(feedID)
-            return SearchArticlesItem(
+            let item = SearchArticlesItem(
                 articleID: articleID,
                 title: normalizeOptional(row[2].stringValue),
                 feedID: feedID,
@@ -247,8 +281,38 @@ public enum SearchArticlesTool {
                 snippet: snippet(
                     title: row[2].stringValue, body: row[7].stringValue, terms: terms)
             )
+            let position = ArticleCursorPosition(
+                datePublished: row[3].doubleValue, articleID: articleID)
+            return Fetched(item: item, position: position)
         }
-        return (totalMatched, items)
+        return (totalMatched, remainingMatched, fetched)
+    }
+
+    private static func encodeSearchArticlesWithCursor(
+        _ base: SearchArticlesResponse,
+        fetched: [Fetched],
+        remainingMatched: Int
+    ) throws -> String {
+        let filter = ArticleFilterFingerprint.search(query: base.query)
+        var nextCursor: String?
+        while true {
+            var candidate = base
+            candidate.nextCursor = nextCursor
+            let json = try encodeSearchArticlesBounded(&candidate)
+            guard remainingMatched > candidate.returned else {
+                if nextCursor == nil { return json }
+                nextCursor = nil
+                continue
+            }
+            guard candidate.returned > 0, candidate.returned <= fetched.count else {
+                throw ToolError("search_articles 无法为剩余结果生成游标")
+            }
+            let anchor = fetched[candidate.returned - 1].position
+            let encoded = try ArticleCursor.encode(
+                kind: cursorKind, filter: filter, position: anchor, tool: "search_articles")
+            if encoded == nextCursor { return json }
+            nextCursor = encoded
+        }
     }
 
     /// The first hit is looked up in `search.title`, then in `search.body`;

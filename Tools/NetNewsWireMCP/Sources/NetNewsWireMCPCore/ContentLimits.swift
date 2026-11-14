@@ -6,6 +6,7 @@ public enum ContentLimits {
     public static let searchArticlesBytes = 32 * 1024
     public static let unreadDigestBytes = 48 * 1024
     public static let getArticleBytes = 96 * 1024
+    public static let queryBytes = 64 * 1024
 
     public static let excerptCharacters = 160
     public static let snippetRadius = 80
