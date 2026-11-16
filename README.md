@@ -1,87 +1,89 @@
 <img src=Technotes/Images/icon_1024.png height=128 width=128 style="display: block; margin: auto;">
 
+English | [简体中文](README.zh-CN.md)
+
 # NetNewsWire
 
-这是 NetNewsWire 的个人 fork。上游是 macOS / iOS 上的原生 RSS 阅读器；本 fork 在 macOS 端加入 AI 加工、任务看板和内容源增强。上游项目见 [https://github.com/Ranchero-Software/NetNewsWire](https://github.com/Ranchero-Software/NetNewsWire)，官网 [https://netnewswire.com/](https://netnewswire.com/)。
+This is a personal fork of NetNewsWire. Upstream is a native RSS reader for macOS and iOS; this fork adds AI processing, a task dashboard, and feed enhancements on the macOS side. The upstream project is at [https://github.com/Ranchero-Software/NetNewsWire](https://github.com/Ranchero-Software/NetNewsWire), and the website is [https://netnewswire.com/](https://netnewswire.com/).
 
-AI 功能需要本机运行 magpie 网关。iOS 端保持上游行为，不包含这些 AI 功能。
+The AI features require the magpie gateway to be running on the local machine. The iOS side keeps upstream behavior and does not include these AI features.
 
-## 新增功能
+## Added features
 
-### AI 加工
+### AI processing
 
-**标题中文化**
+**Chinese titles**
 
-配置网关后，新到的非中文文章会自动补一行中文译名，显示在时间线原题下方。积压的标题按批次送模型，不逐条发请求。
+Once the gateway is configured, new non-Chinese articles automatically get a Chinese translated headline, shown below the original title in the timeline. Backlogged titles are sent to the model in batches rather than one request per title.
 
-**正文翻译**
+**Article translation**
 
-打开阅读区的「翻译」页签时才生成，不在后台预翻。先整篇送模型；一次翻不完时，失败后把正文分块重试。某块失败后，已完成的块会保留，下次从断点继续。译文以纯中文排版显示。
+Translation is generated only when you open the "Translation" tab in the reading pane; there is no background pre-translation. The whole article is sent to the model first; if it cannot be translated in one pass, the body is split into chunks and retried after a failure. When a chunk fails, already finished chunks are kept, and the next attempt continues from the breakpoint. The translation is displayed as a plain Chinese-only layout.
 
-![正文翻译：纯中文译文页签](Technotes/Images/README/translation.png)
+![Article translation: a plain Chinese translation tab](Technotes/Images/README/translation.png)
 
-**改写**
+**Rewrite**
 
-普通文章、论文、Product Hunt 使用不同的改写提示词；Product Hunt 在普通文章提示词上追加产品改写要求。普通文章如果订阅源只给摘要，会先抓原文页提取正文；抓不到或提取不到更长的正文时，退回订阅源自带的正文。论文和 Product Hunt 不做这一步，直接使用订阅源内容。极短或没有正文的普通文章会直接跳过。普通文章提示词要求保留原文的关键数据和核心结论、不遗漏、不夸大，且不改变原意；论文提示词额外要求只基于给定材料、不编造实验和结论；Product Hunt 提示词额外要求不编造价格、团队、融资、用户量等材料里没有的信息。改写结果先过质量校验，中文过短、段落不足或模型拒答不会入库。
+Regular articles, papers, and Product Hunt use different rewrite prompts; Product Hunt appends product rewrite requirements to the regular article prompt. For regular articles, if the feed only provides a summary, the original page is fetched first to extract the body; if the page cannot be fetched, or a longer body cannot be extracted, it falls back to the body supplied by the feed. Papers and Product Hunt skip this step and use the feed content directly. Very short regular articles, or ones with no body, are skipped. The regular article prompt requires keeping the original's key data and core conclusions, omitting nothing and exaggerating nothing, without changing the meaning; the paper prompt additionally requires staying grounded only in the given material and not fabricating experiments or conclusions; the Product Hunt prompt additionally requires not fabricating prices, teams, funding, user numbers, or other information absent from the material. Rewrite results go through quality checks first; results with too little Chinese, too few paragraphs, or a model refusal are not stored.
 
-自动改写默认开启，范围是最近 2 天、正文 200 字以上的未读非中文文章；手动打开改写不受这个范围限制。
+Automatic rewrites are on by default, covering unread non-Chinese articles from the last 2 days with a body of 200 characters or more; a manually opened rewrite is not limited by this range.
 
-![改写：中文改写结果页签](Technotes/Images/README/rewrite.png)
+![Rewrite: a Chinese rewrite result tab](Technotes/Images/README/rewrite.png)
 
-**AI 伴读**
+**AI reading companion**
 
-右侧 AI 对话按文章保存全部历史。每次请求带上整篇正文和该文章之前的对话。内置 12 条阅读任务，按理解、核查、反驳、行动、写作、延伸分组，点一下即发送。自定义提示词最多 24 条，保存在本地。原文页选中文本后可以引用，作为引用块带进输入框。
+The AI chat on the right saves the full history per article. Each request includes the whole article body and the earlier conversation for that article. It ships with 12 reading tasks, grouped into comprehension, verification, rebuttal, action, writing, and extension; one click sends a task. Custom prompts are capped at 24 and stored locally. After selecting text on the original page you can quote it, bringing it into the input box as a quote block.
 
-![AI 伴读：12 条阅读任务](Technotes/Images/README/chat.png)
+![AI reading companion: 12 reading tasks](Technotes/Images/README/chat.png)
 
-**缓存与重试**
+**Cache and retries**
 
-标题和改写按内容哈希缓存，内容变化后会重新生成；译文生成后保留，不自动重跑。失败任务按 10 分钟、30 分钟、2 小时退避，最多尝试 4 次；终态失败可以在任务看板手动重试。
+Titles and rewrites are cached by content hash and regenerated when the content changes; translations are kept once generated and are not rerun automatically. Failed tasks back off at 10 minutes, 30 minutes, and 2 hours, with at most 4 attempts; tasks in a final failed state can be retried manually from the task dashboard.
 
-### 任务看板与日志
+### Task dashboard and logs
 
-阅读区没有选中文章时显示任务看板，统计范围跟随当前列表：订阅源、文件夹、Today、全部未读或收藏。顶部是进行中、排队、等待重试、失败四项；下面是逐订阅源的覆盖率，列为改写、仅译和原文；失败任务按原因分组，展开可以看到涉及哪些订阅源，并一次「重试全部」。网关没有配置时，看板会直接提示。
+When no article is selected in the reading pane, the task dashboard is shown, and its scope follows the current list: feed, folder, Today, all unread, or starred. The top row has four counters: in progress, queued, waiting to retry, and failed; below that is per-feed coverage, with columns for rewrite, translation only, and original; failed tasks are grouped by reason, and expanding a group shows which feeds are involved, with a one-click "retry all". If the gateway is not configured, the dashboard says so directly.
 
-翻译、标题中文化和改写的终态会写入 `Application Support/NetNewsWire/AI/logs/ai-tasks-YYYY-MM-DD.jsonl`，即 `~/Library/Application Support/NetNewsWire/AI/logs/`，每天一个文件。写入时清理超过 30 天的日志。
+Final states of translation, Chinese titles, and rewrite are written to `Application Support/NetNewsWire/AI/logs/ai-tasks-YYYY-MM-DD.jsonl`, that is, `~/Library/Application Support/NetNewsWire/AI/logs/`, one file per day. Logs older than 30 days are cleaned up on write.
 
-![任务看板：四项计数与逐订阅源覆盖率](Technotes/Images/README/dashboard.png)
+![Task dashboard: four counters and per-feed coverage](Technotes/Images/README/dashboard.png)
 
-### 阅读与界面
+### Reading and interface
 
-主窗口是侧栏、列表、阅读区、AI 对话栏四栏，AI 栏可以随时收起。阅读区顶部最多三个页签：「改写 / 原文 / 翻译」；每个订阅源可以单独关闭改写或翻译，文章不支持 AI 时只留原文。
+The main window has four columns: sidebar, list, reading pane, and AI chat pane; the AI pane can be collapsed at any time. The top of the reading pane has up to three tabs: "Rewrite / Original / Translation"; each feed can individually turn off rewrite or translation, and when an article does not support AI, only the original is left.
 
-沉浸阅读隐藏侧栏和列表，让正文占满剩余空间；AI 栏保持当前显示状态。按 `I` 进入或退出，按 `Esc` 也能退出。`J` / `K` 切换下一篇 / 上一篇，`A` 显示或收起 AI 栏。连续按 `Esc` 会依次关闭 AI 栏、退出沉浸阅读、清空列表选中。
+Immersive reading hides the sidebar and list so the article fills the remaining space; the AI pane keeps its current display state. Press `I` to enter or exit, and `Esc` also exits. `J` / `K` go to the next / previous article, and `A` shows or hides the AI pane. Pressing `Esc` repeatedly closes the AI pane, exits immersive reading, and clears the list selection, in that order.
 
-### 内容源
+### Feeds
 
-- RSSHub 源按实例顺序尝试，刷新失败时自动换下一个实例。
-- Product Hunt 是内置订阅源，改写时使用 Product Hunt 专用提示词。
-- Hugging Face 每日论文通过 RSSHub 订阅，论文链接使用论文改写提示词。
-- 文件菜单可以导入微信公众号目录；微信文章图片经应用内代理加载并缓存，避免防盗链拦截。
-- 正文里的 YouTube 链接会替换成 `youtube-nocookie.com` 内嵌播放器，原文、改写和译文页都生效。
-- X News、Product Hunt 和 Hugging Face 每日论文会在首次运行时自动订阅到本地账户。
+- RSSHub feeds are tried in instance order, and on a refresh failure the next instance is used automatically.
+- Product Hunt is a built-in feed; rewrites use the Product Hunt prompt.
+- Hugging Face daily papers are subscribed to through RSSHub, and paper links use the paper rewrite prompt.
+- The File menu can import a WeChat public account directory; WeChat article images are loaded and cached through an in-app proxy to avoid hotlink blocking.
+- YouTube links in the body are replaced with a `youtube-nocookie.com` embedded player, on the original, rewrite, and translation pages alike.
+- X News, Product Hunt, and Hugging Face daily papers are automatically subscribed to the local account on first run.
 
-### 模型接入
+### Model access
 
-只接本地 magpie 网关，默认地址是 `http://127.0.0.1:3425/v1`。在设置 → AI 里填写网关地址和 API key，点「获取模型列表」后从下拉框选择模型。API key 存入钥匙串，地址和模型存入偏好设置。
+Only the local magpie gateway is supported, at the default address `http://127.0.0.1:3425/v1`. Enter the gateway address and API key in Settings → AI, click "Get model list", then pick a model from the dropdown. The API key is stored in the keychain; the address and model are stored in preferences.
 
-不做多供应商，也不做 OAuth；所有 AI 用途共用一个模型。
+There is no multi-provider support and no OAuth; all AI uses share one model.
 
-## 和上游的差异 / 不支持的东西
+## Differences from upstream / not supported
 
-- 这是个人 fork，不是 Ranchero Software 的官方版本。上游暂不接受 AI 功能，这些改动不会合并回上游。
-- AI 功能只在 macOS 端提供，依赖本地 magpie 网关；网关不运行或没有配置 API key 时，AI 功能不可用。
-- 正文翻译只提供中文视图，没有原文和译文的对照切换。
-- Product Hunt 官网正文抓取和 Hugging Face 论文结构化卡片目前只有实现和测试，还没有接入阅读和改写流程。
-- 不做多用户账号、自托管、社区、公开沉淀、网页剪藏、HN 组合流、时间打散、同类源连续限制、播客逐字稿、YouTube 字幕笔记，也不为每个用途单独配置模型。
+- This is a personal fork, not an official release from Ranchero Software. Upstream does not accept AI features for now, so these changes will not be merged back upstream.
+- AI features are available only on macOS and depend on the local magpie gateway; if the gateway is not running or no API key is configured, the AI features are unavailable.
+- Article translation provides only a Chinese view; there is no toggle between the original and the translation.
+- Product Hunt page-body extraction and the Hugging Face paper structured card currently have only an implementation and tests; they are not wired into the reading and rewrite flows yet.
+- No multi-user accounts, self-hosting, community, public archiving, web clipping, HN combined stream, time shuffling, same-source consecutive limits, podcast transcripts, or YouTube subtitle notes, and no per-purpose model configuration.
 
-## 上游与许可
+## Upstream and license
 
-本项目基于 [https://github.com/Ranchero-Software/NetNewsWire](https://github.com/Ranchero-Software/NetNewsWire)，保留上游的 MIT 许可，见 [LICENSE](LICENSE)。
+This project is based on [https://github.com/Ranchero-Software/NetNewsWire](https://github.com/Ranchero-Software/NetNewsWire) and keeps the upstream MIT license, see [LICENSE](LICENSE).
 
-- 官网：[https://netnewswire.com/](https://netnewswire.com/)
-- 上游问题与功能请求：[https://github.com/Ranchero-Software/NetNewsWire/issues](https://github.com/Ranchero-Software/NetNewsWire/issues)
-- 上游版本说明：[https://github.com/Ranchero-Software/NetNewsWire/releases/](https://github.com/Ranchero-Software/NetNewsWire/releases/)
-- 社区论坛：[https://discourse.netnewswire.com/](https://discourse.netnewswire.com/)
+- Website: [https://netnewswire.com/](https://netnewswire.com/)
+- Upstream issues and feature requests: [https://github.com/Ranchero-Software/NetNewsWire/issues](https://github.com/Ranchero-Software/NetNewsWire/issues)
+- Upstream release notes: [https://github.com/Ranchero-Software/NetNewsWire/releases/](https://github.com/Ranchero-Software/NetNewsWire/releases/)
+- Community forum: [https://discourse.netnewswire.com/](https://discourse.netnewswire.com/)
 
-本 fork 的 AI 功能问题不要报到上游，请在本仓库反馈。
+Do not report issues with this fork's AI features upstream; please file them in this repository.
