@@ -429,6 +429,17 @@ final class AIJobExecutor {
 	func enqueueTitleTranslations(for articles: [AIArticle], origin: AIJobOrigin = .manual) async {
 		let disabledFeedIDs = translationDisabledFeedIDs
 		let chineseAllowedFeedIDs = currentChineseAllowedFeedIDs
+		// Visibility-driven enqueues must not re-bill a title that already ended
+		// in a terminal failure: the model would be asked again for the same
+		// input in every fresh session. A manual request is the user's explicit
+		// call, so the marker does not block it. A failed lookup leaves the
+		// decision to the remaining gates, matching the cached-title lookup below.
+		let previouslyFailedIDs: Set<String>
+		if origin == .manual {
+			previouslyFailedIDs = []
+		} else {
+			previouslyFailedIDs = (try? await store.failedTitleArticleIDs(for: Set(articles.map(\.id)))) ?? []
+		}
 		var jobs: [AIJob] = []
 		var jobsByArticleID: [String: AIArticle] = [:]
 		for article in articles {
@@ -452,6 +463,9 @@ final class AIJobExecutor {
 			   let titleZh = cached.titleZh,
 			   !titleZh.isEmpty,
 			   AIContentHash.matchesTitleHash(cached.contentHash, article: article) {
+				continue
+			}
+			guard !previouslyFailedIDs.contains(article.id) else {
 				continue
 			}
 			guard reservations.reserve(key) else {

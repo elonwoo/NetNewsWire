@@ -310,6 +310,52 @@ final class AIJobExecutorEnqueueTests {
 		#expect(try await store.activeJobArticleIDs(kinds: [.titleTranslation]).isEmpty)
 	}
 
+	@Test func automaticTitleEnqueueSkipsArticlesThatFailedPermanently() async throws {
+		let article = englishArticle(id: "failed-title")
+		let executor = makeExecutor(source: AICatchUpSource())
+		// A previous run ended in a terminal failure for this title. A fresh
+		// session must not queue the same input again.
+		try await store.enqueue(AIJob(
+			id: "failed:\(article.id)",
+			articleID: article.id,
+			kind: .titleTranslation,
+			priority: 50,
+			status: .failed,
+			attempts: 2,
+			availableAt: Date(),
+			lastError: "模型未返回该标题",
+			finishedAt: Date(),
+			createdAt: Date()
+		))
+
+		await executor.enqueueTitleTranslations(for: [article], origin: .auto)
+
+		#expect(try await store.activeJobArticleIDs(kinds: [.titleTranslation]).isEmpty)
+	}
+
+	@Test func manualTitleEnqueueStillRequeuesAfterFailure() async throws {
+		let article = englishArticle(id: "failed-title-manual")
+		let executor = makeExecutor(source: AICatchUpSource())
+		try await store.enqueue(AIJob(
+			id: "failed:\(article.id)",
+			articleID: article.id,
+			kind: .titleTranslation,
+			priority: 50,
+			status: .failed,
+			attempts: 2,
+			availableAt: Date(),
+			lastError: "模型未返回该标题",
+			finishedAt: Date(),
+			createdAt: Date()
+		))
+
+		// A manual request is the user's explicit call, so the failure marker
+		// does not block it.
+		await executor.enqueueTitleTranslations(for: [article])
+
+		#expect(try await store.activeJobArticleIDs(kinds: [.titleTranslation]).contains(article.id))
+	}
+
 	@Test func bodyTranslationSkipsChineseWithoutOverride() async throws {
 		let article = chineseArticle(id: "zh-body")
 		let executor = makeExecutor(source: AICatchUpSource())

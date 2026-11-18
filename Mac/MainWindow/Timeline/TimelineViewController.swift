@@ -234,6 +234,10 @@ final class TimelineViewController: NSViewController, UndoableCommandRunner, Unr
 	/// Title refreshes triggered by completed translations, coalesced into one per run loop turn.
 	private var pendingTitleRefreshArticleIDs = Set<String>()
 	private var isTitleRefreshScheduled = false
+	/// True while the timeline is still moving. Title work waits for the scroll
+	/// to settle, so a fast sweep counts as passing by, not as seeing.
+	private var isTimelineScrolling = false
+	private var timelineScrollSettleTask: Task<Void, Never>?
 
 	// Owned by the window’s TimelineContainerViewController.
 	// Before the view loads there is nothing to re-sort — the first fetch uses the current value.
@@ -1045,7 +1049,9 @@ final class TimelineViewController: NSViewController, UndoableCommandRunner, Unr
 
 	/// Coalesces the triggers into one query per batch of newly visible rows.
 	/// IDs are marked as checked before dispatch, so scrolling cannot queue the
-	/// same query again while the first one is in flight.
+	/// same query again while the first one is in flight. Title work is skipped
+	/// while the timeline is still scrolling; the settle pass then covers the
+	/// rows that remain visible.
 	private func scheduleRewriteIndicatorRefresh() {
 		guard isViewLoaded else {
 			return
@@ -1063,7 +1069,9 @@ final class TimelineViewController: NSViewController, UndoableCommandRunner, Unr
 		}
 		let needRewrite = articleIDs.subtracting(checkedRewriteArticleIDs)
 		let needTranslation = articleIDs.subtracting(checkedTranslationArticleIDs)
-		let needTitle = articleIDs.subtracting(checkedTitleArticleIDs).subtracting(titleZhByArticleID.keys)
+		let needTitle = isTimelineScrolling
+			? Set<String>()
+			: articleIDs.subtracting(checkedTitleArticleIDs).subtracting(titleZhByArticleID.keys)
 		guard !needRewrite.isEmpty || !needTranslation.isEmpty || !needTitle.isEmpty else {
 			return
 		}
@@ -1160,7 +1168,9 @@ final class TimelineViewController: NSViewController, UndoableCommandRunner, Unr
 	/// titles, so the visible timeline drives demand: a visible article with no
 	/// stored translation queues a title job now. Only unread articles are
 	/// enqueued — the store has no title for them because nothing has asked yet,
-	/// whereas read articles were visible earlier and had their chance.
+	/// whereas read articles were visible earlier and had their chance. The
+	/// caller only runs at rest: a scroll in progress defers the title branch,
+	/// so rows that were merely swept past never queue.
 	private func enqueueMissingTitleTranslations(for articleIDs: Set<String>) async {
 		guard !articleIDs.isEmpty else {
 			return
@@ -1199,7 +1209,25 @@ final class TimelineViewController: NSViewController, UndoableCommandRunner, Unr
 	}
 
 	@objc private func handleTimelineScroll(_ notification: Notification) {
+		markTimelineScrolled()
 		scheduleRewriteIndicatorRefresh()
+	}
+
+	/// A row counts as seen only once the scroll settles, so a quick sweep past
+	/// unread rows must not queue title jobs. The settle delay restarts on every
+	/// bounds change, so momentum scrolling keeps the flag set until the view
+	/// really stops; the pass at the end then processes the rows still visible.
+	private func markTimelineScrolled() {
+		isTimelineScrolling = true
+		timelineScrollSettleTask?.cancel()
+		timelineScrollSettleTask = Task { @MainActor [weak self] in
+			try? await Task.sleep(for: .milliseconds(300))
+			guard !Task.isCancelled, let self else {
+				return
+			}
+			self.isTimelineScrolling = false
+			self.scheduleRewriteIndicatorRefresh()
+		}
 	}
 
 	@objc private func handleAIRewriteReady(_ notification: Notification) {

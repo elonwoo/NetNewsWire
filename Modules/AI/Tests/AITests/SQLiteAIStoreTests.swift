@@ -448,6 +448,20 @@ import Testing
 		#expect(try await store.feedLanguageSample(for: "feed-2") == nil)
 	}
 
+	@Test func failedTitleArticleIDsReportsOnlyTerminalTitleFailures() async throws {
+		try await store.enqueue(AIJob(id: "failed-title", articleID: "article-a", kind: .titleTranslation, priority: 50, status: .failed, attempts: 2, availableAt: Date(), finishedAt: Date(), createdAt: Date()))
+		try await store.enqueue(AIJob(id: "pending-title", articleID: "article-b", kind: .titleTranslation, priority: 50, availableAt: Date(), createdAt: Date()))
+		try await store.enqueue(AIJob(id: "failed-body", articleID: "article-c", kind: .bodyTranslation, priority: 50, status: .failed, attempts: 2, availableAt: Date(), finishedAt: Date(), createdAt: Date()))
+
+		let failed = try await store.failedTitleArticleIDs(for: ["article-a", "article-b", "article-c", "article-d"])
+
+		#expect(failed == ["article-a"])
+	}
+
+	@Test func failedTitleArticleIDsIsEmptyForAnEmptyQuery() async throws {
+		#expect(try await store.failedTitleArticleIDs(for: []).isEmpty)
+	}
+
 	@Test func legacyDatabaseGainsTimestampColumns() async throws {
 		let legacyPath = FileManager.default.temporaryDirectory
 			.appendingPathComponent("AIStoreLegacy-\(UUID().uuidString).sqlite")

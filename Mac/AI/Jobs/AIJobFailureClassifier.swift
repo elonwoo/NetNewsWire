@@ -14,17 +14,19 @@ enum AIJobFailureKind: Sendable, Equatable {
 
 /// Sorts a failure into deterministic and transient kinds.
 ///
-/// Deterministic failures — timeouts, malformed model output, quality
-/// rejections — re-fail on the same input, so they end after the first attempt.
-/// Only network flakiness and cancellation keep the one retry that
-/// `AIQueuePolicy` schedules.
+/// Deterministic failures — malformed model output, quality rejections —
+/// re-fail on the same input, so they end after the first attempt. Network
+/// trouble behaves like flakiness and keeps the one retry that
+/// `AIQueuePolicy` schedules; that includes the 240s request timeout, which
+/// fires in batches when the local gateway is congested.
 enum AIJobFailureClassifier {
 
 	static func classify(_ error: Error) -> AIJobFailureKind {
-		if let urlError = error as? URLError {
-			// A 240s request timeout means the input is too slow for the model at
-			// its current speed; a second attempt spends the same time again.
-			return urlError.code == .timedOut ? .permanent : .retryable
+		if error is URLError {
+			// In-flight and queued requests hit their timeout together when the
+			// gateway backs up; the 600s retry lets that backlog drain instead
+			// of ending every job at once.
+			return .retryable
 		}
 		if error is CancellationError {
 			// Cancellation usually comes from app shutdown; a retry row is picked

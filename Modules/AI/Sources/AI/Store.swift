@@ -35,6 +35,7 @@ public protocol AIStore: Sendable {
 	func failJobPermanently(id: String, error: String) async throws
 	func deleteJobs(kinds: [AIJobKind], statuses: [AIJobStatus]) async throws
 	func activeJobArticleIDs(kinds: [AIJobKind]) async throws -> Set<String>
+	func failedTitleArticleIDs(for articleIDs: Set<String>) async throws -> Set<String>
 	func deleteAIArtifacts(articleIDs: Set<String>) async throws
 	func activeJobs() async throws -> [AIJob]
 	func recentJobs(status: AIJobStatus, since: Date, limit: Int) async throws -> [AIJob]
@@ -715,6 +716,35 @@ public final class SQLiteAIStore: AIStore, Sendable {
 		let kindValues = kinds.map(\.rawValue)
 		return try await read { database in
 			guard let resultSet = database.executeQuery(sql, withArgumentsIn: kindValues) else {
+				return []
+			}
+			defer {
+				resultSet.close()
+			}
+			var articleIDs: Set<String> = []
+			while resultSet.next() {
+				if let articleID = resultSet.swiftString(forColumn: "articleID") {
+					articleIDs.insert(articleID)
+				}
+			}
+			return articleIDs
+		}
+	}
+
+	/// Returns the subset of `articleIDs` whose title translation already ended
+	/// in a terminal failure. Only failed rows are reported: pending, running
+	/// and retry rows are still in flight and are covered by the executor's
+	/// reservations. Terminal rows are pruned after the retention window, so a
+	/// failure older than that is no longer reported.
+	public func failedTitleArticleIDs(for articleIDs: Set<String>) async throws -> Set<String> {
+		guard !articleIDs.isEmpty else {
+			return []
+		}
+		let ids = Array(articleIDs)
+		let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ", ")
+		let sql = "select distinct articleID from ai_jobs where kind = 'titleTranslation' and status = 'failed' and articleID in (\(placeholders));"
+		return try await read { database in
+			guard let resultSet = database.executeQuery(sql, withArgumentsIn: ids) else {
 				return []
 			}
 			defer {

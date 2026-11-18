@@ -11,14 +11,15 @@ import Testing
 
 /// The retry policy gives every job exactly one scheduled retry, so the
 /// classifier decides which failures are worth it. Deterministic failures
-/// (timeouts, bad model output, quality rejections) must be permanent;
-/// only flaky-network failures stay retryable.
+/// (bad model output, quality rejections) must be permanent; gateway
+/// congestion behaves like flaky networking — timeouts included — and keeps
+/// the retry.
 struct AIJobFailureClassifierTests {
 
 	// MARK: - URL errors
 
-	@Test func requestTimeoutsArePermanent() {
-		#expect(AIJobFailureClassifier.classify(URLError(.timedOut)) == .permanent)
+	@Test func requestTimeoutsAreRetryable() {
+		#expect(AIJobFailureClassifier.classify(URLError(.timedOut)) == .retryable)
 	}
 
 	@Test func networkURLErrorsAreRetryable() {
