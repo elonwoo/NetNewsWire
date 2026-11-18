@@ -426,6 +426,28 @@ import Testing
 		#expect(names.contains("ai_jobs_article_kind_status_finishedAt"))
 	}
 
+	@Test func initialisationCreatesLeaseReclaimIndex() throws {
+		let names = try Self.indexNamesFromPragma(table: "ai_jobs", at: databasePath)
+		#expect(names.contains("ai_jobs_status_leaseUntil"))
+	}
+
+	@Test func initialisationCreatesFeedLanguageCacheTable() throws {
+		let names = try Self.queryStrings(sql: "select name from sqlite_master where type = 'table';", column: 0, at: databasePath)
+		#expect(names.contains("ai_feed_language_cache"))
+	}
+
+	@Test func feedLanguageSampleRoundTrips() async throws {
+		let cache = FeedLanguageSampleCache(entries: [
+			FeedLanguageSample(articleID: "article-1", publishedAt: Date(timeIntervalSince1970: 1_700_000_000), isChinese: true),
+			FeedLanguageSample(articleID: "article-2", publishedAt: nil, isChinese: false)
+		])
+		try await store.saveFeedLanguageSample(feedID: "feed-1", sample: cache)
+
+		let loaded = try #require(try await store.feedLanguageSample(for: "feed-1"))
+		#expect(loaded == cache)
+		#expect(try await store.feedLanguageSample(for: "feed-2") == nil)
+	}
+
 	@Test func legacyDatabaseGainsTimestampColumns() async throws {
 		let legacyPath = FileManager.default.temporaryDirectory
 			.appendingPathComponent("AIStoreLegacy-\(UUID().uuidString).sqlite")

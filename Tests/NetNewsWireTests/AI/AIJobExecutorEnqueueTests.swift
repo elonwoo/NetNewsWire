@@ -3,7 +3,9 @@
 //  NetNewsWireTests
 //
 
+import Account
 import AI
+import Articles
 import Foundation
 import Testing
 
@@ -86,6 +88,60 @@ final class AIJobExecutorEnqueueTests {
 		#expect(active.contains("changed-download"))
 	}
 
+	@Test func downloadNotificationIgnoresUpdatedArticles() async throws {
+		let previous = AppDefaults.aiAutoRewriteEnabled
+		AppDefaults.aiAutoRewriteEnabled = true
+		defer {
+			AppDefaults.aiAutoRewriteEnabled = previous
+		}
+
+		let center = NotificationCenter()
+		let executor = makeExecutor(source: AICatchUpSource(), notificationCenter: center)
+		executor.start()
+		defer {
+			executor.stop()
+		}
+
+		center.post(
+			name: .AccountDidDownloadArticles,
+			object: nil,
+			userInfo: [Account.UserInfoKey.updatedArticles: Set([downloadedArticle(id: "updated-only")])]
+		)
+
+		// Give the notification's spawned task time to (incorrectly, on old
+		// code) enqueue work for the updated article.
+		let enqueuedSomething = await waitFor {
+			(try? await store.activeJobArticleIDs(kinds: [.rewrite, .titleTranslation]))?.isEmpty == false
+		}
+		#expect(!enqueuedSomething)
+	}
+
+	@Test func downloadNotificationDoesNotQueueTitleTranslations() async throws {
+		let previous = AppDefaults.aiAutoRewriteEnabled
+		AppDefaults.aiAutoRewriteEnabled = true
+		defer {
+			AppDefaults.aiAutoRewriteEnabled = previous
+		}
+
+		let center = NotificationCenter()
+		let executor = makeExecutor(source: AICatchUpSource(), notificationCenter: center)
+		executor.start()
+		defer {
+			executor.stop()
+		}
+
+		center.post(
+			name: .AccountDidDownloadArticles,
+			object: nil,
+			userInfo: [Account.UserInfoKey.newArticles: Set([downloadedArticle(id: "new-title")])]
+		)
+
+		let enqueuedTitles = await waitFor {
+			(try? await store.activeJobArticleIDs(kinds: [.titleTranslation]))?.isEmpty == false
+		}
+		#expect(!enqueuedTitles)
+	}
+
 	// MARK: - Catch-up path
 
 	@Test func catchUpSkipsLegacyAndQueuesChangedRewrites() async throws {
@@ -105,6 +161,25 @@ final class AIJobExecutorEnqueueTests {
 		try await store.saveRewrite(rewrite(article: article, hash: "stale"))
 		await executor.catchUpMissedWork()
 		#expect(try await store.activeJobArticleIDs(kinds: [.rewrite]).contains("catch-up"))
+	}
+
+	@Test func catchUpHonorsTheReducedJobLimit() async throws {
+		let previous = AppDefaults.aiAutoRewriteEnabled
+		AppDefaults.aiAutoRewriteEnabled = true
+		defer {
+			AppDefaults.aiAutoRewriteEnabled = previous
+		}
+
+		let articles = (0..<30).map {
+			englishArticle(id: "catch-up-\($0)", publishedAt: Date())
+		}
+		let executor = makeExecutor(source: AICatchUpSource(articles: articles))
+
+		await executor.catchUpMissedWork()
+
+		let rewrites = try await store.activeJobArticleIDs(kinds: [.rewrite])
+		let titles = try await store.activeJobArticleIDs(kinds: [.titleTranslation])
+		#expect(rewrites.count + titles.count <= 25)
 	}
 
 	// MARK: - Body translation
@@ -172,8 +247,10 @@ final class AIJobExecutorEnqueueTests {
 
 		await executor.enqueueForNewArticles([article])
 
+		// Download no longer queues titles; the timeline lazily queues them for
+		// visible articles. Rewrite still honors the override.
 		#expect(try await store.activeJobArticleIDs(kinds: [.rewrite]).contains(article.id))
-		#expect(try await store.activeJobArticleIDs(kinds: [.titleTranslation]).contains(article.id))
+		#expect(try await store.activeJobArticleIDs(kinds: [.titleTranslation]).isEmpty)
 	}
 
 	@Test func catchUpSkipsChineseWithoutOverride() async throws {
@@ -1137,7 +1214,7 @@ final class AIJobExecutorEnqueueTests {
 		#expect((events.first?.outputCharacters ?? 0) > 0)
 	}
 
-	@Test func taskLogRecordsQualityRejectionOnlyAfterItBecomesTerminal() async throws {
+	@Test func taskLogRecordsQualityRejectionAsTerminalImmediately() async throws {
 		let article = englishArticle(id: "log-quality-retry", publishedAt: Date())
 		let rejectedLog = MemoryTaskLog()
 		let rejectedExecutor = makeExecutor(
@@ -1150,24 +1227,15 @@ final class AIJobExecutorEnqueueTests {
 		await rejectedExecutor.enqueueRewrite(articleID: article.id)
 		let rejectedJob = try #require(try await rejectedExecutor.claimNextJob())
 		await rejectedExecutor.runJob(rejectedJob)
-		#expect(try await store.activeJobArticleIDs(kinds: [.rewrite]).contains(article.id))
+
+		// A quality rejection is deterministic — the same input reproduces it —
+		// so the classifier ends the job on the first attempt instead of
+		// burning the single scheduled retry on a rerun that fails the same way.
+		#expect(try await store.activeJobArticleIDs(kinds: [.rewrite]).isEmpty)
 		let rejectedEvents = await rejectedLog.terminalEvents
-		#expect(rejectedEvents.isEmpty)
-
-		let succeededLog = MemoryTaskLog()
-		let succeededExecutor = makeExecutor(
-			source: AICatchUpSource(),
-			resolver: FixedResolver(article: article),
-			client: RewriteRecordingClient(),
-			taskLog: succeededLog
-		)
-		await succeededExecutor.enqueueRewrite(articleID: article.id)
-		let succeededJob = try #require(try await succeededExecutor.claimNextJob())
-		await succeededExecutor.runJob(succeededJob)
-
-		let succeededEvents = await succeededLog.terminalEvents
-		#expect(succeededEvents.count == 1)
-		#expect(succeededEvents.first?.outcome == .stored)
+		#expect(rejectedEvents.count == 1)
+		#expect(rejectedEvents.first?.outcome == .failed)
+		#expect(rejectedEvents.first?.reason == .qualityRejected)
 	}
 
 	@Test func taskLogRecordsFullyCachedTitleBatch() async throws {
@@ -1242,6 +1310,32 @@ private extension AIJobExecutorEnqueueTests {
 			contentText: String(repeating: "中", count: 2500),
 			feedID: feedID,
 			publishedAt: publishedAt
+		)
+	}
+
+	/// A real `Article`, as delivered by `AccountDidDownloadArticles`. The
+	/// notification path converts these to `AIArticle`, so the tests need the
+	/// concrete type rather than the AI model.
+	func downloadedArticle(id: String) -> Article {
+		Article(
+			accountID: "account",
+			articleID: id,
+			feedID: "feed",
+			uniqueID: id,
+			title: "English title",
+			contentHTML: "<p>\(String(repeating: "a", count: 2500))</p>",
+			contentText: String(repeating: "a", count: 2500),
+			markdown: nil,
+			url: "https://example.com/\(id)",
+			externalURL: nil,
+			summary: nil,
+			imageURL: nil,
+			thumbnailURL: nil,
+			datePublished: Date(),
+			dateModified: nil,
+			authors: nil,
+			attachments: nil,
+			status: ArticleStatus(articleID: id, read: false, starred: false, dateArrived: Date())
 		)
 	}
 

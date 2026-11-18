@@ -39,6 +39,8 @@ public protocol AIStore: Sendable {
 	func activeJobs() async throws -> [AIJob]
 	func recentJobs(status: AIJobStatus, since: Date, limit: Int) async throws -> [AIJob]
 	func foldedFailures(since: Date) async throws -> [AIJob]
+	func feedLanguageSample(for feedID: String) async throws -> FeedLanguageSampleCache?
+	func saveFeedLanguageSample(feedID: String, sample: FeedLanguageSampleCache) async throws
 	@discardableResult func deleteTerminalJobs(olderThan cutoff: Date) async throws -> Int
 }
 
@@ -76,6 +78,9 @@ public final class SQLiteAIStore: AIStore, Sendable {
 			}
 			if !database.executeStatements(Self.articleKindStatusFinishedAtIndexStatement) {
 				Self.logger.error("Unable to create ai_jobs_article_kind_status_finishedAt index: \(database.lastErrorMessage(), privacy: .public)")
+			}
+			if !database.executeStatements(Self.statusLeaseUntilIndexStatement) {
+				Self.logger.error("Unable to create ai_jobs_status_leaseUntil index: \(database.lastErrorMessage(), privacy: .public)")
 			}
 		}
 	}
@@ -385,47 +390,59 @@ public final class SQLiteAIStore: AIStore, Sendable {
 		if let allowedKinds, allowedKinds.isEmpty {
 			return nil
 		}
+		let kindClause: String
+		let kindValues: [String]
+		if let allowedKinds {
+			let placeholders = Array(repeating: "?", count: allowedKinds.count).joined(separator: ", ")
+			kindClause = " and kind in (\(placeholders))"
+			kindValues = allowedKinds.map(\.rawValue)
+		} else {
+			kindClause = ""
+			kindValues = []
+		}
+		let timestamp = now.timeIntervalSince1970
+		// Two index-backed arms, due work first: a reclaimed lease only wins when
+		// nothing else is waiting. Each arm keeps its own index
+		// (ai_jobs_status_availableAt / ai_jobs_status_leaseUntil); an OR across
+		// both status columns cannot use either.
+		let arms = [
+			"status in ('pending', 'retry') and availableAt <= ?",
+			"status = 'running' and leaseUntil is not null and leaseUntil <= ?"
+		]
 		let claimed = try await writeInTransaction { database -> AIJob? in
-			var selectSQL = """
-			select * from ai_jobs
-			where ((status in ('pending', 'retry') and availableAt <= ?)
-			   or (status = 'running' and leaseUntil is not null and leaseUntil <= ?))
-			"""
-			var arguments: [Any] = [now.timeIntervalSince1970, now.timeIntervalSince1970]
-			if let allowedKinds {
-				let placeholders = Array(repeating: "?", count: allowedKinds.count).joined(separator: ", ")
-				selectSQL += " and kind in (\(placeholders))"
-				arguments.append(contentsOf: allowedKinds.map(\.rawValue))
-			}
-			selectSQL += """
+			for arm in arms {
+				let selectSQL = """
+				select * from ai_jobs
+				where \(arm)\(kindClause)
+				order by priority desc, availableAt asc, createdAt asc
+				limit 1;
+				"""
+				guard let resultSet = database.executeQuery(selectSQL, withArgumentsIn: [timestamp] + kindValues) else {
+					continue
+				}
+				defer {
+					resultSet.close()
+				}
+				guard resultSet.next(), let job = Self.job(from: resultSet) else {
+					continue
+				}
 
-			order by priority desc, availableAt asc, createdAt asc
-			limit 1;
-			"""
-			guard let resultSet = database.executeQuery(selectSQL, withArgumentsIn: arguments) else {
-				return nil
-			}
-			defer {
-				resultSet.close()
-			}
-			guard resultSet.next(), let job = Self.job(from: resultSet) else {
-				return nil
-			}
+				let leaseUntil = now.addingTimeInterval(AIQueuePolicy.leaseDuration)
+				// Every claim is a fresh run: an expired lease that gets reclaimed
+				// also gets a new startedAt.
+				let updateSQL = "update ai_jobs set status = 'running', attempts = attempts + 1, leaseUntil = ?, startedAt = ? where id = ?;"
+				guard database.executeUpdate(updateSQL, withArgumentsIn: [leaseUntil.timeIntervalSince1970, now.timeIntervalSince1970, job.id]) else {
+					throw AIStoreError.writeFailed(database.lastErrorMessage())
+				}
 
-			let leaseUntil = now.addingTimeInterval(AIQueuePolicy.leaseDuration)
-			// Every claim is a fresh run: an expired lease that gets reclaimed
-			// also gets a new startedAt.
-			let updateSQL = "update ai_jobs set status = 'running', attempts = attempts + 1, leaseUntil = ?, startedAt = ? where id = ?;"
-			guard database.executeUpdate(updateSQL, withArgumentsIn: [leaseUntil.timeIntervalSince1970, now.timeIntervalSince1970, job.id]) else {
-				throw AIStoreError.writeFailed(database.lastErrorMessage())
+				var claimed = job
+				claimed.status = .running
+				claimed.attempts += 1
+				claimed.leaseUntil = leaseUntil
+				claimed.startedAt = now
+				return claimed
 			}
-
-			var claimed = job
-			claimed.status = .running
-			claimed.attempts += 1
-			claimed.leaseUntil = leaseUntil
-			claimed.startedAt = now
-			return claimed
+			return nil
 		}
 		if claimed != nil {
 			postJobsDidChange()
@@ -533,6 +550,39 @@ public final class SQLiteAIStore: AIStore, Sendable {
 		}
 		if changed > 0 {
 			postJobsDidChange()
+		}
+	}
+
+	// MARK: - Feed language cache
+
+	public func feedLanguageSample(for feedID: String) async throws -> FeedLanguageSampleCache? {
+		try await read { database in
+			let sql = "select sample from ai_feed_language_cache where feedID = ? limit 1;"
+			guard let resultSet = database.executeQuery(sql, withArgumentsIn: [feedID]) else {
+				return nil
+			}
+			defer {
+				resultSet.close()
+			}
+			guard resultSet.next(), let data = resultSet.data(forColumn: "sample") else {
+				return nil
+			}
+			// A sample that cannot be decoded counts as missing, so callers
+			// rescan instead of trusting a verdict nobody can read.
+			guard let decoded = try? JSONDecoder().decode([FeedLanguageSample].self, from: data) else {
+				return nil
+			}
+			return FeedLanguageSampleCache(entries: decoded)
+		}
+	}
+
+	public func saveFeedLanguageSample(feedID: String, sample: FeedLanguageSampleCache) async throws {
+		let data = try JSONEncoder().encode(sample.entries)
+		try await write { database in
+			let sql = "insert or replace into ai_feed_language_cache (feedID, sample, updatedAt) values (?, ?, ?);"
+			guard database.executeUpdate(sql, withArgumentsIn: [feedID, data, Date().timeIntervalSince1970]) else {
+				throw AIStoreError.writeFailed(database.lastErrorMessage())
+			}
 		}
 	}
 
@@ -806,6 +856,8 @@ private extension SQLiteAIStore {
 
 	CREATE TABLE if not EXISTS ai_jobs (id TEXT NOT NULL PRIMARY KEY, articleID TEXT NOT NULL, kind TEXT NOT NULL, priority INTEGER NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL, availableAt REAL NOT NULL, leaseUntil REAL, lastError TEXT, startedAt REAL, finishedAt REAL, createdAt REAL NOT NULL);
 
+	CREATE TABLE if not EXISTS ai_feed_language_cache (feedID TEXT NOT NULL PRIMARY KEY, sample TEXT NOT NULL, updatedAt REAL NOT NULL);
+
 	CREATE INDEX if not EXISTS chat_messages_articleID_createdAt on chat_messages (articleID, createdAt);
 
 	CREATE INDEX if not EXISTS ai_jobs_status_availableAt on ai_jobs (status, availableAt);
@@ -819,6 +871,11 @@ private extension SQLiteAIStore {
 
 	static let articleKindStatusFinishedAtIndexStatement = """
 	CREATE INDEX if not EXISTS ai_jobs_article_kind_status_finishedAt on ai_jobs (articleID, kind, status, finishedAt);
+	"""
+
+	/// Backs the lease-reclaim arm of the claim query.
+	static let statusLeaseUntilIndexStatement = """
+	CREATE INDEX if not EXISTS ai_jobs_status_leaseUntil on ai_jobs (status, leaseUntil);
 	"""
 
 	static let migrations: [(table: String, column: String, definition: String)] = [

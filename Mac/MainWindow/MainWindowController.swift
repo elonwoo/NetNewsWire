@@ -211,9 +211,21 @@ final class MainWindowController: NSWindowController, NSUserInterfaceValidations
 		}
 		let timeline = currentTimelineViewController
 		let timelineArticles = timeline?.articles ?? []
+		// Articles of one feed repeat the feed's URL, so the host is parsed once
+		// per feed per call instead of once per article. A nil host is not
+		// remembered: a later article of the same feed may still carry a valid URL.
 		var feedDisplayNames: [String: String] = [:]
+		var hostsByFeedID: [String: String] = [:]
 		for article in timelineArticles {
-			let host = article.feed.flatMap { URL(string: $0.url)?.host }
+			let host: String?
+			if let remembered = hostsByFeedID[article.feedID] {
+				host = remembered
+			} else if let parsed = article.feed.flatMap({ URL(string: $0.url)?.host }) {
+				hostsByFeedID[article.feedID] = parsed
+				host = parsed
+			} else {
+				host = nil
+			}
 			feedDisplayNames[article.feedID] = AIJobCoverageBuilder.feedDisplayName(
 				feedName: article.feed?.nameForDisplay,
 				urlHost: host,

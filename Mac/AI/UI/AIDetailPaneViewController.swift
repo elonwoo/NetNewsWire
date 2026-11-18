@@ -83,8 +83,10 @@ final class AIDetailPaneViewController: NSViewController {
 	private var jobRefreshTask: Task<Void, Never>?
 	private var jobRefreshGeneration = UUID()
 	private var jobDebounceWorkItem: DispatchWorkItem?
-	private var jobPollTimer: Timer?
 	private var jobObserverTokens: [NSObjectProtocol] = []
+	/// The coverage query only changes with the visible articles' read state or
+	/// with stored translations and rewrites; other job events reuse the result.
+	private var coverageCache: (key: CoverageCacheKey, coverage: AIJobCoverage)?
 	private var expandedFailureGroups: Set<AIJobFailureGroupKey> = []
 	private var retryingFailureGroups: Set<AIJobFailureGroupKey> = []
 	private var failureRetryNotices: [AIJobFailureGroupKey: String] = [:]
@@ -101,6 +103,14 @@ final class AIDetailPaneViewController: NSViewController {
 		let coverage: AIJobCoverage?
 		let coverageQueryFailed: Bool
 		let now: Date
+	}
+
+	/// Identifies one coverage result. Read state is part of the key because the
+	/// unread-only scope filters rows by it.
+	private struct CoverageCacheKey: Equatable {
+		let scope: AIJobScope
+		let unreadOnly: Bool
+		let articles: String
 	}
 
 	init(detailViewController: DetailViewController, rewriteViewController: AIRewriteViewController = AIRewriteViewController(), translationViewController: AITranslationViewController = AITranslationViewController()) {
@@ -209,7 +219,6 @@ final class AIDetailPaneViewController: NSViewController {
 	}
 
 	isolated deinit {
-		jobPollTimer?.invalidate()
 		for token in jobObserverTokens {
 			NotificationCenter.default.removeObserver(token)
 		}
@@ -471,12 +480,11 @@ extension AIDetailPaneViewController {
 		jobPanelScope = context.scope
 		jobPanelVisible = true
 		jobStatusView.isHidden = false
-		startJobPanelTimers()
 		scheduleJobPanelRefresh(immediate: true)
 	}
 
 	/// Called by the main window after the timeline finishes a fetch, so a read
-	/// filter change is reflected without waiting for the five-second poll.
+	/// filter change is reflected without waiting for the next job event.
 	func refreshJobPanelFromTimelineChange() {
 		updateJobPanel()
 	}
@@ -496,26 +504,8 @@ private extension AIDetailPaneViewController {
 		jobRefreshTask = nil
 		jobDebounceWorkItem?.cancel()
 		jobDebounceWorkItem = nil
-		stopJobPanelTimers()
 		jobStatusView.isHidden = true
 		jobStatusView.clear()
-	}
-
-	func startJobPanelTimers() {
-		if jobPollTimer == nil {
-			let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
-				Task { @MainActor [weak self] in
-					self?.refreshJobPanel()
-				}
-			}
-			RunLoop.main.add(timer, forMode: .common)
-			jobPollTimer = timer
-		}
-	}
-
-	func stopJobPanelTimers() {
-		jobPollTimer?.invalidate()
-		jobPollTimer = nil
 	}
 
 	func installJobPanelObservers() {
@@ -523,10 +513,17 @@ private extension AIDetailPaneViewController {
 			return
 		}
 		let names: [Notification.Name] = [.aiJobsDidChange, .aiTranslationReady, .aiRewriteReady, .aiRewriteStored, .aiRewriteRemoved, .aiJobFailed]
+		let coverageNames: Set<Notification.Name> = [.aiTranslationReady, .aiRewriteStored, .aiRewriteRemoved]
 		for name in names {
 			let token = NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
 				Task { @MainActor [weak self] in
-					self?.scheduleJobPanelRefresh()
+					guard let self else {
+						return
+					}
+					if coverageNames.contains(name) {
+						self.coverageCache = nil
+					}
+					self.scheduleJobPanelRefresh()
 				}
 			}
 			jobObserverTokens.append(token)
@@ -569,7 +566,7 @@ private extension AIDetailPaneViewController {
 			do {
 				async let active = store.activeJobs()
 				async let folded = store.foldedFailures(since: since)
-				async let completedToday = store.recentJobs(status: .completed, since: AIJobStatusModel.startOfDay(for: now), limit: 3000)
+				async let completedToday = store.recentJobs(status: .completed, since: AIJobStatusModel.startOfDay(for: now), limit: 100)
 				activeJobs = try await active
 				foldedFailures = try await folded
 				completedTodayJobs = try await completedToday
@@ -607,6 +604,11 @@ private extension AIDetailPaneViewController {
 			let articlesByID = Dictionary(articles.map { ($0.articleID, AIJobArticleInfo(article: $0)) }, uniquingKeysWith: { first, _ in first })
 
 			let visibleIDs = context.timelineArticleIDs
+			let coverageKey = CoverageCacheKey(
+				scope: context.scope,
+				unreadOnly: context.unreadOnly,
+				articles: context.articles.map { "\($0.articleID):\($0.read ? "r" : "u")" }.sorted().joined(separator: ",")
+			)
 			var coverage: AIJobCoverage?
 			var coverageQueryFailed = false
 			if visibleIDs.isEmpty {
@@ -617,17 +619,21 @@ private extension AIDetailPaneViewController {
 					translatedArticleIDs: [],
 					rewrittenArticleIDs: []
 				)
+			} else if let cached = coverageCache, cached.key == coverageKey {
+				coverage = cached.coverage
 			} else {
 				do {
 					async let translated = store.completedTranslationArticleIDs(for: visibleIDs)
 					async let rewritten = store.completedRewriteArticleIDs(for: visibleIDs)
-					coverage = AIJobCoverageBuilder.build(
+					let built = AIJobCoverageBuilder.build(
 						articles: context.articles,
 						unreadOnly: context.unreadOnly,
 						feedDisplayNames: context.feedDisplayNames,
 						translatedArticleIDs: try await translated,
 						rewrittenArticleIDs: try await rewritten
 					)
+					coverage = built
+					coverageCache = (coverageKey, built)
 				} catch {
 					coverage = nil
 					coverageQueryFailed = true

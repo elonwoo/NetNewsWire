@@ -12,10 +12,12 @@ public enum AIQueuePolicy {
 	public static let leaseDuration: TimeInterval = 5 * 60
 
 	/// Maximum number of attempts before a job is marked failed.
-	public static let maxAttempts = 4
+	public static let maxAttempts = 2
 
 	/// Delay before the next attempt, indexed by the attempt that just failed.
-	public static let retryDelays: [TimeInterval] = [10 * 60, 30 * 60, 2 * 60 * 60]
+	/// One retry, ten minutes out; the failure classifier decides which errors
+	/// deserve it, so a long ladder is no longer needed.
+	public static let retryDelays: [TimeInterval] = [10 * 60]
 
 	/// Returns the delay before retrying after `attempts` failed attempts,
 	/// or nil when the job has exhausted its attempts.

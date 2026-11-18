@@ -101,10 +101,10 @@ final class AIJobExecutor {
 	static let shared = AIJobExecutor()
 
 	private static let titleBatchSize = 20
-	private static let idlePollInterval: Duration = .seconds(2)
+	private static let idlePollInterval: Duration = .seconds(60)
 	private static let pausedPollInterval: Duration = .seconds(1)
 	private static let catchUpDelay: Duration = .seconds(5)
-	private static let catchUpLimit = 200
+	private static let catchUpLimit = 25
 	private static let leaseRenewInterval: Duration = .seconds(60)
 	/// Finished jobs stay in the database for this long so the task panel can
 	/// still show recent results.
@@ -138,8 +138,13 @@ final class AIJobExecutor {
 	private var catchUpTask: Task<Void, Never>?
 	private var observerToken: NSObjectProtocol?
 	private var feedRemovalObserverToken: NSObjectProtocol?
+	private var jobsChangeObserverToken: NSObjectProtocol?
 	private var isPaused = false
 	private var didScheduleTerminalJobCleanup = false
+	/// Lanes park here between jobs instead of polling; a queued job or a store
+	/// change resumes them immediately, and the idle interval is only the
+	/// fallback wake.
+	private var idleWaiters: [UUID: CheckedContinuation<Void, Never>] = [:]
 	/// Title translations are claimed only by the interactive lane, so this map
 	/// keeps a single writer. Moving title jobs to the background lane would let
 	/// two lanes mutate it concurrently.
@@ -246,6 +251,10 @@ final class AIJobExecutor {
 			notificationCenter.removeObserver(feedRemovalObserverToken)
 			self.feedRemovalObserverToken = nil
 		}
+		if let jobsChangeObserverToken {
+			notificationCenter.removeObserver(jobsChangeObserverToken)
+			self.jobsChangeObserverToken = nil
+		}
 	}
 
 	func pause() {
@@ -293,12 +302,12 @@ final class AIJobExecutor {
 
 	// MARK: - Enqueueing
 
-	/// Queues title translation for new or updated foreign articles and, when
-	/// the default is on, a rewrite for eligible articles in any language. Body
-	/// translation is not queued here: it runs only when the reader opens the
-	/// translation tab. `AutoWorkPolicy` filters this automatic path only;
-	/// manual entry points are never filtered. Chinese articles are skipped
-	/// unless their feed has the language override set.
+	/// Queues a rewrite for eligible new articles when the default is on. Title
+	/// and body translation are not queued here: titles are enqueued lazily from
+	/// the timeline for rows the user can actually see, and body translation only
+	/// when the reader opens the translation tab. `AutoWorkPolicy` filters this
+	/// automatic path only; manual entry points are never filtered. Chinese
+	/// articles are skipped unless their feed has the language override set.
 	func enqueueForNewArticles(_ articles: [AIArticle]) async {
 		guard !autoWorkDisabled else {
 			return
@@ -312,14 +321,6 @@ final class AIJobExecutor {
 		// A job that already exists, including one waiting to retry, must not be
 		// queued again by a later download notification.
 		let activeRewriteIDs = (try? await store.activeJobArticleIDs(kinds: [.rewrite])) ?? []
-		let activeTitleIDs = (try? await store.activeJobArticleIDs(kinds: [.titleTranslation])) ?? []
-		let disabledTranslationFeedIDs = translationDisabledFeedIDs
-		let translatable = usable.filter {
-			AutoWorkPolicy.shouldTranslate($0, now: now, chineseAllowed: AIArticleLanguageGate.allows($0, chineseAllowedFeedIDs: chineseAllowedFeedIDs))
-				&& !activeTitleIDs.contains($0.id)
-				&& AIRewriteAdmission.allowsTranslation(feedID: $0.feedID, translationDisabledFeedIDs: disabledTranslationFeedIDs)
-		}
-		await enqueueTitleTranslations(for: translatable, origin: .auto)
 
 		guard AppDefaults.aiAutoRewriteEnabled else {
 			return
@@ -626,14 +627,47 @@ private extension AIJobExecutor {
 
 			do {
 				guard let job = try await claimNextJob(allowedKinds: allowedKinds) else {
-					try? await Task.sleep(for: Self.idlePollInterval)
+					await waitForIdleWake()
 					continue
 				}
 				await execute(job)
 			} catch {
 				Self.logger.error("AI job loop failed: \(String(describing: error), privacy: .public)")
-				try? await Task.sleep(for: Self.idlePollInterval)
+				await waitForIdleWake()
 			}
+		}
+	}
+
+	/// Parks the calling lane until work arrives. Enqueues and store changes
+	/// resume it directly; the idle interval only bounds how long a missed wake
+	/// could stall the lane. Cancellation resumes it so `stop()` never leaves a
+	/// continuation parked.
+	func waitForIdleWake() async {
+		let id = UUID()
+		await withTaskCancellationHandler {
+			await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+				idleWaiters[id] = continuation
+				Task { @MainActor [weak self] in
+					try? await Task.sleep(for: Self.idlePollInterval)
+					self?.resumeIdleWaiter(id: id)
+				}
+			}
+		} onCancel: {
+			Task { @MainActor [weak self] in
+				self?.resumeIdleWaiter(id: id)
+			}
+		}
+	}
+
+	func resumeIdleWaiter(id: UUID) {
+		idleWaiters.removeValue(forKey: id)?.resume()
+	}
+
+	func wakeIdleWaiters() {
+		let waiters = idleWaiters
+		idleWaiters.removeAll()
+		for (_, continuation) in waiters {
+			continuation.resume()
 		}
 	}
 
@@ -746,22 +780,21 @@ private extension AIJobExecutor {
 				let batch = try await translateTitles(article: article, service: jobServices.translation)
 				let ownSucceeded = batch.result.translated.contains(article.id) || batch.result.cached.contains(article.id)
 				guard ownSucceeded else {
+					// The model answered without this article. The same input
+					// reproduces the same omission, so the job ends here.
 					let message = "模型未返回该标题"
-					let terminal = AIQueuePolicy.retryDelay(afterAttempt: job.attempts) == nil
-					try await store.failJob(id: job.id, error: message, retryAt: nil)
-					if terminal {
-						postFailure(articleID: article.id, error: message)
-						await recordTerminal(terminalEvent(
-							job: job,
-							article: article,
-							trigger: trigger,
-							model: model,
-							startedAt: startedAt,
-							outcome: .failed,
-							error: message,
-							batchSize: batch.batchSize
-						))
-					}
+					try await store.failJobPermanently(id: job.id, error: message)
+					postFailure(articleID: article.id, error: message)
+					await recordTerminal(terminalEvent(
+						job: job,
+						article: article,
+						trigger: trigger,
+						model: model,
+						startedAt: startedAt,
+						outcome: .failed,
+						error: message,
+						batchSize: batch.batchSize
+					))
 					return
 				}
 				try await store.completeJob(id: job.id)
@@ -896,15 +929,22 @@ private extension AIJobExecutor {
 			}
 		} catch {
 			let message = AIJobErrorDescription.describe(error)
-			let terminal = AIQueuePolicy.retryDelay(afterAttempt: job.attempts) == nil
+			// Retryable failures leave the queue policy the single scheduled
+			// retry; permanent ones end the job and surface to the user.
+			let failureKind = AIJobFailureClassifier.classify(error)
 			do {
-				try await store.failJob(id: job.id, error: message, retryAt: nil)
+				switch failureKind {
+				case .permanent:
+					try await store.failJobPermanently(id: job.id, error: message)
+				case .retryable:
+					try await store.failJob(id: job.id, error: message, retryAt: nil)
+				}
 			} catch {
 				Self.logger.error("Failed to record AI job failure: \(String(describing: error), privacy: .public)")
 				return
 			}
 			Self.logger.error("AI job \(job.kind.rawValue, privacy: .public) failed: \(message, privacy: .public)")
-			guard terminal else {
+			guard failureKind == .permanent else {
 				return
 			}
 			postFailure(articleID: article.id, error: message)
@@ -956,10 +996,12 @@ private extension AIJobExecutor {
 			start()
 		}
 		var allQueued = true
+		var queuedAny = false
 		for job in jobs {
 			do {
 				try await queue.enqueue(job)
 				originRegistry.register(jobID: job.id, origin: origin)
+				queuedAny = true
 			} catch {
 				allQueued = false
 				originRegistry.remove(jobID: job.id)
@@ -977,6 +1019,12 @@ private extension AIJobExecutor {
 					error: "提交任务失败"
 				))
 			}
+		}
+		if queuedAny {
+			// The store posts .aiJobsDidChange too, but a test can inject a
+			// notification center the store does not use; waking here keeps a
+			// queued job from waiting out the idle interval either way.
+			wakeIdleWaiters()
 		}
 		return allQueued
 	}
@@ -1022,19 +1070,24 @@ private extension AIJobExecutor {
 				guard let self else {
 					return
 				}
-				var articles: [Article] = []
-				if let newArticles = notification.userInfo?[Account.UserInfoKey.newArticles] as? Set<Article> {
-					articles.append(contentsOf: newArticles)
-				}
-				if let updatedArticles = notification.userInfo?[Account.UserInfoKey.updatedArticles] as? Set<Article> {
-					articles.append(contentsOf: updatedArticles)
-				}
-				guard !articles.isEmpty else {
+				// Only genuinely new articles queue work. Updated rows were already
+				// seen by an earlier download; re-reading them spends model calls on
+				// articles the user has mostly already passed.
+				guard let newArticles = notification.userInfo?[Account.UserInfoKey.newArticles] as? Set<Article>,
+				      !newArticles.isEmpty else {
 					return
 				}
-				let aiArticles = articles.map { AIArticle(article: $0) }
+				let aiArticles = newArticles.map { AIArticle(article: $0) }
 				Task { @MainActor [weak self] in
 					await self?.enqueueForNewArticles(aiArticles)
+				}
+			}
+		}
+
+		if jobsChangeObserverToken == nil {
+			jobsChangeObserverToken = notificationCenter.addObserver(forName: .aiJobsDidChange, object: nil, queue: .main) { [weak self] _ in
+				Task { @MainActor [weak self] in
+					self?.wakeIdleWaiters()
 				}
 			}
 		}

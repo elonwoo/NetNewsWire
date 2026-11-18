@@ -1120,6 +1120,7 @@ final class TimelineViewController: NSViewController, UndoableCommandRunner, Unr
 				do {
 					let titles = try await AIEnvironment.shared.store.translatedTitles(for: needTitle)
 					self.applyTranslatedTitles(titles, queriedIDs: needTitle)
+					await self.enqueueMissingTitleTranslations(for: needTitle.subtracting(titles.keys))
 				} catch {
 					// Leave only these IDs unchecked so the next trigger retries them.
 					self.checkedTitleArticleIDs.subtract(needTitle)
@@ -1153,6 +1154,25 @@ final class TimelineViewController: NSViewController, UndoableCommandRunner, Unr
 		let rows = indexesForArticleIDs(changedArticleIDs)
 		remeasureRowHeights(rows)
 		reloadVisibleCells(for: rows)
+	}
+
+	/// Lazy title translation. Download-time auto-enqueue no longer queues
+	/// titles, so the visible timeline drives demand: a visible article with no
+	/// stored translation queues a title job now. Only unread articles are
+	/// enqueued — the store has no title for them because nothing has asked yet,
+	/// whereas read articles were visible earlier and had their chance.
+	private func enqueueMissingTitleTranslations(for articleIDs: Set<String>) async {
+		guard !articleIDs.isEmpty else {
+			return
+		}
+		var toEnqueue: [AIArticle] = []
+		for article in articles where articleIDs.contains(article.articleID) && !article.status.read {
+			toEnqueue.append(AIArticle(article: article))
+		}
+		guard !toEnqueue.isEmpty else {
+			return
+		}
+		await AIJobExecutor.shared.enqueueTitleTranslations(for: toEnqueue, origin: .auto)
 	}
 
 	private func visibleArticleIDs() -> Set<String> {

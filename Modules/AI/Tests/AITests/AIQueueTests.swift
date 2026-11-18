@@ -72,18 +72,17 @@ import Testing
 		try await queue.enqueue(makeJob(id: "job-1", availableAt: now))
 
 		let first = try #require(try await queue.runOnce(now: now))
-		try await store.failJob(id: first.id, error: "first", retryAt: now.addingTimeInterval(10 * 60))
-		let second = try #require(try await queue.runOnce(now: now.addingTimeInterval(10 * 60)))
-		#expect(second.attempts == 2)
-		try await store.failJob(id: second.id, error: "second", retryAt: now.addingTimeInterval(10 * 60 + 30 * 60))
-		let third = try #require(try await queue.runOnce(now: now.addingTimeInterval(10 * 60 + 30 * 60)))
-		#expect(third.attempts == 3)
-		try await store.failJob(id: third.id, error: "third", retryAt: now.addingTimeInterval(10 * 60 + 30 * 60 + 2 * 60 * 60))
-		let fourth = try #require(try await queue.runOnce(now: now.addingTimeInterval(10 * 60 + 30 * 60 + 2 * 60 * 60)))
-		#expect(fourth.attempts == 4)
-		try await store.failJob(id: fourth.id, error: "fourth", retryAt: nil)
+		#expect(first.attempts == 1)
+		// failJob schedules the retry off the real clock, so the retry window
+		// here is anchored to Date() with a minute of slack on each side.
+		try await store.failJob(id: first.id, error: "first", retryAt: nil)
 
-		#expect(try await queue.runOnce(now: now.addingTimeInterval(60 * 60 * 24)) == nil)
+		#expect(try await queue.runOnce(now: Date().addingTimeInterval(9 * 60)) == nil)
+		let second = try #require(try await queue.runOnce(now: Date().addingTimeInterval(11 * 60)))
+		#expect(second.attempts == 2)
+		try await store.failJob(id: second.id, error: "second", retryAt: nil)
+
+		#expect(try await queue.runOnce(now: Date().addingTimeInterval(60 * 60 * 24)) == nil)
 	}
 
 	@Test func completedJobIsNeverClaimedAgain() async throws {
@@ -150,10 +149,9 @@ import Testing
 
 	@Test func retryPolicyMatchesTheDocumentedSchedule() {
 		#expect(AIQueuePolicy.leaseDuration == 5 * 60)
+		#expect(AIQueuePolicy.maxAttempts == 2)
 		#expect(AIQueuePolicy.retryDelay(afterAttempt: 1) == 10.0 * 60)
-		#expect(AIQueuePolicy.retryDelay(afterAttempt: 2) == 30.0 * 60)
-		#expect(AIQueuePolicy.retryDelay(afterAttempt: 3) == 2.0 * 60 * 60)
-		#expect(AIQueuePolicy.retryDelay(afterAttempt: 4) == nil)
+		#expect(AIQueuePolicy.retryDelay(afterAttempt: 2) == nil)
 	}
 }
 
